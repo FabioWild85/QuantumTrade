@@ -124,13 +124,33 @@ export const MarketSummary: React.FC<Props> = ({ data, macroSentiment, macroOver
          </div>
 
          <div className="flex flex-col items-center justify-center py-2">
-            {/* Semi-circle Gauge */}
-            <div className="relative w-48 h-24 overflow-hidden mb-[-10px]">
-               <div className="absolute top-0 left-0 w-48 h-48 rounded-full border-[16px] border-slate-100 dark:border-slate-800 box-border"></div>
-               <div 
-                  className={`absolute top-0 left-0 w-48 h-48 rounded-full border-[16px] border-current box-border transition-transform duration-1000 origin-bottom ${data.fearGreedIndex > 50 ? 'text-emerald-500' : 'text-rose-500'}`}
-                  style={{ transform: `rotate(${(data.fearGreedIndex / 100) * 180 - 180}deg)` }}
-               ></div>
+            {/* Semi-circle Gauge (SVG for precision) */}
+            <div className="relative w-48 h-24 mb-2">
+               <svg viewBox="0 0 100 50" className="w-full h-full">
+                  {/* Background Track */}
+                  <path 
+                     d="M 10 50 A 40 40 0 0 1 90 50" 
+                     fill="none" 
+                     stroke="currentColor" 
+                     strokeWidth="12" 
+                     className="text-slate-100 dark:text-slate-800"
+                  />
+                  {/* Progress Fill */}
+                  <path 
+                     d="M 10 50 A 40 40 0 0 1 90 50" 
+                     fill="none" 
+                     stroke="currentColor" 
+                     strokeWidth="12" 
+                     strokeDasharray="125.6" 
+                     strokeDashoffset={125.6 - (125.6 * data.fearGreedIndex) / 100}
+                     strokeLinecap="round"
+                     className={`transition-all duration-1000 ${
+                        data.fearGreedIndex >= 55 ? 'text-emerald-500' : 
+                        data.fearGreedIndex <= 45 ? 'text-rose-500' : 
+                        'text-amber-500'
+                     }`}
+                  />
+               </svg>
             </div>
             
             <div className="text-center relative z-10">
@@ -139,7 +159,11 @@ export const MarketSummary: React.FC<Props> = ({ data, macroSentiment, macroOver
          </div>
 
          <div className="mt-6 text-center">
-            <span className={`inline-block px-4 py-2 rounded-lg text-xs font-bold tracking-wide uppercase ${data.fearGreedIndex > 50 ? 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400' : 'bg-rose-50 dark:bg-rose-500/10 text-rose-600 dark:text-rose-400'}`}>
+            <span className={`inline-block px-4 py-2 rounded-lg text-xs font-bold tracking-wide uppercase ${
+              data.fearGreedIndex >= 55 ? 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400' : 
+              data.fearGreedIndex <= 45 ? 'bg-rose-50 dark:bg-rose-500/10 text-rose-600 dark:text-rose-400' : 
+              'bg-amber-50 dark:bg-amber-500/10 text-amber-600 dark:text-amber-400'
+            }`}>
               {data.fearGreedIndex < 25 ? 'Extreme Fear' : data.fearGreedIndex < 45 ? 'Fear' : data.fearGreedIndex < 55 ? 'Neutral' : data.fearGreedIndex < 75 ? 'Greed' : 'Extreme Greed'}
             </span>
          </div>

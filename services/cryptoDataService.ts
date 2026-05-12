@@ -1,5 +1,5 @@
-import { TechnicalAnalysis, OrderBookAnalysis, VolatilityMetrics, EthereumSpecificData, TrendStructure, CycleMetrics, ShortTermAnalysis, Sentiment, Candle } from '../types';
-import { calculateLastRSI, calculateRSIArray, calculateEMA, calculateMACD, calculateSMA, calculateBollingerBands, calculateATR } from '../utils/indicators';
+import { TechnicalAnalysis, OrderBookAnalysis, VolatilityMetrics, EthereumSpecificData, TrendStructure, CycleMetrics, ShortTermAnalysis, Sentiment, Candle, MacroAsset } from '../types';
+import { calculateLastRSI, calculateRSIArray, calculateEMA, calculateMACD, calculateSMA, calculateBollingerBands, calculateATR, calculatePearsonCorrelation } from '../utils/indicators';
 
 const detectRsiDivergence = (prices: number[], rsiValues: number[], lookback: number = 28): 'Bullish' | 'Bearish' | 'None' => {
   if (prices.length < lookback || rsiValues.length < lookback) return 'None';
@@ -50,19 +50,34 @@ const safeFetchObject = async (url: string) => {
     }
 };
 
+// CoinGecko symbol → coin ID mapping
+const COINGECKO_IDS: Record<string, string> = {
+  BTC: 'bitcoin',
+  ETH: 'ethereum',
+  SOL: 'solana',
+};
+
 export const getTechnicalData = async (symbol: 'BTC' | 'ETH' | 'SOL'): Promise<Partial<TechnicalAnalysis>> => {
   const pair = `${symbol}USDT`;
   
   try {
     // PARALLEL FETCHING: Significant speed improvement
     // INCREASED LIMIT TO 1000 for 4h to ensure history for chart and SMA calculations
-    const [weeklyData, dailyData, h4Data, ethBtcRaw, depth, fgData] = await Promise.all([
+    const [weeklyData, dailyData, h4Data, ethBtcRaw, depth, fgData, cgCoinData, cgGlobalData, oiData, fundingData] = await Promise.all([
         safeFetchJson(`https://api.binance.com/api/v3/klines?symbol=${pair}&interval=1w&limit=52`),
         safeFetchJson(`https://api.binance.com/api/v3/klines?symbol=${pair}&interval=1d&limit=200`),
         safeFetchJson(`https://api.binance.com/api/v3/klines?symbol=${pair}&interval=4h&limit=1000`),
         safeFetchJson(`https://api.binance.com/api/v3/klines?symbol=ETHBTC&interval=1d&limit=50`),
         safeFetchObject(`https://api.binance.com/api/v3/depth?symbol=${pair}&limit=50`),
-        safeFetchObject('https://api.alternative.me/fng/')
+        safeFetchObject('https://api.alternative.me/fng/'),
+        // P-01: CoinGecko — ATH in tempo reale
+        safeFetchObject(`https://api.coingecko.com/api/v3/coins/${COINGECKO_IDS[symbol]}?localization=false&tickers=false&market_data=true&community_data=false&developer_data=false`),
+        // P-01: CoinGecko Global — Dominance in tempo reale
+        safeFetchObject('https://api.coingecko.com/api/v3/global'),
+        // P-04: Binance Futures — Open Interest
+        safeFetchObject(`https://fapi.binance.com/fapi/v1/openInterest?symbol=${pair}`),
+        // P-04: Binance Futures — Funding Rate
+        safeFetchObject(`https://fapi.binance.com/fapi/v1/premiumIndex?symbol=${pair}`),
     ]);
 
     // 1. Process Weekly
@@ -91,7 +106,7 @@ export const getTechnicalData = async (symbol: 'BTC' | 'ETH' | 'SOL'): Promise<P
 
     // 4. ETH/BTC Ratio (Or Generic Ratio)
     let ethBtcRatioData: any = { value: 0, trend: 'Neutral', signal: 'Neutral' };
-    if (ethBtcRaw.length > 0) {
+    if (Array.isArray(ethBtcRaw) && ethBtcRaw.length > 0) {
         const ethBtcCloses = ethBtcRaw.map((d: any) => parseFloat(d[4]));
         const currentRatio = ethBtcCloses[ethBtcCloses.length - 1];
         const sma50Ratio = calculateSMA(ethBtcCloses, 50);
@@ -214,13 +229,25 @@ export const getTechnicalData = async (symbol: 'BTC' | 'ETH' | 'SOL'): Promise<P
         fearGreedValue = parseInt(fgData.data[0].value);
     }
     
+    // ── P-03: Etherscan — ETH Gas Fees reali (no API key needed) ─────────────
     let ethSpecificData: EthereumSpecificData | undefined;
     if (symbol === 'ETH') {
-      ethSpecificData = {
-        gasFees: Math.floor(Math.random() * (40 - 10 + 1) + 10),
-        stakingApy: parseFloat((Math.random() * (4.5 - 3.0) + 3.0).toFixed(2)),
-        ethBurned24h: parseFloat((Math.random() * (2500 - 1500) + 1500).toFixed(0)),
-      };
+      let gasFees = 0;
+      let stakingApy = 0;
+      let ethBurned24h = 0;
+      try {
+        const [ethGasResp, beaconResp] = await Promise.all([
+          safeFetchObject('https://api.etherscan.io/api?module=gastracker&action=gasoracle'),
+          safeFetchObject('https://beaconcha.in/api/v1/ethstore/latest'),
+        ]);
+        if (ethGasResp?.result?.ProposeGasPrice) {
+          gasFees = parseInt(ethGasResp.result.ProposeGasPrice, 10);
+        }
+        if (beaconResp?.data?.apr != null) {
+          stakingApy = parseFloat((beaconResp.data.apr * 100).toFixed(2));
+        }
+      } catch { /* non-blocking */ }
+      ethSpecificData = { gasFees, stakingApy, ethBurned24h };
     }
 
     // --- CYCLES ---
@@ -229,9 +256,34 @@ export const getTechnicalData = async (symbol: 'BTC' | 'ETH' | 'SOL'): Promise<P
     const daysSinceHalving = Math.floor((new Date().getTime() - lastHalvingDate) / (1000 * 60 * 60 * 24));
     const progressInCycle = Math.min(100, Math.max(0, (daysSinceHalving / 530) * 100)); // 530 days is approx top timing
     
-    let ath = 73700; // BTC Default
-    if (symbol === 'ETH') ath = 4800;
-    if (symbol === 'SOL') ath = 260; 
+    // ── P-01: CoinGecko — ATH reale e Dominance ──────────────────────────────
+    let ath = symbol === 'BTC' ? 73700 : symbol === 'ETH' ? 4800 : 260; // fallback statico
+    let dominance = 'N/A';
+    if (cgCoinData?.market_data?.ath?.usd) {
+      ath = cgCoinData.market_data.ath.usd;
+    }
+    if (cgGlobalData?.data?.market_cap_percentage) {
+      const key = symbol.toLowerCase();
+      const pct = cgGlobalData.data.market_cap_percentage[key];
+      if (pct != null) dominance = `${parseFloat(pct).toFixed(1)}%`;
+    }
+
+    // ── P-04: Binance Futures — Open Interest e Funding Rate ──────────────────
+    // FIX: always express OI in USD for visual consistency across BTC/ETH/SOL.
+    // The fapi /openInterest endpoint returns OI denominated in the base asset
+    // (e.g. BTC for BTCUSDT), so multiply by currentPrice to get USD notional.
+    let openInterest = 'N/A';
+    let fundingRate = 'N/A';
+    if (oiData?.openInterest && currentPrice > 0) {
+      const oiUsd = parseFloat(oiData.openInterest) * currentPrice;
+      openInterest = oiUsd >= 1_000_000_000
+        ? `$${(oiUsd / 1_000_000_000).toFixed(2)}B`
+        : `$${(oiUsd / 1_000_000).toFixed(0)}M`;
+    }
+    if (fundingData?.lastFundingRate) {
+      const rate = parseFloat(fundingData.lastFundingRate) * 100;
+      fundingRate = `${rate >= 0 ? '+' : ''}${rate.toFixed(4)}%`;
+    }
 
     const distFromAth = ((currentPrice - ath) / ath) * 100;
     
@@ -280,11 +332,151 @@ export const getTechnicalData = async (symbol: 'BTC' | 'ETH' | 'SOL'): Promise<P
         dailySma200: parseFloat(sma200Daily.toFixed(2))
     };
 
+    // ── A-01: Confluence Score (0-100) ────────────────────────────────────────
+    // Aggregates all technical signals into a single directional score.
+    // 0 = Strong Bearish, 50 = Neutral, 100 = Strong Bullish
+    const computeConfluence = (): number => {
+      let score = 0;
+      // Weekly trend — primary, highest weight
+      score += weeklyBias === 'Bullish' ? 30 : 0;
+      // Daily trend — secondary
+      score += dailyBias === 'Bullish' ? 20 : 0;
+      // 4H EMA structure
+      if      (emaSignal === 'Full Bullish')  score += 20;
+      else if (emaSignal === 'Golden Cross')   score += 12;
+      else if (emaSignal === 'Consolidation') score += 10;
+      else if (emaSignal === 'Death Cross')    score += 4;
+      // RSI momentum
+      if      (rsiValue < 30)  score += 15; // oversold → bullish opportunity
+      else if (rsiValue < 45)  score += 10;
+      else if (rsiValue <= 55) score += 7;
+      else if (rsiValue <= 70) score += 3;
+      // RSI divergence bonus
+      if (divergence === 'Bullish') score += 8;
+      else if (divergence === 'None') score += 4;
+      // MACD histogram direction
+      score += macdData.hist > 0 ? 5 : 0;
+      // Order book imbalance
+      if      (orderBookData.imbalance === 'Bullish') score += 2;
+      else if (orderBookData.imbalance === 'Neutral') score += 1;
+      // Max possible = 100. Clamp to [0, 100].
+      return Math.min(100, Math.max(0, score));
+    };
+    const confluenceScore = computeConfluence();
+
+    // ── A-03: ATR Volatility Heatmap ──────────────────────────────────────────
+    // Compare current 14-day ATR to the 30-period average of ATR to classify vol regime
+    const buildATRArray = (h: number[], l: number[], c: number[], p = 14): number[] => {
+      const out: number[] = [];
+      for (let i = p; i < c.length; i++) {
+        let sum = 0;
+        for (let j = i - p + 1; j <= i; j++) {
+          sum += Math.max(h[j] - l[j], Math.abs(h[j] - c[j-1] || 0), Math.abs(l[j] - c[j-1] || 0));
+        }
+        out.push(sum / p);
+      }
+      return out;
+    };
+    const atrHistory = buildATRArray(dailyHighs, dailyLows, dailyCloses);
+    // FIX: exclude the most recent ATR from the baseline average so atrRatio
+    // measures the *current* ATR vs the previous 30-day window, not vs itself.
+    const baselineSlice = atrHistory.length > 30 ? atrHistory.slice(-31, -1) : atrHistory.slice(0, -1);
+    const avgAtr30 = baselineSlice.length > 0
+      ? baselineSlice.reduce((s, v) => s + v, 0) / baselineSlice.length
+      : atr;
+    const atrRatio = avgAtr30 > 0 ? parseFloat((atr / avgAtr30).toFixed(2)) : 1;
+    const volatilityHeatmap: VolatilityMetrics['volatilityHeatmap'] =
+      atrRatio >= 2.0 ? 'Explosive' : atrRatio >= 1.3 ? 'High' : atrRatio >= 0.7 ? 'Normal' : 'Compressed';
+    volatilityMetrics.atrRatio = atrRatio;
+    volatilityMetrics.volatilityHeatmap = volatilityHeatmap;
+
+    // ── A-04: Liquidation Level Estimates ─────────────────────────────────────
+    // Mathematical approximation: leverage clusters at 10x, 20x, 50x from current price
+    const leverages = ['50x', '20x', '10x'];
+    const bullLiqs = [
+      (currentPrice * 0.980).toFixed(0), // 50x longs liquidated at -2%
+      (currentPrice * 0.952).toFixed(0), // 20x longs at -4.8%
+      (currentPrice * 0.909).toFixed(0), // 10x longs at -9.1%
+    ];
+    const bearLiqs = [
+      (currentPrice * 1.020).toFixed(0), // 50x shorts at +2%
+      (currentPrice * 1.048).toFixed(0), // 20x shorts at +4.8%
+      (currentPrice * 1.091).toFixed(0), // 10x shorts at +9.1%
+    ];
+    const liquidationLevels = { bullLiqs, bearLiqs, leverages };
+
+    // ── A-07: BTC-ETH 30-day Return Correlation ───────────────────────────────
+    // FIX: previous version mixed two arrays of different lengths (ETHBTC=50,
+    // BTCUSD=200) using the same index → temporally unaligned series → noise.
+    // New approach: align by tail (most recent N days) since both Binance
+    // klines feeds end at the same timestamp when fetched simultaneously.
+    const ethBtcClosesAll = (ethBtcRaw || []).map((c: any[]) => parseFloat(c[4]));
+    let btcEthCorrelation: number | undefined;
+    const N = 30;
+    if (ethBtcClosesAll.length >= N + 1 && dailyCloses.length >= N + 1) {
+      // Take the last N+1 closes from each series (already time-aligned by tail).
+      const btcTail = dailyCloses.slice(-(N + 1));
+      const ratioTail = ethBtcClosesAll.slice(-(N + 1));
+      // Reconstruct ETHUSD = (ETH/BTC) * BTCUSD on the same dates.
+      // Works regardless of `symbol`: we always correlate BTCUSD vs ETHUSD.
+      const ethUsdTail = ratioTail.map((r, i) => r * btcTail[i]);
+      const btcReturns: number[] = [];
+      const ethReturns: number[] = [];
+      for (let i = 1; i < btcTail.length; i++) {
+        if (btcTail[i - 1] > 0 && ethUsdTail[i - 1] > 0) {
+          btcReturns.push((btcTail[i] - btcTail[i - 1]) / btcTail[i - 1]);
+          ethReturns.push((ethUsdTail[i] - ethUsdTail[i - 1]) / ethUsdTail[i - 1]);
+        }
+      }
+      if (btcReturns.length >= 5) {
+        btcEthCorrelation = calculatePearsonCorrelation(btcReturns, ethReturns);
+      }
+    }
+
+    // ── P-02: FMP Macro Prices (real-time when API key is present) ────────────────
+    // Falls back silently to AI-generated macro data when FMP_API_KEY is not set.
+    const FMP_KEY = process.env.FMP_API_KEY;
+    let fmpSp500: MacroAsset | undefined;
+    let fmpDxy: MacroAsset | undefined;
+    let fmpOil: MacroAsset | undefined;
+    let fmpRussell: MacroAsset | undefined;
+    if (FMP_KEY) {
+      try {
+        const [spRaw, dxRaw, clRaw, rutRaw] = await Promise.all([
+          safeFetchJson(`https://financialmodelingprep.com/api/v3/quote/%5EGSPC?apikey=${FMP_KEY}`),
+          safeFetchJson(`https://financialmodelingprep.com/api/v3/quote/DX-Y.NYB?apikey=${FMP_KEY}`),
+          safeFetchJson(`https://financialmodelingprep.com/api/v3/quote/USOIL?apikey=${FMP_KEY}`),
+          safeFetchJson(`https://financialmodelingprep.com/api/v3/quote/%5ERUT?apikey=${FMP_KEY}`),
+        ]);
+        const toMacro = (data: any, invertTrend = false): MacroAsset | undefined => {
+          const q = Array.isArray(data) ? data[0] : data;
+          if (!q?.price) return undefined;
+          const up = (q.changesPercentage ?? 0) > 0;
+          return {
+            price: q.price.toLocaleString(),
+            trend: invertTrend ? (up ? 'BEARISH' : 'BULLISH') : (up ? 'BULLISH' : 'BEARISH'),
+            change24h: up ? 'up' : 'down',
+          };
+        };
+        fmpSp500   = toMacro(spRaw);
+        fmpDxy     = toMacro(dxRaw, true);  // DXY↑ = BEARISH for crypto
+        fmpOil     = toMacro(clRaw, true);  // Oil↑ = inflation risk = BEARISH
+        fmpRussell = toMacro(rutRaw);
+        console.log('[P-02] FMP macro loaded. SPX:', fmpSp500?.price, 'DXY:', fmpDxy?.price);
+      } catch (e) {
+        console.warn('[P-02] FMP fetch failed (non-blocking):', e);
+      }
+    }
+
     return {
         price: currentPrice,
-        priceHistory, // 4H Data
-        // Dominance removed here to let AI populate it via Web Search
+        priceHistory,
+        dominance,               // P-01: Real dominance from CoinGecko
         fearGreedIndex: fearGreedValue,
+        openInterest,            // P-04: Real OI from Binance Futures
+        fundingRate,             // P-04: Real Funding Rate from Binance Futures
+        volumeAnalysis: currentVol > avgVol * 1.5 ? 'High Volume (+50% avg)' : currentVol > avgVol * 1.2 ? 'Above Average' : 'Normal',
+        confluenceScore,         // A-01: Multi-TF Confluence Score
         rsi: { 
             value: parseFloat(rsiValue.toFixed(2)), 
             status: rsiValue > 70 ? 'Overbought' : rsiValue < 30 ? 'Oversold' : 'Neutral',
@@ -297,14 +489,24 @@ export const getTechnicalData = async (symbol: 'BTC' | 'ETH' | 'SOL'): Promise<P
         ethBtcRatio: ethBtcRatioData,
         orderBook: orderBookData,
         volatility: volatilityMetrics,
+        keyLevels: { support: [], resistance: [] }, // populated by AI
         indicators: [
             { name: 'EMA 200 (Daily)', value: sma200Daily.toFixed(2), signal: currentPrice > sma200Daily ? Sentiment.BULLISH : Sentiment.BEARISH, description: 'Long Term Trend' },
-            { name: 'RSI (14)', value: rsiValue.toFixed(2), signal: rsiValue < 30 ? Sentiment.BULLISH : rsiValue > 70 ? Sentiment.BEARISH : Sentiment.NEUTRAL, description: 'Momentum' },
+            { name: 'RSI (14 — 4H)',  value: rsiValue.toFixed(2), signal: rsiValue < 30 ? Sentiment.BULLISH : rsiValue > 70 ? Sentiment.BEARISH : Sentiment.NEUTRAL, description: 'Momentum' },
+            { name: 'MACD (Daily)', value: macdData.hist.toFixed(2), signal: macdData.hist > 0 ? Sentiment.BULLISH : Sentiment.BEARISH, description: 'Trend Momentum' },
+            { name: 'BB Squeeze', value: volatilityMetrics.bollingerBands.squeeze ? 'Active' : 'None', signal: volatilityMetrics.bollingerBands.squeeze ? Sentiment.NEUTRAL : Sentiment.NEUTRAL, description: 'Volatility Compression' },
         ],
         ethSpecificData,
         trendStructure,
         cycles: cycleMetrics,
-        shortTerm: shortTermAnalysis
+        shortTerm: shortTermAnalysis,
+        liquidationLevels,   // A-04
+        btcEthCorrelation,   // A-07
+        // P-02: Real macro from FMP (only when API key is set)
+        ...(fmpSp500   && { sp500:       fmpSp500 }),
+        ...(fmpDxy     && { dxy:         fmpDxy }),
+        ...(fmpOil     && { oil:         fmpOil }),
+        ...(fmpRussell && { russell2000: fmpRussell }),
     };
   } catch (error) {
     console.error("Error fetching technical data:", error);
@@ -312,7 +514,9 @@ export const getTechnicalData = async (symbol: 'BTC' | 'ETH' | 'SOL'): Promise<P
         price: 0,
         priceHistory: [],
         fearGreedIndex: 50,
-        volatility: { atr: 0, bollingerBands: { upper: 0, lower: 0, middle: 0, bandwidth: 0, percentB: 0, squeeze: false }}
+        volatility: { atr: 0, bollingerBands: { upper: 0, lower: 0, middle: 0, bandwidth: 0, percentB: 0, squeeze: false }},
+        cycles: { daysSinceHalving: 0, progressInCycle: 0, distanceFromAth: 0, historicalSeasonality: "N/A" },
+        shortTerm: undefined
     };
   }
 };

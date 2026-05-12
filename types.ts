@@ -52,14 +52,16 @@ export interface OrderBookAnalysis {
 }
 
 export interface VolatilityMetrics {
-  atr: number; // Average True Range in USD
+  atr: number;
+  atrRatio?: number; // A-03: currentATR / avgATR30d. >1.5=High, <0.7=Compressed
+  volatilityHeatmap?: 'Explosive' | 'High' | 'Normal' | 'Compressed'; // A-03: human label
   bollingerBands: {
     upper: number;
     middle: number;
     lower: number;
-    bandwidth: number; // (Upper - Lower) / Middle
-    percentB: number; // Posizione del prezzo nelle bande
-    squeeze: boolean; // True se la volatilità è compressa
+    bandwidth: number;
+    percentB: number;
+    squeeze: boolean;
   };
 }
 
@@ -118,6 +120,7 @@ export interface Candle {
 
 export interface TechnicalAnalysis {
   price: number;
+  confluenceScore?: number; // 0-100: 0=Strong Bearish, 50=Neutral, 100=Strong Bullish
   priceHistory?: Candle[]; // Changed to Candle array for TradingView
   dominance: string;
   fearGreedIndex: number;
@@ -160,6 +163,10 @@ export interface TechnicalAnalysis {
   shortTerm?: ShortTermAnalysis; // NEW ISOLATED 4H ANALYSIS
   onChain?: OnChainMetrics;
   cycles?: CycleMetrics;
+  // A-04: Estimated liquidation clusters (mathematical approximation)
+  liquidationLevels?: { bullLiqs: string[]; bearLiqs: string[]; leverages: string[] };
+  // A-07: 30-day Pearson correlation between BTC and ETH daily returns
+  btcEthCorrelation?: number;
 }
 
 export interface TradeSetup {
@@ -172,6 +179,7 @@ export interface TradeSetup {
   rationale: string;
   riskLevel: 'Alto' | 'Medio' | 'Basso';
   confidenceScore: number; // 0-100 Score di confluenza tecnica
+  riskReward?: string; // e.g. "2.5:1"
 }
 
 export interface ChecklistItem {

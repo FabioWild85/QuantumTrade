@@ -254,8 +254,8 @@ export const TechnicalPanel: React.FC<Props> = ({ technical, asset }) => {
           </div>
       )}
 
-      {/* 3. STRUCTURE & ROTATION ROW */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      {/* 3. STRUCTURE, ROTATION & CORRELATION ROW */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           
           {/* Market Structure Card */}
           {technical.trendStructure && (
@@ -270,7 +270,7 @@ export const TechnicalPanel: React.FC<Props> = ({ technical, asset }) => {
                     </span>
                 </div>
                 
-                <div className="grid grid-cols-2 gap-4">
+                <div className="grid grid-cols-2 gap-4 mb-4">
                     <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-100 dark:border-white/5 text-center">
                         <div className="text-[10px] font-bold text-slate-400 uppercase mb-1">Weekly Trend</div>
                         <div className={`text-sm font-bold ${technical.trendStructure.weekly === 'Bullish' ? 'text-emerald-600' : 'text-rose-600'}`}>
@@ -284,6 +284,33 @@ export const TechnicalPanel: React.FC<Props> = ({ technical, asset }) => {
                         </div>
                     </div>
                 </div>
+
+                {/* A-01: Confluence Score */}
+                {technical.confluenceScore !== undefined && (
+                  <div className="mt-2 p-3 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-100 dark:border-white/5">
+                    <div className="flex justify-between items-center mb-2">
+                      <span className="text-[10px] font-bold text-slate-400 uppercase">Confluence Score</span>
+                      <span className={`text-xs font-bold px-2 py-0.5 rounded ${
+                        technical.confluenceScore >= 70 ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400' :
+                        technical.confluenceScore >= 40 ? 'bg-orange-100 text-orange-700 dark:bg-orange-500/10 dark:text-orange-400' :
+                        'bg-rose-100 text-rose-700 dark:bg-rose-500/10 dark:text-rose-400'
+                      }`}>
+                        {technical.confluenceScore >= 70 ? 'Bullish' : technical.confluenceScore >= 40 ? 'Neutral' : 'Bearish'}
+                      </span>
+                    </div>
+                    <div className="relative h-2.5 w-full bg-gradient-to-r from-rose-500 via-orange-400 to-emerald-500 rounded-full overflow-hidden">
+                      <div
+                        className="absolute top-0 bottom-0 bg-black/20 dark:bg-white/20 rounded-full"
+                        style={{ left: `${technical.confluenceScore}%`, width: '3px', transform: 'translateX(-50%)' }}
+                      />
+                    </div>
+                    <div className="flex justify-between text-[10px] font-mono text-slate-400 mt-1">
+                      <span>Bearish</span>
+                      <span className="font-bold text-slate-900 dark:text-white">{technical.confluenceScore}/100</span>
+                      <span>Bullish</span>
+                    </div>
+                  </div>
+                )}
             </div>
           )}
 
@@ -298,15 +325,15 @@ export const TechnicalPanel: React.FC<Props> = ({ technical, asset }) => {
                         <svg className="w-4 h-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" /></svg>
                         Capital Rotation
                     </h4>
-                    <span className={`text-[10px] font-bold px-2 py-1 rounded ${technical.ethBtcRatio.trend === 'Bullish' ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400' : 'bg-orange-100 text-orange-700 dark:bg-orange-500/10 dark:text-orange-400'}`}>
-                        {technical.ethBtcRatio.trend === 'Bullish' ? 'Risk On' : 'BTC Season'}
+                    <span className={`text-[10px] font-bold px-2 py-1 rounded ${technical.ethBtcRatio.trend === 'Bullish' ? 'bg-blue-100 text-blue-700 dark:bg-blue-500/10 dark:text-blue-400' : 'bg-orange-100 text-orange-700 dark:bg-orange-500/10 dark:text-orange-400'}`}>
+                        {technical.ethBtcRatio.trend === 'Bullish' ? 'Alt Season' : 'BTC Season'}
                     </span>
                 </div>
 
-                <div className="flex items-end justify-between">
+                <div className="flex items-end justify-between mb-4">
                      <div>
                         <div className="text-[10px] font-bold text-slate-400 uppercase mb-1">ETH / BTC</div>
-                        <div className="text-xl font-mono font-bold text-slate-900 dark:text-white">{technical.ethBtcRatio.value?.toFixed(5)}</div>
+                        <div className="text-2xl font-mono font-bold text-slate-900 dark:text-white">{technical.ethBtcRatio.value?.toFixed(5)}</div>
                      </div>
                      <div className="text-right">
                         <div className="text-[10px] font-bold text-slate-400 uppercase mb-1">Signal</div>
@@ -314,17 +341,60 @@ export const TechnicalPanel: React.FC<Props> = ({ technical, asset }) => {
                      </div>
                 </div>
                 
-                {/* Visual Bar */}
-                <div className="w-full h-1.5 bg-slate-100 dark:bg-slate-700 rounded-full mt-4 overflow-hidden flex">
-                    <div style={{ width: technical.ethBtcRatio.trend === 'Bullish' ? '70%' : '30%' }} className="h-full bg-blue-500 transition-all duration-500"></div>
-                    <div className="flex-1 h-full bg-orange-500 transition-all duration-500"></div>
+                {/* Visual Bar - Simplified and consistent with Correlation card style */}
+                <div className="w-full h-2 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden flex mb-2">
+                    <div style={{ width: `${Math.min(100, (technical.ethBtcRatio.value / 0.1) * 100)}%` }} className={`h-full transition-all duration-500 ${technical.ethBtcRatio.trend === 'Bullish' ? 'bg-blue-500' : 'bg-orange-500'}`}></div>
                 </div>
+                <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-relaxed mt-2">
+                    {technical.ethBtcRatio.trend === 'Bullish' 
+                      ? 'ETH sta sovraperformando BTC. Probabile rotazione verso Altcoins.' 
+                      : 'BTC sta dominando il mercato. Le Altcoins tendono ad essere più deboli.'}
+                </p>
             </button>
+          )}
+
+          {/* A-07: BTC-ETH 30-day Correlation */}
+          {technical.btcEthCorrelation !== undefined && (
+            <div className="elegant-card p-6 flex flex-col justify-between">
+              <div className="flex items-center justify-between mb-4">
+                <h4 className="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                  <svg className="w-4 h-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" /></svg>
+                  BTC / ETH Correlation
+                </h4>
+                <span className="text-[10px] font-bold text-slate-400 px-2 py-1 bg-slate-100 dark:bg-white/5 rounded">30 Days</span>
+              </div>
+              <div className="flex items-end justify-between mb-3">
+                <div>
+                  <div className="text-[10px] font-bold text-slate-400 uppercase mb-1">Pearson r</div>
+                  <div className={`text-2xl font-mono font-bold ${
+                    technical.btcEthCorrelation >= 0.85 ? 'text-emerald-600 dark:text-emerald-400' :
+                    technical.btcEthCorrelation >= 0.6  ? 'text-orange-500' :
+                    'text-rose-500'
+                  }`}>{technical.btcEthCorrelation.toFixed(2)}</div>
+                </div>
+                <div className="text-right">
+                  <div className="text-[10px] font-bold text-slate-400 uppercase mb-1">Regime</div>
+                  <div className="text-sm font-bold text-slate-700 dark:text-slate-300">
+                    {technical.btcEthCorrelation >= 0.85 ? 'Risk-On' : technical.btcEthCorrelation >= 0.6 ? 'Moderate' : 'Decorrelated'}
+                  </div>
+                </div>
+              </div>
+              <div className="w-full h-2 bg-gradient-to-r from-rose-500 via-orange-400 to-emerald-500 rounded-full relative">
+                <div className="absolute top-[-4px] w-2 h-4 bg-slate-900 dark:bg-white border-2 border-white dark:border-slate-900 rounded shadow" style={{ left: `${((technical.btcEthCorrelation + 1) / 2) * 100}%`, transform: 'translateX(-50%)' }} />
+              </div>
+              <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-3 leading-relaxed">
+                {technical.btcEthCorrelation >= 0.85
+                  ? 'Alta correlazione — BTC e ETH si muovono insieme. Altseason improbabile ora.'
+                  : technical.btcEthCorrelation >= 0.6
+                  ? 'Correlazione moderata — possibile rotazione selettiva verso ETH.'
+                  : 'Bassa correlazione — BTC si muove indipendentemente. ETH può divergere.'}
+              </p>
+            </div>
           )}
       </div>
 
       {/* 4. INDICATORS GRID */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
             {/* RSI */}
             <button 
                 onClick={() => technical.rsi && setSelectedItem({ title: 'RSI (Relative Strength Index)', signal: technical.rsi.status, desc: getIndicatorExplanation('RSI', technical.rsi.value > 50 ? Sentiment.BULLISH : Sentiment.BEARISH) })}
@@ -354,35 +424,53 @@ export const TechnicalPanel: React.FC<Props> = ({ technical, asset }) => {
                 </span>
             </button>
 
-            {/* Volatility */}
+            {/* A-03: ATR Volatility Heatmap */}
             <div className="elegant-card p-4 flex flex-col items-center justify-center text-center">
-                <span className="text-[10px] font-bold text-slate-400 uppercase mb-2">Volatility (ATR)</span>
+                <span className="text-[10px] font-bold text-slate-400 uppercase mb-2">Volatility Regime</span>
                 <span className="text-lg font-mono font-bold text-slate-900 dark:text-white mb-1">${technical.volatility.atr}</span>
-                <span className={`text-[10px] font-bold px-2 py-0.5 rounded ${technical.volatility.bollingerBands.squeeze ? 'bg-orange-100 text-orange-700 dark:bg-orange-500/10 dark:text-orange-400' : 'bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-400'}`}>
-                    {technical.volatility.bollingerBands.squeeze ? 'SQUEEZE' : 'Normal'}
+                <span className={`text-[10px] font-bold px-2 py-0.5 rounded mb-1 ${
+                  technical.volatility.volatilityHeatmap === 'Explosive' ? 'bg-red-100 text-red-700 dark:bg-red-500/10 dark:text-red-400' :
+                  technical.volatility.volatilityHeatmap === 'High'      ? 'bg-orange-100 text-orange-700 dark:bg-orange-500/10 dark:text-orange-400' :
+                  technical.volatility.volatilityHeatmap === 'Compressed'? 'bg-blue-100 text-blue-700 dark:bg-blue-500/10 dark:text-blue-400' :
+                  'bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-400'
+                }`}>
+                  {technical.volatility.volatilityHeatmap ?? (technical.volatility.bollingerBands.squeeze ? 'SQUEEZE' : 'Normal')}
                 </span>
-            </div>
-
-             {/* Flows */}
-             <div className="elegant-card p-4 flex flex-col items-center justify-center text-center">
-                <span className="text-[10px] font-bold text-slate-400 uppercase mb-2">Daily Net Flow</span>
-                {technical.etfNetInflow ? (
-                    <>
-                    <span className={`text-lg font-mono font-bold mb-1 ${technical.etfNetInflow.netInflow > 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
-                        {technical.etfNetInflow.netInflow > 0 ? '+' : ''}{technical.etfNetInflow.netInflow}M
-                    </span>
-                    <span className="text-[9px] text-slate-400 font-bold uppercase">Farside Data (USD)</span>
-                    </>
-                ) : (
-                    <span className="text-xs text-slate-400 italic">Loading Farside...</span>
+                {technical.volatility.atrRatio !== undefined && (
+                  <span className="text-[9px] text-slate-400 font-mono">Ratio: {technical.volatility.atrRatio}x avg</span>
                 )}
             </div>
+
+             {/* P-04: Open Interest (Real — Binance Futures) */}
+             <div className="elegant-card p-4 flex flex-col items-center justify-center text-center">
+                <span className="text-[10px] font-bold text-slate-400 uppercase mb-2">Open Interest</span>
+                <span className={`text-lg font-mono font-bold mb-1 ${
+                  technical.openInterest !== 'N/A' ? 'text-slate-900 dark:text-white' : 'text-slate-400'
+                }`}>{technical.openInterest || 'N/A'}</span>
+                <span className="text-[9px] text-slate-400 font-bold uppercase">Binance Futures</span>
+             </div>
+
+             {/* P-04: Funding Rate (Real — Binance Futures) */}
+             <div className="elegant-card p-4 flex flex-col items-center justify-center text-center">
+                <span className="text-[10px] font-bold text-slate-400 uppercase mb-2">Funding Rate</span>
+                <span className={`text-lg font-mono font-bold mb-1 ${
+                  technical.fundingRate && technical.fundingRate.startsWith('+') ? 'text-emerald-600 dark:text-emerald-400' :
+                  technical.fundingRate && technical.fundingRate.startsWith('-') ? 'text-rose-600 dark:text-rose-400' :
+                  'text-slate-400'
+                }`}>{technical.fundingRate || 'N/A'}</span>
+                <span className="text-[9px] text-slate-400 font-bold uppercase">8h Perpetual</span>
+             </div>
       </div>
 
       {/* 5. ON-CHAIN & CYCLICAL MODELS */}
       {(asset === 'BTC' || asset === 'ETH') && technical.onChain && technical.cycles && (
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            
+            {/* AI Estimate Disclaimer */}
+            <div className="md:col-span-3 flex items-center gap-2 px-3 py-2 bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/20 rounded-lg">
+              <svg className="w-3.5 h-3.5 text-amber-500 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.17 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 5zm0 9a1 1 0 100-2 1 1 0 000 2z" clipRule="evenodd" /></svg>
+              <span className="text-[10px] font-semibold text-amber-700 dark:text-amber-400">On-Chain Estimates — MVRV Z-Score and NUPL are stime basate su analisi AI e non dati on-chain verificati da Glassnode/CryptoQuant. Usare come indicazione qualitativa.</span>
+            </div>
+
             {/* MVRV Gauge */}
             <button 
                 onClick={() => setSelectedItem({ title: 'MVRV Z-Score', signal: 'Valuation', desc: getOnChainExplanation('MVRV', technical.onChain?.mvrvZScore) })}
@@ -474,6 +562,34 @@ export const TechnicalPanel: React.FC<Props> = ({ technical, asset }) => {
                 <span className="text-xs font-mono font-bold text-emerald-600 dark:text-emerald-400">{technical.orderBook.bidPressure.toFixed(0)}%</span>
                 <span className="text-xs font-mono font-bold text-rose-600 dark:text-rose-400">{technical.orderBook.askPressure.toFixed(0)}%</span>
             </div>
+        </div>
+      )}
+
+      {/* A-04: Liquidation Level Estimates */}
+      {technical.liquidationLevels && (
+        <div className="elegant-card p-5">
+          <div className="flex items-center justify-between mb-5">
+            <span className="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider flex items-center gap-2">
+              <svg className="w-4 h-4 text-rose-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 18.657A8 8 0 016.343 7.343S7 9 9 10c0-2 .5-5 2.986-7C14 5 16.09 5.777 17.656 7.343A7.975 7.975 0 0120 13a7.975 7.975 0 01-2.343 5.657z" /></svg>
+              Estimated Liquidation Zones
+            </span>
+            <span className="text-[9px] font-medium text-slate-400 px-2 py-0.5 bg-slate-100 dark:bg-white/5 rounded">Math approx — not live exchange data</span>
+          </div>
+          <div className="grid grid-cols-3 gap-4">
+            {technical.liquidationLevels.leverages.map((lev, i) => (
+              <div key={i} className="flex flex-col gap-2">
+                <div className="p-3 rounded-xl bg-rose-50 dark:bg-rose-500/10 border border-rose-100 dark:border-rose-500/20 text-center">
+                  <div className="text-[9px] font-bold text-rose-400 uppercase mb-1">{lev} Shorts</div>
+                  <div className="text-sm font-mono font-bold text-rose-600 dark:text-rose-400">${parseInt(technical.liquidationLevels.bearLiqs[i]).toLocaleString()}</div>
+                </div>
+                <div className="py-1 text-center text-[10px] font-bold text-slate-400 uppercase border-y border-dashed border-slate-200 dark:border-white/10">{lev} Leverage</div>
+                <div className="p-3 rounded-xl bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-100 dark:border-emerald-500/20 text-center">
+                  <div className="text-[9px] font-bold text-emerald-500 uppercase mb-1">{lev} Longs</div>
+                  <div className="text-sm font-mono font-bold text-emerald-600 dark:text-emerald-400">${parseInt(technical.liquidationLevels.bullLiqs[i]).toLocaleString()}</div>
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
       )}
 

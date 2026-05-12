@@ -36,13 +36,23 @@ export const TradeSignals: React.FC<Props> = ({ signals }) => {
                        </span>
                    </div>
 
-                   {/* Right: Confidence - Full width separator on mobile */}
-                   <div className="flex items-center gap-2 w-full md:w-auto border-t md:border-t-0 border-slate-200 dark:border-white/5 pt-3 md:pt-0">
-                       <span className="text-[10px] font-bold text-slate-400 uppercase whitespace-nowrap">Confidence</span>
-                       <div className="flex-1 md:flex-none w-24 h-2 bg-white dark:bg-black/20 rounded-full overflow-hidden">
-                           <div className={`h-full ${isLong ? 'bg-emerald-500' : 'bg-rose-500'}`} style={{ width: `${signal.confidenceScore}%` }}></div>
+                    {/* Right: Confidence + R:R */}
+                   <div className="flex items-center gap-4 w-full md:w-auto border-t md:border-t-0 border-slate-200 dark:border-white/5 pt-3 md:pt-0">
+                       <div className="flex items-center gap-2">
+                           <span className="text-[10px] font-bold text-slate-400 uppercase whitespace-nowrap">Confidence</span>
+                           <div className="flex-1 md:flex-none w-24 h-2 bg-white dark:bg-black/20 rounded-full overflow-hidden">
+                               <div className={`h-full ${isLong ? 'bg-emerald-500' : 'bg-rose-500'}`} style={{ width: `${signal.confidenceScore}%` }}></div>
+                           </div>
+                           <span className={`text-xs font-bold ${isLong ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>{signal.confidenceScore}%</span>
                        </div>
-                       <span className={`text-xs font-bold ${isLong ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>{signal.confidenceScore}%</span>
+                       {signal.riskReward && signal.riskReward !== 'N/A' && (
+                         <div className="flex items-center gap-1.5 px-2 py-1 bg-white/60 dark:bg-black/20 rounded-lg border border-slate-200 dark:border-white/10">
+                           <span className="text-[10px] font-bold text-slate-400 uppercase">R:R</span>
+                           <span className={`text-xs font-bold font-mono ${parseFloat(signal.riskReward) >= 2 ? 'text-emerald-600 dark:text-emerald-400' : 'text-orange-600 dark:text-orange-400'}`}>
+                             {signal.riskReward}
+                           </span>
+                         </div>
+                       )}
                    </div>
                </div>
 
@@ -76,10 +86,17 @@ export const TradeSignals: React.FC<Props> = ({ signals }) => {
 
                        <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-100 dark:border-white/5">
                            <div className="flex items-center gap-2 mb-1">
-                               <div className="w-2 h-2 rounded-full bg-orange-500"></div>
-                               <span className="text-xs font-bold text-slate-400 uppercase">Risk Level</span>
+                               <div className={`w-2 h-2 rounded-full ${signal.riskReward && parseFloat(signal.riskReward) >= 2 ? 'bg-emerald-500' : 'bg-orange-500'}`}></div>
+                               <span className="text-xs font-bold text-slate-400 uppercase">Risk / Reward</span>
                            </div>
-                           <span className="text-lg font-bold text-slate-900 dark:text-white">{signal.riskLevel}</span>
+                           <span className="text-lg font-mono font-bold text-slate-900 dark:text-white">
+                             {signal.riskReward || signal.riskLevel}
+                           </span>
+                           {signal.riskReward && signal.riskReward !== 'N/A' && (
+                             <div className={`text-[10px] font-bold mt-1 ${parseFloat(signal.riskReward) >= 2 ? 'text-emerald-500' : 'text-orange-500'}`}>
+                               {parseFloat(signal.riskReward) >= 2 ? '✓ Favorable ratio' : '⚠ Below 2:1 min'}
+                             </div>
+                           )}
                        </div>
                    </div>
 

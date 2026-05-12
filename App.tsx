@@ -20,6 +20,7 @@ const App: React.FC = () => {
   const [loadingStep, setLoadingStep] = useState<string>('');
   const [analyzedAsset, setAnalyzedAsset] = useState<'BTC' | 'ETH' | 'SOL' | null>(null);
   const [isDarkMode, setIsDarkMode] = useState<boolean>(false);
+  const [forceRefreshMode, setForceRefreshMode] = useState<boolean>(false);
 
   // Handle Dark Mode Toggle
   const toggleTheme = () => setIsDarkMode(!isDarkMode);
@@ -110,8 +111,12 @@ const App: React.FC = () => {
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-8 max-w-4xl mx-auto">
                     {/* Bitcoin Card */}
                     <div 
-                      onClick={() => handleGenerateAnalysis('BTC', false)}
-                      className="group cursor-pointer bg-white dark:bg-[#151E32] rounded-3xl p-8 shadow-elegant hover:shadow-elevation dark:shadow-none dark:hover:bg-[#1E293B] border border-slate-200 dark:border-white/5 transition-all duration-300 transform hover:-translate-y-1"
+                      onClick={() => handleGenerateAnalysis('BTC', forceRefreshMode)}
+                      className={`group cursor-pointer bg-white dark:bg-[#151E32] rounded-3xl p-8 shadow-elegant hover:shadow-elevation dark:shadow-none dark:hover:bg-[#1E293B] border transition-all duration-300 transform hover:-translate-y-1 ${
+                        forceRefreshMode
+                          ? 'border-amber-400 dark:border-amber-500/60 ring-2 ring-amber-400/30 dark:ring-amber-500/20'
+                          : 'border-slate-200 dark:border-white/5'
+                      } cursor-pointer`}
                     >
                         <div className="flex items-center justify-between mb-6">
                            <div className="p-4 bg-orange-50 dark:bg-orange-500/10 rounded-2xl group-hover:scale-110 transition-transform duration-300">
@@ -133,8 +138,12 @@ const App: React.FC = () => {
                     
                     {/* Ethereum Card */}
                      <div 
-                        onClick={() => handleGenerateAnalysis('ETH', false)}
-                        className="group cursor-pointer bg-white dark:bg-[#151E32] rounded-3xl p-8 shadow-elegant hover:shadow-elevation dark:shadow-none dark:hover:bg-[#1E293B] border border-slate-200 dark:border-white/5 transition-all duration-300 transform hover:-translate-y-1"
+                        onClick={() => handleGenerateAnalysis('ETH', forceRefreshMode)}
+                        className={`group cursor-pointer bg-white dark:bg-[#151E32] rounded-3xl p-8 shadow-elegant hover:shadow-elevation dark:shadow-none dark:hover:bg-[#1E293B] border transition-all duration-300 transform hover:-translate-y-1 ${
+                          forceRefreshMode
+                            ? 'border-amber-400 dark:border-amber-500/60 ring-2 ring-amber-400/30 dark:ring-amber-500/20'
+                            : 'border-slate-200 dark:border-white/5'
+                        } cursor-pointer`}
                      >
                         <div className="flex items-center justify-between mb-6">
                            <div className="p-4 bg-blue-50 dark:bg-blue-500/10 rounded-2xl group-hover:scale-110 transition-transform duration-300">
@@ -154,8 +163,12 @@ const App: React.FC = () => {
 
                     {/* Solana Card */}
                     <div 
-                        onClick={() => handleGenerateAnalysis('SOL', false)}
-                        className="group cursor-pointer bg-white dark:bg-[#151E32] rounded-3xl p-8 shadow-elegant hover:shadow-elevation dark:shadow-none dark:hover:bg-[#1E293B] border border-slate-200 dark:border-white/5 transition-all duration-300 transform hover:-translate-y-1"
+                        onClick={() => handleGenerateAnalysis('SOL', forceRefreshMode)}
+                        className={`group cursor-pointer bg-white dark:bg-[#151E32] rounded-3xl p-8 shadow-elegant hover:shadow-elevation dark:shadow-none dark:hover:bg-[#1E293B] border transition-all duration-300 transform hover:-translate-y-1 ${
+                          forceRefreshMode
+                            ? 'border-amber-400 dark:border-amber-500/60 ring-2 ring-amber-400/30 dark:ring-amber-500/20'
+                            : 'border-slate-200 dark:border-white/5'
+                        } cursor-pointer`}
                      >
                         <div className="flex items-center justify-between mb-6">
                            {/* Official Solana Gradient Background */}
@@ -176,6 +189,36 @@ const App: React.FC = () => {
                            High Throughput e Momentum Analysis.
                         </p>
                     </div>
+                  </div>
+
+                  {/* DEV: Force Refresh Toggle */}
+                  <div className="mt-12 flex justify-center">
+                    <button
+                      onClick={() => setForceRefreshMode(prev => !prev)}
+                      className={`group flex items-center gap-3 px-5 py-2.5 rounded-full border text-sm font-medium transition-all duration-300 ${
+                        forceRefreshMode
+                          ? 'bg-amber-50 dark:bg-amber-500/10 border-amber-300 dark:border-amber-500/40 text-amber-700 dark:text-amber-400 shadow-sm'
+                          : 'bg-white dark:bg-white/5 border-slate-200 dark:border-white/10 text-slate-400 dark:text-slate-500 hover:border-slate-300 dark:hover:border-white/20 hover:text-slate-600 dark:hover:text-slate-400'
+                      }`}
+                    >
+                      <span className={`relative inline-flex items-center w-9 h-5 rounded-full transition-colors duration-300 ${
+                        forceRefreshMode ? 'bg-amber-400 dark:bg-amber-500' : 'bg-slate-200 dark:bg-slate-700'
+                      }`}>
+                        <span className={`absolute left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform duration-300 ${
+                          forceRefreshMode ? 'translate-x-4' : 'translate-x-0'
+                        }`} />
+                      </span>
+                      <svg className={`w-3.5 h-3.5 transition-transform duration-500 ${forceRefreshMode ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                      </svg>
+                      <span>
+                        {forceRefreshMode ? (
+                          <span>Fresh Scan <span className="font-bold text-amber-600 dark:text-amber-400">ATTIVO</span> — bypass cache</span>
+                        ) : (
+                          <span>Dev: abilita Fresh Scan</span>
+                        )}
+                      </span>
+                    </button>
                   </div>
                </div>
             </div>

@@ -2,263 +2,354 @@ import { GoogleGenAI } from "@google/genai";
 import { MarketReport, Sentiment, TechnicalAnalysis } from "../types";
 import { cacheService } from "./cacheService";
 
-// Initialize the client
+// ─── SDK Init ─────────────────────────────────────────────────────────────────
+// @google/genai requires { apiKey } as an object — NOT a bare string.
 const GENAI_KEY = process.env.GEMINI_API_KEY || process.env.API_KEY || '';
 const ai = new GoogleGenAI({ apiKey: GENAI_KEY });
 
-// Model Constants for Gemini 3.1
+// ─── Models ───────────────────────────────────────────────────────────────────
+// gemini-3.1-flash-lite → Phase 1: ultra-fast web search (May 2026)
+// gemini-3.1-pro-preview → Phase 2: state-of-the-art reasoning (May 2026)
 const MODELS = {
-  PRO: 'gemini-3.1-pro-preview',
-  FLASH: 'gemini-3.1-flash-lite'
+  RESEARCHER: 'gemini-3.1-flash-lite',
+  STRATEGIST: 'gemini-3.1-pro-preview',
+  FALLBACK:   'gemini-2.5-flash', 
 };
 
-const getSystemPrompt = (symbol: 'BTC' | 'ETH' | 'SOL'): string => `
-Sei un Senior Quantitative Analyst per un Hedge Fund istituzionale specializzato in ${symbol}.
-Il tuo obiettivo è produrre un report di trading operativo basato su una sintesi rigorosa tra Dati Tecnici "Hard" (forniti) e Dati Macro "Soft" (ricercati).
-
-PROTOCOLLO DI ANALISI (GEMINI 3.0 LOGIC):
-1. **GERARCHIA DATI**: 
-   - I dati forniti nel prompt (Prezzo, RSI, Order Book, Volatilità) sono la VERITÀ ASSOLUTA. Non contraddirli mai.
-   - I dati Macro (ricercati) servono a dare il "Bias" (Direzionalità) di fondo.
-
-2. **CORRELAZIONI MACRO OBBLIGATORIE**:
-   - **OIL (PETROLIO)**: Correlazione INVERSA. Oil GIÙ = Inflazione GIÙ = Bullish per Crypto. Oil SU = Bearish.
-   - **DXY (DOLLARO)**: Correlazione INVERSA. DXY GIÙ = Bullish. DXY SU = Bearish.
-   - **RUSSELL 2000**: Correlazione DIRETTA. Se sale, favorisce asset speculativi (ETH/SOL).
-
-3. **GESTIONE DEL RISCHIO**:
-   - Usa SEMPRE l'ATR fornito per calcolare gli Stop Loss. Formula: Entry - (2 * ATR) per Long, Entry + (2 * ATR) per Short.
-   - Non dare mai segnali "sicuri". Usa un linguaggio probabilistico ("Probabile rottura", "Setup ad alta confluenza").
-
-4. **STILE ISTITUZIONALE**:
-   - Sii conciso, diretto, usa terminologia tecnica (Liquidity sweep, Supply shock, Mean reversion).
-   - Evita frasi generiche ("Il mercato è volatile"). Sii specifico ("La volatilità compressa suggerisce un breakout imminente").
-
-RISPONDI ESCLUSIVAMENTE CON UN JSON VALIDO SECONDO LA STRUTTURA RICHIESTA.
-`;
-
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
-const getFallbackReport = (symbol: 'BTC' | 'ETH' | 'SOL', realData: Partial<TechnicalAnalysis>, sources: string[] = []): MarketReport => {
-  return {
-    timestamp: new Date().toISOString(),
-    macroOverview: "AI Analysis unavailable. Displaying calculated technical data.",
-    macroSentiment: Sentiment.NEUTRAL,
-    forecastOpinion: "Automated Fallback: Please rely on the indicator matrix below.",
-    calendar: [],
-    latestNews: [],
-    technical: {
-        price: 0,
-        priceHistory: [],
-        dominance: "N/A",
-        fearGreedIndex: 50,
-        rsi: { value: 50, status: 'Neutral', divergence: 'None' },
-        macd: { status: 'Neutral', histogram: 0 },
-        openInterest: "N/A",
-        fundingRate: "N/A",
-        volumeAnalysis: "N/A",
-        keyLevels: { support: [], resistance: [] },
-        ...realData, 
-        ethBtcRatio: realData.ethBtcRatio || { value: 0, trend: 'Neutral', signal: 'N/A' },
-        orderBook: realData.orderBook || { bidPressure: 50, askPressure: 50, imbalance: 'Neutral', wallPrice: 0, wallType: 'Ask', totalAskVol: 0, totalBidVol: 0 },
-        volatility: realData.volatility || { atr: 0, bollingerBands: { upper: 0, middle: 0, lower: 0, bandwidth: 0, percentB: 0, squeeze: false } },
-        indicators: realData.indicators || [],
-        trendStructure: realData.trendStructure,
-        cycles: realData.cycles,
-        shortTerm: realData.shortTerm,
-        onChain: { mvrvZScore: 1.5, nupl: 0.4, activeAddressesTrend: 'Stable', longTermHolderSupplyChange: 'Stable' } 
-    },
-    signals: [],
-    checklist: [],
-    trendReversal: {
-        bullishScenario: { title: "N/A", condition: "N/A", keyLevel: "N/A", probability: "Bassa" },
-        bearishScenario: { title: "N/A", condition: "N/A", keyLevel: "N/A", probability: "Bassa" }
-    },
-    sources: sources
-  };
-};
+/** A-02: Automatically compute Risk/Reward ratio from signal price strings. */
+function calculateRR(signal: any): string {
+  try {
+    const extractPrice = (str: string): number => {
+      if (!str) return 0;
+      const nums = str.replace(/,/g, '').match(/\d+\.?\d*/g);
+      if (!nums) return 0;
+      const prices = nums.map(Number).filter(n => n > 100);
+      return prices.length ? prices[0] : 0;
+    };
+    const entry = extractPrice(signal.entryZone);
+    const sl    = extractPrice(signal.stopLoss);
+    const tp    = extractPrice(signal.takeProfit?.[0] ?? '');
+    if (entry && sl && tp) {
+      const risk   = Math.abs(entry - sl);
+      const reward = Math.abs(tp - entry);
+      if (risk > 0) return `${(reward / risk).toFixed(1)}:1`;
+    }
+  } catch {}
+  return 'N/A';
+}
 
-export const generateMarketAnalysis = async (symbol: 'BTC' | 'ETH' | 'SOL', realData: Partial<TechnicalAnalysis>, forceRefresh: boolean = false): Promise<MarketReport> => {
-  
+/** Extract the first valid JSON object from a model response string. */
+function extractJson(text: string): any {
+  const mdMatch = text.match(/```json\s*([\s\S]*?)\s*```/);
+  const raw = mdMatch ? mdMatch[1] : text;
+  const first = raw.indexOf('{');
+  const last  = raw.lastIndexOf('}');
+  if (first === -1 || last === -1) throw new Error('No JSON found in response');
+  return JSON.parse(raw.substring(first, last + 1));
+}
+
+/** Extract grounding source URLs from a Gemini response. */
+function extractSources(response: any): string[] {
+  const chunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks ?? [];
+  return chunks
+    .map((c: any) => c.web?.uri as string | undefined)
+    .filter((u: string | undefined): u is string => Boolean(u && u.trim()));
+}
+
+// ─── Fallback report (shown when AI is unreachable) ───────────────────────────
+const getFallbackReport = (
+  symbol: 'BTC' | 'ETH' | 'SOL',
+  realData: Partial<TechnicalAnalysis>,
+): MarketReport => ({
+  timestamp: new Date().toISOString(),
+  macroOverview: 'AI Analysis unavailable. Displaying calculated technical data only.',
+  macroSentiment: Sentiment.NEUTRAL,
+  forecastOpinion: 'Automated Fallback: rely on the indicator matrix below.',
+  calendar: [],
+  latestNews: [],
+  technical: {
+    price: 0,
+    priceHistory: [],
+    dominance: 'N/A',
+    fearGreedIndex: 50,
+    rsi: { value: 50, status: 'Neutral', divergence: 'None' },
+    macd: { status: 'Neutral', histogram: 0 },
+    openInterest: 'N/A',
+    fundingRate: 'N/A',
+    volumeAnalysis: 'N/A',
+    keyLevels: { support: [], resistance: [] },
+    ethBtcRatio: { value: 0, trend: 'Neutral', signal: 'N/A' },
+    orderBook: { bidPressure: 50, askPressure: 50, imbalance: 'Neutral', wallPrice: 0, wallType: 'Ask', totalAskVol: 0, totalBidVol: 0 },
+    volatility: { atr: 0, bollingerBands: { upper: 0, middle: 0, lower: 0, bandwidth: 0, percentB: 0, squeeze: false } },
+    indicators: [],
+    // FIX: don't expose hardcoded MVRV/NUPL in fallback — they would be displayed
+    // as if they were real metrics. Use 0/Stable so the UI clearly shows "no data".
+    onChain: { mvrvZScore: 0, nupl: 0, activeAddressesTrend: 'Stable', longTermHolderSupplyChange: 'Stable' },
+    ...realData,
+    trendStructure: realData.trendStructure,
+    cycles: realData.cycles,
+    shortTerm: realData.shortTerm,
+  },
+  signals: [],
+  checklist: [],
+  trendReversal: {
+    bullishScenario: { title: 'N/A', condition: 'N/A', keyLevel: 'N/A', probability: 'Bassa' },
+    bearishScenario: { title: 'N/A', condition: 'N/A', keyLevel: 'N/A', probability: 'Bassa' },
+  },
+  sources: [],
+});
+
+// ─── PHASE 1: RESEARCHER (Gemini Flash + Google Search) ───────────────────────
+/**
+ * Uses the fast Flash model with Google Search grounding to retrieve
+ * live macro data and news. Runs in ~5–8 s instead of 20+ s.
+ */
+async function fetchMacroResearch(symbol: string): Promise<{ data: any; sources: string[] }> {
+  const prompt = `
+Sei un analista macro. Cerca i seguenti dati LIVE e restituisci un JSON strutturato:
+
+1. MERCATI (prezzi attuali futures):
+   - S&P 500 (US500 Futures)
+   - DXY Dollar Index
+   - Russell 2000
+   - Crude Oil WTI
+
+2. INDICATORI MACRO USA (ultimi dati ufficiali):
+   - Unemployment Rate %
+   - CPI Inflation %
+   - GDP Growth %
+
+3. CRYPTO-SPECIFICI:
+   - BTC Dominance %
+   - ETF daily net flow per ${symbol} (in $M)
+   - SE ${symbol} === 'ETH': Cerca Gas Fees (Gwei), Staking APY %, e ETH Burned nelle ultime 24h.
+
+4. NEWS: Le ultime 4 notizie rilevanti per ${symbol} da CoinDesk o CoinTelegraph.
+
+5. CALENDARIO: I 3 eventi macro più importanti dei prossimi 7 giorni.
+
+Restituisci SOLO un JSON con questa struttura:
+{
+  "sp500": { "price": "...", "trend": "BULLISH/BEARISH" },
+  "dxy": { "price": "...", "trend": "BULLISH/BEARISH" },
+  "russell2000": { "price": "...", "trend": "BULLISH/BEARISH" },
+  "oil": { "price": "...", "trend": "BULLISH/BEARISH" },
+  "unemployment": "...",
+  "inflation": "...",
+  "gdp": "...",
+  "dominance": "...",
+  "etfNetFlow": 0,
+  "ethNetwork": { "gas": "...", "stakingApy": "...", "burned24h": "..." },
+  "news": [
+    { "title": "...", "source": "CoinDesk/CoinTelegraph", "sentiment": "Positive/Negative/Neutral", "time": "2h ago" }
+  ],
+  "calendar": [
+    { "date": "YYYY-MM-DD", "event": "...", "impact": "High/Medium" }
+  ]
+}
+`;
+
+  try {
+    const response = await ai.models.generateContent({
+      model: MODELS.RESEARCHER,
+      contents: prompt,
+      config: { tools: [{ googleSearch: {} }] },
+    });
+    const text = response.text ?? '';
+    const sources = extractSources(response);
+    const data = extractJson(text);
+    console.log(`Research OK (${MODELS.RESEARCHER}) — ${sources.length} sources.`);
+    return { data, sources };
+  } catch (err: any) {
+    // Preview model might not be available — fall back to stable flash
+    console.warn(`Research with ${MODELS.RESEARCHER} failed, trying ${MODELS.FALLBACK}:`, err.message);
+    try {
+      const response = await ai.models.generateContent({
+        model: MODELS.FALLBACK,
+        contents: prompt,
+        config: { tools: [{ googleSearch: {} }] },
+      });
+      const text = response.text ?? '';
+      const sources = extractSources(response);
+      const data = extractJson(text);
+      console.log(`Research OK (fallback ${MODELS.FALLBACK}) — ${sources.length} sources.`);
+      return { data, sources };
+    } catch (err2: any) {
+      console.warn('Research Phase failed (non-blocking):', err2.message);
+      return { data: {}, sources: [] };
+    }
+  }
+}
+
+// ─── PHASE 2: STRATEGIST (Gemini Pro — no web search) ─────────────────────────
+/**
+ * Uses the Pro model to cross-reference the technical data (from Binance)
+ * with the macro research gathered in Phase 1 and generate the full report.
+ * Because this model doesn't need to browse the web, it is significantly faster.
+ */
+async function runStrategyAnalysis(
+  symbol: 'BTC' | 'ETH' | 'SOL',
+  realData: Partial<TechnicalAnalysis>,
+  macroData: any,
+): Promise<{ parsed: any }> {
+  const systemInstruction = `
+Sei un Senior Quantitative Analyst per un Hedge Fund specializzato in ${symbol}.
+Analizza i dati tecnici (da Binance) e i dati macro (pre-ricercati) per generare un report istituzionale.
+REGOLE:
+- I dati tecnici forniti sono la VERITÀ ASSOLUTA. Non contraddirli mai.
+- Usa sempre l'ATR per calcolare gli Stop Loss: Entry ± (2 × ATR).
+- Correlazioni obbligatorie: DXY↑ = Bearish Crypto; OIL↑ = Bearish Crypto; SPX↑ = Bullish Crypto.
+- Usa linguaggio probabilistico (es. "Alta confluenza per breakout rialzista").
+- Rispondi ESCLUSIVAMENTE con un JSON valido.
+`;
+
+  const prompt = `
+DATI TECNICI REALI (BINANCE — NON CONTRADDIRE):
+${JSON.stringify(realData, null, 2)}
+
+DATI MACRO & NEWS (PRE-RICERCATI):
+${JSON.stringify(macroData, null, 2)}
+
+Genera il JSON del report con QUESTA struttura esatta:
+{
+  "timestamp": "ISO String",
+  "macroOverview": "Sintesi macro professionale max 3 frasi. Focus su DXY/OIL/SPX e impatto su ${symbol}.",
+  "macroSentiment": "BULLISH | BEARISH | NEUTRAL",
+  "forecastOpinion": "Strategia operativa sintetica (es. 'Accumulare sui dip in attesa di breakout').",
+  "calendar": [
+    { "date": "YYYY-MM-DD", "event": "...", "impact": "High/Medium", "forecast": "...", "previous": "..." }
+  ],
+  "latestNews": [
+    { "title": "...", "source": "...", "sentiment": "Positive/Negative/Neutral", "time": "..." }
+  ],
+  "technical": {
+    "sp500":       { "price": "...", "trend": "BULLISH/BEARISH", "change24h": "up/down" },
+    "dxy":         { "price": "...", "trend": "BULLISH/BEARISH", "change24h": "up/down" },
+    "russell2000": { "price": "...", "trend": "BULLISH/BEARISH", "change24h": "up/down" },
+    "oil":         { "price": "...", "trend": "BULLISH/BEARISH", "change24h": "up/down" },
+    "dominance": "...",
+    "inflation":   { "price": "...%", "trend": "BULLISH/BEARISH", "change24h": "flat" },
+    "unemployment":{ "price": "...%", "trend": "BULLISH/BEARISH", "change24h": "flat" },
+    "gdp":         { "price": "...%", "trend": "BULLISH/BEARISH", "change24h": "flat" },
+    "m2":          { "price": "...T", "trend": "BULLISH/BEARISH", "change24h": "up/down" },
+    "exchangeNetFlow": { "netInflow": 0, "trend": "Accumulation/Distribution", "metricType": "Exchange" },
+    "etfNetInflow":    { "netInflow": 0, "trend": "Accumulation/Distribution", "metricType": "ETF" },
+    "onChain": { "mvrvZScore": 0, "nupl": 0, "activeAddressesTrend": "Rising/Falling/Stable", "longTermHolderSupplyChange": "Rising/Falling/Stable" },
+    "cycles":    { "historicalSeasonality": "..." },
+    "shortTerm": { "priceAction": "..." }
+  },
+  "signals": [
+    {
+      "asset": "${symbol}",
+      "type": "LONG | SHORT",
+      "timeframe": "Swing",
+      "entryZone": "...",
+      "stopLoss": "Calcolato come Entry ± 2×ATR",
+      "takeProfit": ["TP1: ...", "TP2: ..."],
+      "rationale": "...",
+      "riskLevel": "Basso/Medio/Alto",
+      "confidenceScore": 80
+    }
+  ],
+  "checklist": [
+    { "category": "Market Phase", "status": "PASS | FAIL", "details": "..." }
+  ],
+  "trendReversal": {
+    "bullishScenario": { "title": "...", "condition": "...", "keyLevel": "...", "probability": "Alta/Media/Bassa" },
+    "bearishScenario": { "title": "...", "condition": "...", "keyLevel": "...", "probability": "Alta/Media/Bassa" }
+  }
+}
+`;
+
+  try {
+    const response = await ai.models.generateContent({
+      model: MODELS.STRATEGIST,
+      contents: prompt,
+      config: { systemInstruction },
+    });
+    const text = response.text ?? '';
+    return { parsed: extractJson(text) };
+  } catch (err: any) {
+    // Preview model might not be available — fall back to stable flash
+    console.warn(`Strategy with ${MODELS.STRATEGIST} failed, trying ${MODELS.FALLBACK}:`, err.message);
+    const response = await ai.models.generateContent({
+      model: MODELS.FALLBACK,
+      contents: prompt,
+      config: { systemInstruction },
+    });
+    const text = response.text ?? '';
+    return { parsed: extractJson(text) };
+  }
+}
+
+// ─── PUBLIC API ────────────────────────────────────────────────────────────────
+export const generateMarketAnalysis = async (
+  symbol: 'BTC' | 'ETH' | 'SOL',
+  realData: Partial<TechnicalAnalysis>,
+  forceRefresh: boolean = false,
+): Promise<MarketReport> => {
+
+  // Serve from cache when available (saves API quota)
   if (!forceRefresh) {
     const cached = cacheService.getValidReport(symbol);
     if (cached) {
-      console.log(`Serving cached report for ${symbol} to save API costs.`);
+      console.log(`Cache HIT for ${symbol} — skipping API call.`);
       return cached;
     }
   }
 
-  let attempts = 0;
-  const maxAttempts = 3;
-  let currentModel = MODELS.PRO;
+  try {
+    // ── Run both phases: Research happens first (grounding), then Strategy ──
+    console.log(`[Phase 1] Research starting for ${symbol}…`);
+    const research = await fetchMacroResearch(symbol);
 
-  while (attempts < maxAttempts) {
-    try {
-      const ANALYSIS_PROMPT = `
-      Analizza ${symbol} per un report professionale (Hedge Fund Standard).
-      
-      DATI TECNICI REALI (INPUT HARD - NON CONTRADDIRE):
-      - Price: $${realData.price}
-      - Daily ATR (Volatilità): $${realData.volatility?.atr} (CRITICO PER STOP LOSS)
-      - Weekly Structure: ${realData.trendStructure?.weekly}
-      - 4H Support/Resistance (CALCOLATI): Supporto $${realData.shortTerm?.support4h}, Resistenza $${realData.shortTerm?.resistance4h}
-      
-      TASK 1: RICERCA WEB (CRITICO: CERCA DATI LIVE)
-      1. **MACRO INDICATORS (FUTURES)**: Cerca specificamente "US500 Futures Price Live" (S&P), "DXY Futures Live", "Russell 2000 Futures", "Crude Oil WTI Futures".
-         *ATTENZIONE: Se trovi dati vecchi di 24h, cercali di nuovo. Vogliamo il prezzo ADESSO.*
-      2. **US Unemployment Rate %**: Cerca l'ultimo dato ufficiale rilasciato (BLS report).
-      3. **ECONOMIC CALENDAR**: Cerca i 3 eventi macro più importanti dei prossimi 7 giorni.
-      4. **CRYPTO NEWS**: Cerca le ultime 4 notizie rilevanti per ${symbol} SOLO da **CoinTelegraph** e **CoinDesk**.
-      5. **FLOWS**: Cerca "Farside Investors ${symbol === 'SOL' ? 'Bitcoin' : symbol} ETF Flow daily" (in $ Millions).
-      6. **BTC DOMINANCE**: Cerca "Bitcoin Dominance live chart" o "BTC.D index".
-      
-      TASK 2: GENERAZIONE JSON
-      Genera un JSON valido con questa struttura esatta:
-      {
-        "timestamp": "ISO String",
-        "macroOverview": "Sintesi macroeconomica professionale (max 3 frasi). Focus su correlazioni.",
-        "macroSentiment": "BULLISH/BEARISH/NEUTRAL",
-        "forecastOpinion": "Opinione strategica sintetica (es. 'Accumulare sui dip in attesa di breakout').",
-        "calendar": [ { "date": "YYYY-MM-DD", "event": "FOMC Meeting", "impact": "High/Medium", "forecast": "...", "previous": "..." } ],
-        "latestNews": [ { "title": "Headline", "source": "CoinTelegraph/CoinDesk", "sentiment": "Positive/Negative", "time": "2h ago" } ],
-        "technical": {
-             "sp500": { "price": "...", "trend": "BULLISH/BEARISH", "change24h": "up/down" },
-             "dxy": { "price": "...", "trend": "BULLISH/BEARISH", "change24h": "up/down" },
-             "russell2000": { "price": "...", "trend": "BULLISH/BEARISH", "change24h": "up/down" },
-             "oil": { "price": "...", "trend": "BULLISH/BEARISH", "change24h": "up/down" },
-             "dominance": "xx.x%",
-             "inflation": { "price": "...%", "trend": "BULLISH/BEARISH", "change24h": "flat" },
-             "unemployment": { "price": "...%", "trend": "BULLISH/BEARISH", "change24h": "flat" },
-             "gdp": { "price": "...%", "trend": "BULLISH/BEARISH", "change24h": "flat" },
-             "m2": { "price": "...T", "trend": "BULLISH/BEARISH", "change24h": "up/down" },
-             "exchangeNetFlow": { "netInflow": number, "trend": "Accumulation/Distribution", "metricType": "Exchange" },
-             "etfNetInflow": { "netInflow": number, "trend": "Accumulation/Distribution", "metricType": "ETF" },
-             "onChain": { "mvrvZScore": number, "nupl": number, "activeAddressesTrend": "Rising", "longTermHolderSupplyChange": "Stable" },
-             "cycles": { "historicalSeasonality": "..." },
-             "shortTerm": { "priceAction": "..." }
+    console.log(`[Phase 2] Strategy analysis starting for ${symbol}…`);
+    const { parsed } = await runStrategyAnalysis(symbol, realData, research.data);
+
+    // Merge: real Binance data always wins over AI-generated technical fields
+    const finalReport: MarketReport = {
+      timestamp: new Date().toISOString(),
+      macroOverview:   parsed.macroOverview   || 'Dati macro non disponibili.',
+      macroSentiment:  parsed.macroSentiment  || Sentiment.NEUTRAL,
+      forecastOpinion: parsed.forecastOpinion || 'Previsione non disponibile.',
+      calendar:    Array.isArray(parsed.calendar)    ? parsed.calendar    : [],
+      latestNews:  Array.isArray(parsed.latestNews)  ? parsed.latestNews  : [],
+      signals:     Array.isArray(parsed.signals)     ? parsed.signals.map((s: any) => ({ ...s, riskReward: calculateRR(s) })) : [],
+      checklist:   Array.isArray(parsed.checklist)   ? parsed.checklist   : [],
+      trendReversal: {
+        bullishScenario: { title: 'N/A', condition: 'N/A', keyLevel: 'N/A', probability: 'Media', ...(parsed.trendReversal?.bullishScenario ?? {}) },
+        bearishScenario: { title: 'N/A', condition: 'N/A', keyLevel: 'N/A', probability: 'Media', ...(parsed.trendReversal?.bearishScenario ?? {}) },
+      },
+      technical: {
+        // AI-provided macro fields first
+        ...parsed.technical,
+        // Hard real data ALWAYS overwrites — price, RSI, MACD, etc.
+        ...realData,
+        // Merge nested objects carefully
+        onChain: parsed.technical?.onChain ?? { mvrvZScore: 0, nupl: 0, activeAddressesTrend: 'Stable', longTermHolderSupplyChange: 'Stable' },
+        cycles: {
+          daysSinceHalving: realData.cycles?.daysSinceHalving ?? 0,
+          progressInCycle:  realData.cycles?.progressInCycle  ?? 0,
+          distanceFromAth:  realData.cycles?.distanceFromAth  ?? 0,
+          historicalSeasonality: parsed.technical?.cycles?.historicalSeasonality ?? 'N/A',
         },
-        "signals": [ { "asset": "${symbol}", "type": "LONG/SHORT", "timeframe": "Swing", "entryZone": "...", "stopLoss": "Calculated as Entry +/- 2*ATR", "takeProfit": ["..."], "rationale": "...", "riskLevel": "Medio", "confidenceScore": 80 } ],
-        "checklist": [ { "category": "Market Phase", "status": "PASS/FAIL", "details": "..." } ],
-        "trendReversal": {
-          "bullishScenario": { "title": "...", "condition": "...", "keyLevel": "...", "probability": "Media" },
-          "bearishScenario": { "title": "...", "condition": "...", "keyLevel": "...", "probability": "Media" }
-        }
-      }
-      `;
-      
-      console.log(`AI Analysis started using ${currentModel}...`);
-      const response = await ai.models.generateContent({
-        model: currentModel,
-        contents: ANALYSIS_PROMPT,
-        config: {
-          systemInstruction: getSystemPrompt(symbol),
-          tools: [{ googleSearch: {} }],
-        }
-      });
+        shortTerm: realData.shortTerm ? {
+          ...realData.shortTerm,
+          priceAction: parsed.technical?.shortTerm?.priceAction ?? 'Analyzing…',
+        } : undefined,
+      },
+      sources: research.sources,
+    };
 
-      const textResponse = response.text;
-      
-      const groundingChunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
-      const sources = groundingChunks
-          .map((chunk: any) => chunk.web?.uri)
-          .filter((uri: string | undefined) => uri && uri.trim().length > 0) as string[];
+    cacheService.saveReport(symbol, finalReport);
+    console.log(`[Done] Report generated for ${symbol}.`);
+    return finalReport;
 
-      let parsedJson: Partial<MarketReport> = {};
-
-      try {
-        const jsonMatch = textResponse.match(/```json\s*([\s\S]*?)\s*```/);
-        if (jsonMatch) {
-           parsedJson = JSON.parse(jsonMatch[1]);
-        } else {
-          const firstBrace = textResponse.indexOf('{');
-          const lastBrace = textResponse.lastIndexOf('}');
-          if (firstBrace !== -1 && lastBrace !== -1) {
-             const rawJson = textResponse.substring(firstBrace, lastBrace + 1);
-             parsedJson = JSON.parse(rawJson);
-          } else {
-             throw new Error("No JSON structure found");
-          }
-        }
-      } catch (parseError) {
-        console.warn(`JSON Parse Error on attempt ${attempts + 1}`);
-        throw parseError;
-      }
-
-      const aiTechnical: Partial<TechnicalAnalysis> = parsedJson.technical || {};
-
-      const finalReport: MarketReport = {
-        timestamp: new Date().toISOString(),
-        macroOverview: parsedJson.macroOverview || "Dati macro non disponibili.",
-        macroSentiment: parsedJson.macroSentiment || Sentiment.NEUTRAL,
-        forecastOpinion: parsedJson.forecastOpinion || "Previsione non disponibile.",
-        calendar: Array.isArray(parsedJson.calendar) ? parsedJson.calendar : [],
-        latestNews: Array.isArray(parsedJson.latestNews) ? parsedJson.latestNews : [], 
-        technical: {
-          ...realData, 
-          sp500: aiTechnical.sp500,
-          dxy: aiTechnical.dxy,
-          russell2000: aiTechnical.russell2000,
-          oil: aiTechnical.oil,
-          inflation: aiTechnical.inflation,
-          unemployment: aiTechnical.unemployment,
-          gdp: aiTechnical.gdp,
-          m2: aiTechnical.m2,
-          exchangeNetFlow: aiTechnical.exchangeNetFlow,
-          etfNetInflow: aiTechnical.etfNetInflow,
-          onChain: aiTechnical.onChain || { mvrvZScore: 0, nupl: 0, activeAddressesTrend: 'Stable', longTermHolderSupplyChange: 'Stable' },
-          cycles: {
-              ...realData.cycles!,
-              historicalSeasonality: aiTechnical.cycles?.historicalSeasonality || "Data unavailable"
-          },
-          shortTerm: {
-             ...realData.shortTerm!, // Keep the real calculated support/resistance
-             priceAction: aiTechnical.shortTerm?.priceAction || "Analyzing price action..."
-          },
-          price: realData.price || 0,
-          priceHistory: realData.priceHistory || [],
-          // ... rest protected ...
-          dominance: aiTechnical.dominance || "N/A",
-          fearGreedIndex: realData.fearGreedIndex || 50,
-          rsi: realData.rsi || { value: 50, status: 'Neutral', divergence: 'None' },
-          macd: realData.macd || { status: 'Neutral', histogram: 0 },
-          openInterest: realData.openInterest || "N/A",
-          fundingRate: realData.fundingRate || "N/A",
-          volumeAnalysis: realData.volumeAnalysis || "N/A",
-          keyLevels: realData.keyLevels || { support: [], resistance: [] },
-          orderBook: realData.orderBook || { bidPressure: 50, askPressure: 50, imbalance: 'Neutral', wallPrice: 0, wallType: 'Ask', totalAskVol: 0, totalBidVol: 0 },
-          volatility: realData.volatility || { atr: 0, bollingerBands: { upper: 0, middle: 0, lower: 0, bandwidth: 0, percentB: 0, squeeze: false } },
-          ethBtcRatio: realData.ethBtcRatio || { value: 0, trend: 'Neutral', signal: 'N/A' },
-          indicators: realData.indicators || [],
-          trendStructure: realData.trendStructure
-        },
-        signals: Array.isArray(parsedJson.signals) ? parsedJson.signals : [],
-        checklist: Array.isArray(parsedJson.checklist) ? parsedJson.checklist : [],
-        trendReversal: {
-          bullishScenario: { title: "N/A", condition: "N/A", keyLevel: "N/A", probability: "Media", ...(parsedJson.trendReversal?.bullishScenario || {}) },
-          bearishScenario: { title: "N/A", condition: "N/A", keyLevel: "N/A", probability: "Media", ...(parsedJson.trendReversal?.bearishScenario || {}) }
-        },
-        sources: sources
-      };
-
-      cacheService.saveReport(symbol, finalReport);
-      return finalReport;
-
-    } catch (error: any) {
-      attempts++;
-      console.error(`Gemini API Attempt ${attempts} failed (${currentModel}):`, error.message);
-      
-      // If Pro fails, fallback to Flash for the next attempt
-      if (currentModel === MODELS.PRO) {
-        console.warn("Switching to Gemini 3.1 Flash-Lite due to Pro unavailability...");
-        currentModel = MODELS.FLASH;
-      }
-
-      if (attempts >= maxAttempts) {
-         console.error("All AI attempts failed. Returning fallback data.");
-         return getFallbackReport(symbol, realData, []);
-      }
-      await delay(1500 * attempts); // Exponential-ish backoff
-    }
+  } catch (err: any) {
+    console.error(`generateMarketAnalysis failed for ${symbol}:`, err.message);
+    return getFallbackReport(symbol, realData);
   }
-  return getFallbackReport(symbol, realData);
 };

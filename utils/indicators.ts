@@ -167,3 +167,21 @@ export const calculateATR = (highs: number[], lows: number[], closes: number[], 
   const currentATR = calculateSMA(trs, period);
   return currentATR;
 };
+
+/** A-07: Pearson correlation coefficient between two return series. Range -1 to +1. */
+export const calculatePearsonCorrelation = (a: number[], b: number[]): number => {
+  const n = Math.min(a.length, b.length);
+  if (n < 5) return 0;
+  const aS = a.slice(-n);
+  const bS = b.slice(-n);
+  const meanA = aS.reduce((s, v) => s + v, 0) / n;
+  const meanB = bS.reduce((s, v) => s + v, 0) / n;
+  let num = 0, dA = 0, dB = 0;
+  for (let i = 0; i < n; i++) {
+    const da = aS[i] - meanA;
+    const db = bS[i] - meanB;
+    num += da * db; dA += da * da; dB += db * db;
+  }
+  const denom = Math.sqrt(dA * dB);
+  return denom === 0 ? 0 : parseFloat((num / denom).toFixed(3));
+};
