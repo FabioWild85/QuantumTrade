@@ -1,6 +1,6 @@
-# AI Trading Hub — Piano di implementazione (v2, uso personale)
+# AI Trading Hub — Piano di implementazione (v3, uso personale)
 
-> Documento aggiornato il 12 Maggio 2026 dopo Q&A iniziale.
+> Documento aggiornato il 13 Maggio 2026 — v3: integrazione Hyperliquid come fonte dati primaria, SMC algoritmici (FVG, liquidity sweep, market structure), riformulazione obiettivo Chronos-2 (directional/volatility/continuation probability), horizon corretto a 3 step (12h), liquidations e Nasdaq futures come nuove covariate, dead-man's switch, validazione post-cutoff pretrain.
 > Scopo: integrare nella piattaforma Quantum Trade una sezione "AI Trading Hub" che esegue trade automatici su Hyperliquid usando Chronos-2 come modello di forecasting, **per uso strettamente personale** dell'autore.
 > **Nessun codice in questo documento**: è il blueprint operativo prima di scrivere una riga di produzione.
 
@@ -48,29 +48,48 @@
 **Nome:** `TrendFollowing4hBTC`
 
 **Dati necessari (ogni close di candela 4h):**
-1. OHLCV BTC-PERP ultime 512 candele 4h (~85 giorni) — già in Quantum Trade.
-2. Covariate da Quantum Trade:
-   - RSI(14), MACD, ATR(14), BB width
-   - Open Interest e Funding Rate (da Binance Futures, piano v2 P-04 di Quantum Trade)
-   - DXY, SPX delta giornaliero
-   - ETF Net Flows (Farside via AI Search o diretta)
+1. OHLCV BTC-PERP ultime 512 candele 4h da **Hyperliquid WebSocket** (fonte nativa — non Binance, che introduce disallineamento sistematico sul perp HL).
+2. OHLCV multi-timeframe di contesto: candele **1h** (ultime 512) e **1d** (ultime 120) — sempre da HL WebSocket.
+3. Covariate da Hyperliquid (fonte primaria per tutto ciò che riguarda BTC-PERP HL):
+   - **Open Interest** HL (`metaAndAssetCtxs`) — snapshot ogni 5 min
+   - **Funding Rate** HL live (`fundingHistory`) — **non Binance**
+   - **Liquidations** HL aggregate (`userFills` filtered + `clearinghouseState`) — covariate critica per cascade events
+   - **Volume imbalance** buy/sell (buy_volume − sell_volume ultime 4h da `trades` WS channel)
+4. Covariate macro esterne (bassa frequenza, peso ridotto):
+   - RSI(14), MACD, ATR(14), BB width — calcolati localmente da OHLCV HL
+   - DXY delta giornaliero, **Nasdaq Futures** delta giornaliero (proxy risk-on/off)
+   - **BTC Dominance** (CoinGecko — già in Quantum Trade P-01)
+   - ETF Net Flows (Farside, giornaliero)
    - Multi-Timeframe Confluence Score (Quantum Trade A-01)
+5. **Feature SMC algoritmiche** (calcolate da `services/smc.py`):
+   - **Fair Value Gaps (FVG)**: zona di squilibrio prezzo rilevata su pattern 3-candele — feature categoriale (bullish_fvg_present, bearish_fvg_present, distance_to_nearest_fvg_pct)
+   - **Liquidity sweep recente**: se nelle ultime 3 candele il prezzo ha preso un swing high/low degli ultimi 20 bar poi chiuso nella direzione opposta — segnale di inversione
+   - **Market structure**: BOS (Break of Structure = continuazione) o CHoCH (Change of Character = potenziale inversione) — feature categoriale loggata ad ogni decisione
+
+**Obiettivo del forecast (riformulato):**
+Chronos-2 **non predice il prezzo esatto** — produce tre stime probabilistiche composite sull'orizzonte 4h–12h:
+1. **Directional probability** `P(price_h+3 > price_now)` — dalla distribuzione p10/p50/p90 dell'output quantile
+2. **Volatility expansion probability** `P(realized_range_h+3 > ATR * 1.5)` — se ci sarà un movimento significativo
+3. **Continuation probability** `P(move aligns with current trend direction)` — coerenza con regime attuale
 
 **Pipeline di decisione:**
 
-1. **Filtro regime (gating)**: se `ADX(14) < 20` **OR** `realized_vol_7d < median_30d * 0.7` → **no-trade** (mercato in compressione, trend following non funziona).
-2. **Forecast Chronos-2 Base** con covariate, orizzonte 6 step (24h avanti).
-3. **Decisione long**: se `forecast_p50_h+6 > price * 1.005` **AND** `forecast_p10_h+6 > price` (anche scenario pessimista positivo) **AND** `Confluence Score > 60`.
+1. **Filtro regime (gating — doppio livello)**:
+   - Se `ADX(14) < 20` OR `realized_vol_7d < median_30d * 0.7` → **no-trade** (mercato in compressione).
+   - Se **liquidity sweep rilevato nell'ultima candela** → **no-trade** (prezzo in potenziale inversione, aspetta conferma).
+2. **Forecast Chronos-2 Base** con covariate, **orizzonte 3 step (12h avanti)** — non 6 step. Orizzonte 24h è troppo incerto e non actionable per decisioni a 4h.
+3. **Decisione long**: se `directional_probability > 0.62` **AND** `forecast_p10_h+3 > price` (scenario pessimista positivo) **AND** `Confluence Score > 60` **AND** `nessun bearish_fvg_presente nel 2% sopra entry` (non entrare in una zona di riequilibrio attesa).
 4. **Decisione short**: simmetrica con segno invertito.
 5. **No-trade altrimenti.**
 
 **Risk management:**
 - **Position sizing**: 1.5% del capitale per trade (fixed fraction, non Kelly aggressivo).
-- **Stop Loss**: `entry ± 2.0 * ATR(14)`.
+- **Stop Loss**: `entry ± 2.0 * ATR(14)`. Doppio livello: SL nel bot + SL nativo HL (protezione da bug nel risk manager).
 - **Take Profit**: `entry ± 3.5 * ATR(14)` (R:R ~1.75).
 - **Max daily drawdown**: -3% → kill bot, riavvio manuale.
 - **Max consecutive losses**: 4 → pausa 24h.
 - **Max funding cost**: se funding annualizzato > 30% contro la posizione → exit forzata.
+- **Heartbeat check**: ogni 4h il bot scrive `last_heartbeat` su Supabase. Se non aggiornato entro 8h, alert Telegram automatico (dead-man's switch contro blocchi silenziosi).
 
 **Aspettative numeriche realistiche (da comunicare a sé stessi):**
 - Trades/mese: 5–15.
@@ -85,14 +104,16 @@
 | Layer | Tech | Note |
 |-------|------|------|
 | **Frontend** | Estensione di Quantum Trade esistente (React 19 + Vite + TS + Tailwind + shadcn/ui) | Nuova tab "AI Trading Hub" nel `App.tsx`, niente nuovo progetto |
-| **Charting** | `lightweight-charts` (TradingView open source) | Candles + fan chart per forecast probabilistico |
+| **Charting** | `lightweight-charts` (TradingView open source) | Candles + fan chart per forecast probabilistico (bande p10/p50/p90) |
 | **API Backend** | FastAPI + Pydantic v2 | Single Python service, no microservizi |
 | **Execution Engine** | Stesso processo FastAPI con un task `asyncio` background che gestisce il loop trading | Niente process separation per single-bot. Se in futuro servono N bot, si separerà. |
-| **Modello AI** | `chronos-forecasting` package, Chronos-2 Base, in-process, CPU | Inference 1–2s, perfetto per 4h tf |
-| **DB + Auth + Realtime** | **Supabase Pro** ($25/mese live, free in MVP) | Postgres + estensione `timescaledb` community + Realtime WS + Auth (anche se single-user, utile per proteggere la dashboard) |
-| **Hyperliquid** | `hyperliquid-python-sdk` ufficiale | Mainnet + testnet con stessa libreria |
+| **Modello AI** | `chronos-forecasting` package, Chronos-2 Base, in-process, CPU | Inference 1–2s, perfetto per 4h tf. Output: quantili p10/p50/p90 → derivati in directional/volatility/continuation probability. |
+| **DB + Auth + Realtime** | **Supabase Pro** ($25/mese live, free in MVP) | Postgres + estensione `timescaledb` community + Realtime WS + Auth |
+| **Fonte dati primaria** | **Hyperliquid WebSocket + REST** per OHLCV multi-tf, OI, funding, liquidations, volume imbalance | **Non Binance** per i dati BTC-PERP — fonte nativa elimina disallineamento. Binance solo per dati non disponibili su HL. |
+| **SMC features** | `services/smc.py` — modulo Python custom | Calcola FVG, liquidity sweeps, market structure (BOS/CHoCH) da OHLCV HL. Features categoriali che entrano come covariate in Chronos-2 e come filtro nel decision layer. |
+| **Hyperliquid SDK** | `hyperliquid-python-sdk` ufficiale | Mainnet + testnet con stessa libreria |
 | **Wallet** | RainbowKit / Wagmi nel frontend per connect; Agent Wallet HL creato lato server al primo onboarding | Chiave agent salvata cifrata in Supabase Vault o `age`-encrypted con master key in env |
-| **Notifiche** | Bot Telegram (gratuito) | Alert fill, errori, kill, daily summary |
+| **Notifiche** | Bot Telegram (gratuito) | Alert fill, errori, kill, daily summary, **heartbeat mancante** |
 | **Logging** | Sentry free tier (5k events/mese) + log strutturati su Supabase | Bastano per single-user |
 | **Hosting** | Hetzner Cloud CX22 (€4.50) → CX32 (€11) in live | Docker Compose, niente Kubernetes |
 | **Deploy** | Docker Compose + GitHub Actions per build immagine + `docker compose pull && up` via SSH | Niente CI/CD elaborato |
@@ -139,25 +160,54 @@ Nel piano `piano-evoluzione-v2.md` esistono già features pianificate che sono *
 
 | ID Quantum v2 | Cosa | Perché serve all'AI Hub |
 |---------------|------|------------------------|
-| **P-01** | CoinGecko ATH/Dominance | Feature di contesto per il modello |
-| **P-04** | Binance Open Interest + Funding Rate | **Covariate killer**: senza queste, Chronos-2 su perp è cieco al 30% del segnale |
-| **A-01** | Multi-Timeframe Confluence Score | Filtro di gating per la strategia |
-| **A-03** | Heatmap Volatilità (ATR relativo) | Sizing dinamico vol-target |
-| **A-04** | Liquidation Levels | Trigger di exit (prezzo magnetizzato) |
+| **P-01** | CoinGecko BTC Dominance | Feature di contesto macro per il modello (directional probability) |
+| **P-04** | ~~Binance~~ **Hyperliquid** Open Interest + Funding Rate | **Covariate killer**: OI e funding **da HL** (non Binance) per evitare disallineamento con il perp che si sta tradando |
+| **A-01** | Multi-Timeframe Confluence Score | Filtro di gating nella pipeline di decisione |
+| **A-03** | Heatmap Volatilità (ATR relativo) | Volatility expansion probability — input al modello |
+| **A-04** | Liquidation Levels (display UI) | Utile per visualizzazione nella dashboard — **NON usare come covariate per Chronos-2**: sono stime matematiche (`price × leverage_ratio`), non dati reali. Come feature insegnerebbero al modello un'identità numerica, non un segnale. |
+| **NUOVO** | **Liquidations aggregate reali da HL** | Questa sì è la covariate reale: volume aggregato di liquidazioni nelle ultime N ore da HL (`clearinghouseState`). Completamente diverso dalle stime A-04. |
+| **NUOVO** | **Nasdaq Futures delta** | Feature macro risk-on/off, correlazione con BTC sui timeframe 4h–1d |
 
 **Sforzo aggiuntivo Quantum Trade**: ~10h (già pianificato in `piano-evoluzione-v2.md`).
 
-### 3.3 Pattern di condivisione dati
+### 3.3 Pattern di condivisione dati — architettura corretta
 
-I `services/` di Quantum Trade (TypeScript, frontend) restano la fonte primaria di dati per la UI. Il backend Python dell'AI Hub **non duplica** questa pipeline: legge le stesse informazioni da Supabase, dove un cron job o l'attivazione della UI le scrive periodicamente.
+**Il backend Python deve essere indipendente dal browser.** Il bot gira 24/7 su VPS; l'utente potrebbe non aprire Quantum Trade per giorni. Un'architettura dove il backend dipende dalla UI per avere dati freschi è fragile per definizione.
 
-**Flusso concreto:**
+**Regola fondamentale**: il backend Python calcola autonomamente tutto il necessario. I dati di Quantum Trade sono un **input supplementare di qualità superiore** quando disponibili — non un prerequisito.
 
-1. Quando Quantum Trade fa un fetch di OHLCV/indicatori/macro per la dashboard, il risultato viene **anche** scritto su Supabase nella tabella corrispondente (idempotente, dedupe per timestamp).
-2. L'Execution Engine Python legge da Supabase quando serve costruire features per Chronos-2.
-3. Quantum Trade e AI Hub vedono **gli stessi numeri**, niente disallineamenti.
+```
+BACKEND PYTHON (fonte primaria, sempre aggiornata):
+  ├── OHLCV multi-tf         → Hyperliquid WebSocket/REST
+  ├── RSI, ATR, ADX, MACD, BB → calcolati da Python (pandas-ta) su OHLCV HL
+  ├── OI, Funding, Liquidations → Hyperliquid Info API
+  ├── FVG, sweep, structure  → services/smc.py
+  ├── Fear & Greed           → alternative.me API diretta
+  └── BTC Dominance          → CoinGecko API diretta
 
-In MVP si può semplificare: il backend Python fa direttamente le call a Binance API (stesse fonti del frontend). Si centralizza in fase 2 quando il volume di dati cresce.
+QUANTUM TRADE FRONTEND (input supplementare, quando fresco):
+  ├── Confluence Score (0-100)   → scritto su Supabase quando utente apre dashboard
+  ├── RSI Divergence             → Bullish/Bearish/None, aggiornata dalla UI
+  └── EMA Signal categoriale     → Full Bullish / Golden Cross / ecc.
+  
+  Il backend li LEGGE da Supabase con questo filtro:
+  SELECT value FROM covariates WHERE key='confluence_score'
+    AND source='quantum_trade' AND time > NOW() - INTERVAL '4 hours'
+  Se non trovati (stale o utente non ha aperto QT): usa i propri calcoli come fallback.
+```
+
+**Cosa NON viene dal frontend di QT come covariate:**
+- ❌ Liquidation Levels (A-04): sono stime matematiche (`price × 0.980`), non dati reali — non hanno valore informativo per Chronos-2
+- ❌ OI e Funding formattati come stringa (`"$8.45B"`, `"+0.0100%"`): già in formato UI, il backend usa i raw float da HL
+- ❌ Order book Binance spot: mercato diverso dal perp HL, imbalance non comparabile
+
+**Quali dati QT vale la pena leggere (e perché):**
+- ✅ **Confluence Score**: aggrega weekly/daily/4H trend + RSI + divergenza + MACD + order book in un numero già pesato euristically (vedi codice righe 338-365 di `cryptoDataService.ts`). Più ricco di quello che il backend calcolerebbe da zero.
+- ✅ **RSI Divergence**: rilevazione bullish/bearish divergence su 28 periodi — calcolo non banale, vale riusare.
+- ✅ **EMA Signal**: struttura EMA multi-tf (Full Bullish/Golden Cross/ecc.) come feature categoriale.
+
+**Scansione automatica — come garantire dati freschi:**
+In MVP, la UI non ha un auto-refresh background: i dati QT su Supabase sono aggiornati solo quando l'utente apre la dashboard. Sono supplementari, quindi questo è accettabile. In fase 2, se si vuole eliminalre questa dipendenza manuale, si implementa una **Supabase Edge Function** schedulata ogni 4h che chiama le stesse API della UI e scrive i valori nella tabella `covariates`. Costo: ~$0, complessità: bassa.
 
 ---
 
@@ -266,14 +316,17 @@ Auth: per uso personale basta una **password singola** + Supabase Auth (email/pa
 
 Obiettivo: **decidere se il progetto ha senso** prima di investire 5 settimane.
 
-- [ ] Notebook Jupyter: scarica BTC 4h da Binance per ultimi 24 mesi.
-- [ ] Esegui Chronos-2 Base zero-shot (no covariate ancora) con walk-forward (12 mesi training-window non-applicabile per zero-shot, quindi: rolling forecast su 12 mesi OOS).
-- [ ] Calcola **CRPS** vs naive baseline (random walk).
-- [ ] **Criterio go/no-go**: CRPS Chronos-2 < CRPS naive di almeno **5%** su 12 mesi OOS BTC 4h.
-- [ ] Se ok, ripeti con covariate sintetiche (RSI, ATR calcolati dal pandas) per verificare che migliori.
-- [ ] In parallelo: script Python che usa `hyperliquid-python-sdk` per creare agent wallet su testnet, piazzare un ordine market BTC 0.001, leggere fill via WS. Misura latenza.
+- [ ] Notebook Jupyter: scarica BTC 4h da **Hyperliquid REST** (non Binance) per ultimi 24 mesi via `candleSnapshot`. Verifica che i dati siano completi e senza gap.
+- [ ] Identifica il **pretrain cutoff di Chronos-2** (Amazon Science paper §3) e limita l'OOS al periodo *posteriore* a quella data — altrimenti il "test" è in realtà in-sample.
+- [ ] Esegui Chronos-2 Base zero-shot con walk-forward rolling su **12 mesi OOS post-cutoff**, orizzonte **3 step (12h)**, non 6.
+- [ ] Calcola **CRPS** vs naive baseline (random walk) e vs AR(1).
+- [ ] **Criterio go/no-go**: CRPS Chronos-2 < CRPS naive di almeno **5%** su OOS post-cutoff BTC 4h.
+- [ ] Se ok, aggiungi covariate: OI HL, funding HL, realized vol, RSI calcolato da pandas — misura il delta CRPS. Se le covariate peggiorano, analizza perché prima di procedere.
+- [ ] Test SMC baseline: implementa FVG detection e liquidity sweep detector su pandas, verifica che producano segnali non nulli e distribuiti nel periodo OOS (non tutti concentrati in un mese).
+- [ ] Test latenza ciclo completo **sul VPS Hetzner reale** (non localhost): close candela → fetch HL → SMC calc → Chronos-2 inference → decision → order submit. Target: < 3s totali per 4h tf.
+- [ ] In parallelo: script Python che usa `hyperliquid-python-sdk` per creare agent wallet su testnet, piazzare un ordine market BTC 0.001, leggere fill via WS.
 
-**Output**: documento `decisions.md` con risultato CRPS, latenza HL, decisione go/no-go scritta.
+**Output**: documento `decisions.md` con: risultato CRPS (con e senza covariate), delta CRPS SMC features, latenza ciclo completo su VPS, decisione go/no-go scritta con motivazione.
 
 ### 🔴 Settimana 1 — Infra base
 
@@ -286,14 +339,20 @@ Obiettivo: **decidere se il progetto ha senso** prima di investire 5 settimane.
 
 ### 🔴 Settimana 2 — Execution engine + decision loop
 
-- [ ] Modulo `services/binance.py`: fetch OHLCV BTC 4h.
-- [ ] Modulo `services/covariates.py`: RSI, ATR, MACD, ADX, OI, Funding (chiamate Binance Futures API).
-- [ ] Modulo `services/chronos.py`: wrapper Chronos-2 Base con interface `forecast(series, covariates, horizon) -> {p10, p50, p90, mean}`.
-- [ ] Modulo `services/decision.py`: implementa la logica di gating + decisione long/short/no-trade descritta in §1.3.
-- [ ] Modulo `services/risk.py`: SL/TP basati su ATR, position sizing, max DD checks.
+- [ ] Modulo `services/hyperliquid_data.py`: fetch OHLCV BTC multi-timeframe (4h, 1h, 1d) da HL REST + WS. Niente Binance per i dati primari.
+- [ ] Modulo `services/covariates.py`: RSI, ATR, MACD, ADX calcolati localmente da OHLCV HL; OI, Funding, Liquidations aggregate da HL Info API; Nasdaq Futures e DXY da fonte esterna (yfinance o simile per queste due voci macro).
+- [ ] Modulo `services/smc.py`: **Smart Money Concepts algoritmici**:
+  - `detect_fvg(df)` → lista di FVG bullish/bearish attivi con livello e distanza % da prezzo corrente.
+  - `detect_liquidity_sweep(df, lookback=20)` → bool + direzione se lo sweep è avvenuto nelle ultime 3 candele.
+  - `classify_market_structure(df)` → `"BOS_up"` / `"BOS_down"` / `"CHoCH_up"` / `"CHoCH_down"` / `"ranging"`.
+  - Tutto testato unitariamente prima di essere usato in produzione.
+- [ ] Modulo `services/chronos.py`: wrapper Chronos-2 Base con interface `forecast(series, covariates, horizon=3) -> {p10, p50, p90, directional_prob, vol_expansion_prob, continuation_prob}`. La derivazione delle tre probabilità composite avviene qui dalla distribuzione quantile output.
+- [ ] Modulo `services/decision.py`: implementa gating doppio (ADX + liquidity sweep) + decisione long/short/no-trade con filtro FVG descritto in §1.3.
+- [ ] Modulo `services/risk.py`: SL/TP basati su ATR, position sizing, max DD checks. SL doppio: bot + SL nativo HL. Heartbeat writer (aggiorna `last_heartbeat` su Supabase ogni ciclo).
 - [ ] Modulo `services/hyperliquid.py`: submit/cancel order, WS subscriptions per fills/positions.
-- [ ] Modulo `services/execution.py`: il loop principale (asyncio task) che ogni close 4h: fetch dati → costruisce features → forecast → decide → esegue → logga tutto.
+- [ ] Modulo `services/execution.py`: il loop principale (asyncio task) che ogni close 4h: fetch dati → SMC calc → costruisce features → forecast → decide → esegue → logga tutto con `inference_id`.
 - [ ] Riconciliazione ogni 60s tra stato DB e stato HL (WS positions).
+- [ ] Cron job Telegram: alert se `last_heartbeat` non aggiornato entro 8h (dead-man's switch).
 
 ### 🔴 Settimana 3 — UI integrata in Quantum Trade
 
@@ -368,17 +427,79 @@ Se in fase 2 si vuole passare a Chronos-2 Large (più accurato ma 500–1500ms a
 
 ---
 
+## PARTE 8b — Smart Money Concepts (SMC): implementazione algoritmica
+
+> Sezione aggiunta v3. I concetti SMC sono la logica sottostante a strumenti come "SMC Sniper Pro" (TradingView). Non si usa lo strumento closed-source — si implementa la logica in modo trasparente e auditabile in `services/smc.py`.
+
+### Perché SMC è rilevante per questo progetto
+
+Chronos-2 cattura pattern statistici nelle serie temporali ma è cieco alla **microstruttura del mercato**. I concetti SMC riempiono questo gap: identificano dove si trova la liquidità, dove il prezzo tende a "tornare" (FVG), e quando il trend è davvero rotto (CHoCH vs rumore). Usati come **feature categoriali** amplificano il segnale che Chronos-2 riceve.
+
+### Tre concetti implementabili algoritmicamente
+
+**1. Fair Value Gap (FVG)**
+```python
+# Pattern 3-candele: il gap tra la low della candela i-2 e la high della candela i
+# non è coperto dalla candela i-1 (bullish FVG) — zona di squilibrio dove il prezzo tende a tornare
+def detect_fvg(df: pd.DataFrame, min_gap_pct: float = 0.001) -> pd.DataFrame:
+    bullish = df['low'].shift(-1) > df['high'].shift(1)  # gap up: candle[i-1].low > candle[i+1].high
+    bearish = df['high'].shift(-1) < df['low'].shift(1)  # gap down
+    gap_size = abs(df['low'].shift(-1) - df['high'].shift(1)) / df['close']
+    return df.assign(
+        bullish_fvg=bullish & (gap_size > min_gap_pct),
+        bearish_fvg=bearish & (gap_size > min_gap_pct),
+        distance_to_fvg_pct=...  # distanza % dal prezzo corrente alla zona FVG più vicina
+    )
+```
+**Uso nella decisione**: non entrare long se c'è un bearish FVG entro il 2% sopra l'entry (è una zona di riequilibrio attesa).
+
+**2. Liquidity Sweep**
+```python
+# Il prezzo prende un swing high/low degli ultimi N bar, poi chiude nella direzione opposta
+# = hunt dei retail stop-loss → potenziale inversione
+def detect_liquidity_sweep(df: pd.DataFrame, lookback: int = 20) -> pd.Series:
+    swing_high = df['high'].rolling(lookback).max().shift(1)
+    swing_low = df['low'].rolling(lookback).min().shift(1)
+    buyside_sweep = (df['high'] > swing_high) & (df['close'] < swing_high)
+    sellside_sweep = (df['low'] < swing_low) & (df['close'] > swing_low)
+    return buyside_sweep | sellside_sweep  # True = sweep avvenuto in questa candela
+```
+**Uso nella decisione**: se sweep nell'ultima candela → **no-trade** (aspetta conferma direzione reale).
+
+**3. Market Structure (BOS / CHoCH)**
+```python
+# BOS (Break of Structure): il prezzo chiude oltre l'ultimo swing high/low nella direzione del trend
+# = continuazione confermata
+# CHoCH (Change of Character): il prezzo rompe nella direzione OPPOSTA al trend corrente
+# = potenziale inversione, aumenta peso del gating
+def classify_market_structure(df: pd.DataFrame, lookback: int = 10) -> str:
+    # Implementazione basata su swing highs/lows consecutivi
+    # Ritorna: "BOS_up", "BOS_down", "CHoCH_up", "CHoCH_down", "ranging"
+    ...
+```
+**Uso nella decisione**: CHoCH nella direzione opposta alla nostra posizione = trigger di review exit anticipata.
+
+### Cosa NON implementare da SMC
+
+- ❌ **Fibonacci levels come segnale primario**: soggettivi, difficili da backtestare in modo non-overfitted.
+- ❌ **Order blocks**: più complessi, sovrapposizione con FVG, aggiungi solo in fase 2 se i dati OOS li supportano.
+- ❌ **Qualsiasi logica < 4h timeframe**: SMC a 30m–1h richiede latenza WS < 100ms che non abbiamo in MVP.
+
+---
+
 ## PARTE 9 — Rischi reali e mitigazioni
 
 | Rischio | Probabilità | Impatto | Mitigazione |
 |---------|-------------|---------|-------------|
 | **Chronos-2 non batte baseline su crypto** | Media | 🔴 Alto | POC Settimana 0 obbligatorio. Se fallisce, pivot a XGBoost + features classiche. |
-| **Overfitting via data contamination** (BTC nel pretrain di Chronos) | Alta | 🔴 Alto | Walk-forward strict su periodo post-cutoff del pretrain. Se accuracy crolla post-cutoff, è un brutto segno. |
+| **Overfitting via data contamination** (BTC nel pretrain di Chronos) | Alta | 🔴 Alto | Walk-forward strict su periodo **post-cutoff pretrain**. Identificare data cutoff da paper Chronos-2 prima del POC. Se accuracy crolla post-cutoff, è un segnale di contaminazione. |
+| **SMC features overfit** (FVG/sweep come pattern illusori) | Media | 🟡 Medio | Backtestare ogni SMC feature singolarmente su OOS prima di combinarle. Se una feature peggiora CRPS, escluderla. |
+| **Blocco silenzioso del bot** (no crash, no alert, ma niente inference) | Media | 🔴 Alto | Dead-man's switch: heartbeat su Supabase ogni 4h, alert Telegram se mancante entro 8h. |
 | **Hyperliquid downtime** | Bassa | 🟡 Medio | Bot in modalità safe (no nuove posizioni, mantieni esistenti, alert) durante outage. Niente fallback automatico ad altri venue in MVP. |
 | **Compromissione del VPS** | Bassa | 🟡 Medio | Agent wallet ha solo permessi trading, max danno = chiusura forzata posizioni dall'attaccante. Revoca immediata da wallet principale. |
 | **Drawdown catastrofico in live** | Alta (è normale) | 🟡 Medio | Capitale iniziale piccolo, max daily DD 3% hard-coded, kill-switch testato unitariamente. |
 | **Bug nel risk manager** che non chiude SL | Media | 🔴 Alto | Test unitari ESTESI sul risk manager prima di andare live. Doppio livello: SL nel bot + SL nativo Hyperliquid. |
-| **Latenza inference > 5s causa skip-trade ripetuti** | Bassa | 🟢 Basso | Se succede, accettabile. Meglio no-trade che bad-trade. |
+| **Latenza ciclo completo > 5s** (fetch + SMC + inference + order) | Bassa | 🟢 Basso | Misurata sul VPS reale in Settimana 0. Se > 3s, ottimizzare fetch asincrono o usare Chronos-2 Small. |
 | **Burnout / abbandono progetto** | Media | 🟡 Medio | Scope ridotto al minimo (1 bot, 1 asset, 1 strategy). Niente over-engineering. Se si ferma, riprende facilmente. |
 
 ---
@@ -388,11 +509,12 @@ Se in fase 2 si vuole passare a Chronos-2 Large (più accurato ma 500–1500ms a
 Il progetto è **chiuso con successo MVP** se al termine di Settimana 6 sono vere tutte queste:
 
 1. ✅ Il bot ha girato in paper su testnet HL per ≥ 14 giorni consecutivi senza crash non gestiti.
-2. ✅ La dashboard Quantum Trade mostra il forecast Chronos-2 (fan chart) sovrapposto al prezzo BTC-PERP, aggiornato ad ogni close 4h.
-3. ✅ Ogni trade simulato ha un `inference_id` che permette di vedere le features e il reasoning che lo ha causato.
+2. ✅ La dashboard Quantum Trade mostra il forecast Chronos-2 (fan chart p10/p50/p90) sovrapposto al prezzo BTC-PERP, aggiornato ad ogni close 4h, con etichette `directional_prob`, `vol_expansion_prob`, `continuation_prob` visibili nel Trade Log.
+3. ✅ Ogni trade simulato ha un `inference_id` che permette di vedere: features complete (incl. SMC), forecast quantili, le tre probabilità composite, e il reasoning della decisione.
 4. ✅ Il kill-switch funziona in < 1 secondo (testato unitariamente e una volta in vivo).
-5. ✅ Il backtesting walk-forward su 12 mesi OOS produce Sharpe netto fees > 0.7.
-6. ✅ I costi mensili reali sono entro il budget pianificato ($40–50/mese live).
+5. ✅ Il dead-man's switch Telegram è testato: arrestando il bot manualmente per 9h, l'alert arriva.
+6. ✅ Il backtesting walk-forward su 12 mesi OOS **post-cutoff pretrain** produce Sharpe netto fees > 0.7.
+7. ✅ I costi mensili reali sono entro il budget pianificato ($40–50/mese live).
 
 Il progetto è **chiuso con successo full** se dopo 3 mesi di live:
 

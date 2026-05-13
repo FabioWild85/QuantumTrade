@@ -50,6 +50,25 @@ const safeFetchObject = async (url: string) => {
     }
 };
 
+// Yahoo Finance unofficial API — free, no key, CORS-safe, covers indices + forex + commodities
+const fetchYahooMacro = async (ticker: string): Promise<{ price: number; changePercent: number; history: number[] } | null> => {
+  try {
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?interval=1d&range=2mo`;
+    const res = await fetch(url, { headers: { Accept: 'application/json' } });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const result = data?.chart?.result?.[0];
+    if (!result) return null;
+    const price: number = result.meta?.regularMarketPrice;
+    const prevClose: number = result.meta?.previousClose ?? result.meta?.chartPreviousClose ?? price;
+    const changePercent = prevClose ? ((price - prevClose) / prevClose) * 100 : 0;
+    const history: number[] = (result.indicators?.quote?.[0]?.close ?? []).filter((v: number | null) => v != null);
+    return { price, changePercent, history };
+  } catch {
+    return null;
+  }
+};
+
 // CoinGecko symbol → coin ID mapping
 const COINGECKO_IDS: Record<string, string> = {
   BTC: 'bitcoin',
@@ -155,7 +174,9 @@ export const getTechnicalData = async (symbol: 'BTC' | 'ETH' | 'SOL'): Promise<P
             totalAskVol: asksVol,
             imbalance: bidPressure > 55 ? 'Bullish' : askPressure > 55 ? 'Bearish' : 'Neutral',
             wallPrice: maxAskVol > maxBidVol ? maxAskPrice : maxBidPrice,
-            wallType: maxAskVol > maxBidVol ? 'Ask' : 'Bid'
+            wallType: maxAskVol > maxBidVol ? 'Ask' : 'Bid',
+            maxBidWall: { price: maxBidPrice, volume: maxBidVol },
+            maxAskWall: { price: maxAskPrice, volume: maxAskVol }
         };
     }
 
@@ -229,25 +250,45 @@ export const getTechnicalData = async (symbol: 'BTC' | 'ETH' | 'SOL'): Promise<P
         fearGreedValue = parseInt(fgData.data[0].value);
     }
     
-    // ── P-03: Etherscan — ETH Gas Fees reali (no API key needed) ─────────────
+    // ── P-03: ETH Ecosystem — Blockchair (gas + burn) + Lido (staking APY) ──────
     let ethSpecificData: EthereumSpecificData | undefined;
     if (symbol === 'ETH') {
       let gasFees = 0;
       let stakingApy = 0;
       let ethBurned24h = 0;
-      try {
-        const [ethGasResp, beaconResp] = await Promise.all([
-          safeFetchObject('https://api.etherscan.io/api?module=gastracker&action=gasoracle'),
-          safeFetchObject('https://beaconcha.in/api/v1/ethstore/latest'),
-        ]);
-        if (ethGasResp?.result?.ProposeGasPrice) {
-          gasFees = parseInt(ethGasResp.result.ProposeGasPrice, 10);
-        }
-        if (beaconResp?.data?.apr != null) {
-          stakingApy = parseFloat((beaconResp.data.apr * 100).toFixed(2));
-        }
-      } catch { /* non-blocking */ }
+
+      await Promise.allSettled([
+        // Blockchair: gas estimate + burn 24h — free, no key
+        (async () => {
+          const res = await fetch('https://api.blockchair.com/ethereum/stats');
+          const data = await res.json();
+          const d = data?.data;
+          if (d) {
+            // Gas in Gwei: derive from avg simple tx fee (21000 gas) or use suggested
+            const suggested = d.suggested_transaction_fee_gwei_options?.fast ?? 0;
+            if (suggested > 0) {
+              gasFees = suggested;
+            } else if (d.average_simple_transaction_fee_24h > 0) {
+              gasFees = parseFloat((d.average_simple_transaction_fee_24h / 21000 / 1e9).toFixed(2));
+            }
+            // Burn 24h in wei → ETH
+            const burnWei: number = d.burned_24h ?? 0;
+            if (burnWei > 0) ethBurned24h = Math.round(burnWei / 1e18);
+          }
+        })(),
+
+        // Lido: staking APY — free, no key, real-time
+        (async () => {
+          const res = await fetch('https://eth-api.lido.fi/v1/protocol/steth/apr/last');
+          const data = await res.json();
+          if (data?.data?.apr != null) {
+            stakingApy = parseFloat(data.data.apr.toFixed(2));
+          }
+        })(),
+      ]);
+
       ethSpecificData = { gasFees, stakingApy, ethBurned24h };
+      console.log('[P-03] ETH ecosystem data:', { gasFees, stakingApy, ethBurned24h });
     }
 
     // --- CYCLES ---
@@ -433,38 +474,100 @@ export const getTechnicalData = async (symbol: 'BTC' | 'ETH' | 'SOL'): Promise<P
       }
     }
 
-    // ── P-02: FMP Macro Prices (real-time when API key is present) ────────────────
-    // Falls back silently to AI-generated macro data when FMP_API_KEY is not set.
-    const FMP_KEY = process.env.FMP_API_KEY;
+    // ── P-02: Macro Prices — Yahoo Finance (primary, free, no key) + FMP (fallback) ──
     let fmpSp500: MacroAsset | undefined;
     let fmpDxy: MacroAsset | undefined;
     let fmpOil: MacroAsset | undefined;
     let fmpRussell: MacroAsset | undefined;
-    if (FMP_KEY) {
-      try {
-        const [spRaw, dxRaw, clRaw, rutRaw] = await Promise.all([
-          safeFetchJson(`https://financialmodelingprep.com/api/v3/quote/%5EGSPC?apikey=${FMP_KEY}`),
-          safeFetchJson(`https://financialmodelingprep.com/api/v3/quote/DX-Y.NYB?apikey=${FMP_KEY}`),
-          safeFetchJson(`https://financialmodelingprep.com/api/v3/quote/USOIL?apikey=${FMP_KEY}`),
-          safeFetchJson(`https://financialmodelingprep.com/api/v3/quote/%5ERUT?apikey=${FMP_KEY}`),
-        ]);
-        const toMacro = (data: any, invertTrend = false): MacroAsset | undefined => {
-          const q = Array.isArray(data) ? data[0] : data;
-          if (!q?.price) return undefined;
-          const up = (q.changesPercentage ?? 0) > 0;
-          return {
-            price: q.price.toLocaleString(),
-            trend: invertTrend ? (up ? 'BEARISH' : 'BULLISH') : (up ? 'BULLISH' : 'BEARISH'),
-            change24h: up ? 'up' : 'down',
-          };
+    let macroCorrelation: { sp500: number, dxy: number } | undefined;
+
+    const yahooToMacro = (data: { price: number; changePercent: number } | null, invertTrend = false): MacroAsset | undefined => {
+      if (!data?.price) return undefined;
+      const up = data.changePercent > 0;
+      return {
+        price: data.price.toLocaleString(),
+        trend: invertTrend ? (up ? 'BEARISH' : 'BULLISH') : (up ? 'BULLISH' : 'BEARISH'),
+        change24h: up ? 'up' : 'down',
+      };
+    };
+
+    try {
+      // Fetch all four macro assets in parallel from Yahoo Finance
+      const [spData, dxData, clData, rutData] = await Promise.all([
+        fetchYahooMacro('^GSPC'),      // S&P 500
+        fetchYahooMacro('DX-Y.NYB'),   // US Dollar Index
+        fetchYahooMacro('CL=F'),       // WTI Crude Oil (front-month futures)
+        fetchYahooMacro('^RUT'),       // Russell 2000
+      ]);
+
+      fmpSp500   = yahooToMacro(spData);
+      fmpDxy     = yahooToMacro(dxData, true);
+      fmpOil     = yahooToMacro(clData, true);
+      fmpRussell = yahooToMacro(rutData);
+
+      // A-08: Macro Correlation using Yahoo Finance historical closes
+      if (spData?.history && spData.history.length > 0 && dxData?.history && dxData.history.length > 0 && dailyData.length >= 31) {
+        const toReturns = (prices: number[]) => {
+          const rets = [];
+          for (let i = 1; i < prices.length; i++) rets.push((prices[i] - prices[i-1]) / prices[i-1]);
+          return rets;
         };
-        fmpSp500   = toMacro(spRaw);
-        fmpDxy     = toMacro(dxRaw, true);  // DXY↑ = BEARISH for crypto
-        fmpOil     = toMacro(clRaw, true);  // Oil↑ = inflation risk = BEARISH
-        fmpRussell = toMacro(rutRaw);
-        console.log('[P-02] FMP macro loaded. SPX:', fmpSp500?.price, 'DXY:', fmpDxy?.price);
-      } catch (e) {
-        console.warn('[P-02] FMP fetch failed (non-blocking):', e);
+
+        const btcRets = [];
+        for (let i = dailyData.length - 31; i < dailyData.length; i++) {
+          const p1 = parseFloat(dailyData[i-1][4]);
+          const p2 = parseFloat(dailyData[i][4]);
+          btcRets.push((p2 - p1) / p1);
+        }
+
+        const spRets  = toReturns(spData.history.slice(-32));
+        const dxRets  = toReturns(dxData.history.slice(-32));
+        const minLen  = Math.min(btcRets.length, spRets.length, dxRets.length);
+        if (minLen >= 5) {
+          macroCorrelation = {
+            sp500: calculatePearsonCorrelation(btcRets.slice(-minLen), spRets.slice(-minLen)),
+            dxy:   calculatePearsonCorrelation(btcRets.slice(-minLen), dxRets.slice(-minLen)),
+          };
+          console.log('[A-08] Macro Correlation (Yahoo):', macroCorrelation);
+        } else {
+          console.warn('[A-08] Not enough data for correlation. minLen:', minLen);
+        }
+      } else {
+        console.warn('[A-08] Missing Yahoo historical data for correlation. SPX:', spData?.history?.length, 'DXY:', dxData?.history?.length);
+      }
+
+      console.log('[P-02] Yahoo Finance macro loaded. SP500:', fmpSp500?.price, 'DXY:', fmpDxy?.price);
+    } catch (e) {
+      console.warn('[P-02] Yahoo Finance macro fetch failed:', e);
+
+      // Fallback: FMP (requires paid plan for indices/forex)
+      const FMP_KEY = process.env.FMP_API_KEY;
+      if (FMP_KEY) {
+        try {
+          const [spRaw, dxRaw, clRaw, rutRaw] = await Promise.all([
+            safeFetchJson(`https://financialmodelingprep.com/api/v3/quote/%5EGSPC?apikey=${FMP_KEY}`),
+            safeFetchJson(`https://financialmodelingprep.com/api/v3/quote/DX-Y.NYB?apikey=${FMP_KEY}`),
+            safeFetchJson(`https://financialmodelingprep.com/api/v3/quote/USOIL?apikey=${FMP_KEY}`),
+            safeFetchJson(`https://financialmodelingprep.com/api/v3/quote/%5ERUT?apikey=${FMP_KEY}`),
+          ]);
+          const fmpToMacro = (data: any, invertTrend = false): MacroAsset | undefined => {
+            const q = Array.isArray(data) ? data[0] : data;
+            if (!q?.price) return undefined;
+            const up = (q.changesPercentage ?? 0) > 0;
+            return {
+              price: q.price.toLocaleString(),
+              trend: invertTrend ? (up ? 'BEARISH' : 'BULLISH') : (up ? 'BULLISH' : 'BEARISH'),
+              change24h: up ? 'up' : 'down',
+            };
+          };
+          fmpSp500   = fmpToMacro(spRaw);
+          fmpDxy     = fmpToMacro(dxRaw, true);
+          fmpOil     = fmpToMacro(clRaw, true);
+          fmpRussell = fmpToMacro(rutRaw);
+          console.log('[P-02] FMP macro fallback loaded.');
+        } catch (e2) {
+          console.warn('[P-02] FMP fallback also failed:', e2);
+        }
       }
     }
 
@@ -507,6 +610,7 @@ export const getTechnicalData = async (symbol: 'BTC' | 'ETH' | 'SOL'): Promise<P
         ...(fmpDxy     && { dxy:         fmpDxy }),
         ...(fmpOil     && { oil:         fmpOil }),
         ...(fmpRussell && { russell2000: fmpRussell }),
+        macroCorrelation,
     };
   } catch (error) {
     console.error("Error fetching technical data:", error);

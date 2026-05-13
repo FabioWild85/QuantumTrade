@@ -391,6 +391,69 @@ export const TechnicalPanel: React.FC<Props> = ({ technical, asset }) => {
               </p>
             </div>
           )}
+
+          {/* A-08: Macro Correlation (SP500 & DXY) */}
+          {technical.macroCorrelation && (
+            <div className="elegant-card p-6 flex flex-col justify-between lg:col-span-3">
+              <div className="flex items-center justify-between mb-6">
+                <h4 className="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                  <svg className="w-4 h-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" /></svg>
+                  Macro-Crypto Correlation Matrix
+                </h4>
+                <div className="flex gap-2">
+                  <span className="text-[10px] font-bold text-slate-400 px-2 py-1 bg-slate-100 dark:bg-white/5 rounded">30D Returns vs {asset}</span>
+                </div>
+              </div>
+              
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                {/* S&P 500 Correlation */}
+                <div className="space-y-4">
+                  <div className="flex justify-between items-end">
+                    <div>
+                      <div className="text-[10px] font-bold text-slate-400 uppercase">S&P 500 Correlation</div>
+                      <div className={`text-2xl font-mono font-bold ${technical.macroCorrelation.sp500 > 0.6 ? 'text-indigo-600' : 'text-slate-700 dark:text-slate-300'}`}>
+                        {technical.macroCorrelation.sp500.toFixed(2)}
+                      </div>
+                    </div>
+                    <div className="text-[10px] font-bold px-2 py-1 rounded bg-slate-100 dark:bg-white/5 text-slate-500 uppercase">
+                      {technical.macroCorrelation.sp500 > 0.7 ? 'High Coupling' : technical.macroCorrelation.sp500 > 0.3 ? 'Moderate' : 'Uncoupled'}
+                    </div>
+                  </div>
+                  <div className="w-full h-2 bg-slate-100 dark:bg-slate-800 rounded-full relative">
+                    <div className="absolute top-0 bottom-0 bg-indigo-500 rounded-full" style={{ left: `${((technical.macroCorrelation.sp500 + 1) / 2) * 100}%`, width: '4px', transform: 'translateX(-50%)' }} />
+                  </div>
+                  <p className="text-[10px] text-slate-500 italic">
+                    {technical.macroCorrelation.sp500 > 0.7 
+                      ? `${asset} sta seguendo fedelmente il mercato azionario US.` 
+                      : `${asset} mostra segnali di indipendenza dall'S&P 500.`}
+                  </p>
+                </div>
+
+                {/* DXY Correlation */}
+                <div className="space-y-4">
+                  <div className="flex justify-between items-end">
+                    <div>
+                      <div className="text-[10px] font-bold text-slate-400 uppercase">DXY (Dollar) Correlation</div>
+                      <div className={`text-2xl font-mono font-bold ${technical.macroCorrelation.dxy < -0.6 ? 'text-rose-600' : 'text-slate-700 dark:text-slate-300'}`}>
+                        {technical.macroCorrelation.dxy.toFixed(2)}
+                      </div>
+                    </div>
+                    <div className="text-[10px] font-bold px-2 py-1 rounded bg-slate-100 dark:bg-white/5 text-slate-500 uppercase">
+                      {technical.macroCorrelation.dxy < -0.6 ? 'Inverse Link' : 'Neutral'}
+                    </div>
+                  </div>
+                  <div className="w-full h-2 bg-slate-100 dark:bg-slate-800 rounded-full relative">
+                    <div className="absolute top-0 bottom-0 bg-rose-500 rounded-full" style={{ left: `${((technical.macroCorrelation.dxy + 1) / 2) * 100}%`, width: '4px', transform: 'translateX(-50%)' }} />
+                  </div>
+                  <p className="text-[10px] text-slate-500 italic">
+                    {technical.macroCorrelation.dxy < -0.6 
+                      ? 'Forte legame inverso: un dollaro forte penalizza il prezzo di ' + asset + '.' 
+                      : 'L\'andamento del dollaro non sta influenzando pesantemente il prezzo.'}
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
       </div>
 
       {/* 4. INDICATORS GRID */}
@@ -425,17 +488,25 @@ export const TechnicalPanel: React.FC<Props> = ({ technical, asset }) => {
             </button>
 
             {/* A-03: ATR Volatility Heatmap */}
-            <div className="elegant-card p-4 flex flex-col items-center justify-center text-center">
+            <div className="elegant-card p-4 flex flex-col items-center justify-center text-center relative overflow-hidden">
+                {technical.volatility.bollingerBands.squeeze && (
+                  <div className="absolute top-0 left-0 right-0 h-1 bg-indigo-500 animate-pulse"></div>
+                )}
                 <span className="text-[10px] font-bold text-slate-400 uppercase mb-2">Volatility Regime</span>
                 <span className="text-lg font-mono font-bold text-slate-900 dark:text-white mb-1">${technical.volatility.atr}</span>
-                <span className={`text-[10px] font-bold px-2 py-0.5 rounded mb-1 ${
-                  technical.volatility.volatilityHeatmap === 'Explosive' ? 'bg-red-100 text-red-700 dark:bg-red-500/10 dark:text-red-400' :
-                  technical.volatility.volatilityHeatmap === 'High'      ? 'bg-orange-100 text-orange-700 dark:bg-orange-500/10 dark:text-orange-400' :
-                  technical.volatility.volatilityHeatmap === 'Compressed'? 'bg-blue-100 text-blue-700 dark:bg-blue-500/10 dark:text-blue-400' :
-                  'bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-400'
-                }`}>
-                  {technical.volatility.volatilityHeatmap ?? (technical.volatility.bollingerBands.squeeze ? 'SQUEEZE' : 'Normal')}
-                </span>
+                <div className="flex items-center gap-2 mb-1">
+                  <span className={`text-[10px] font-bold px-2 py-0.5 rounded ${
+                    technical.volatility.volatilityHeatmap === 'Explosive' ? 'bg-red-100 text-red-700 dark:bg-red-500/10 dark:text-red-400' :
+                    technical.volatility.volatilityHeatmap === 'High'      ? 'bg-orange-100 text-orange-700 dark:bg-orange-500/10 dark:text-orange-400' :
+                    technical.volatility.volatilityHeatmap === 'Compressed'? 'bg-blue-100 text-blue-700 dark:bg-blue-500/10 dark:text-blue-400' :
+                    'bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-400'
+                  }`}>
+                    {technical.volatility.volatilityHeatmap}
+                  </span>
+                  {technical.volatility.bollingerBands.squeeze && (
+                    <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-indigo-500 text-white animate-pulse">SQUEEZE</span>
+                  )}
+                </div>
                 {technical.volatility.atrRatio !== undefined && (
                   <span className="text-[9px] text-slate-400 font-mono">Ratio: {technical.volatility.atrRatio}x avg</span>
                 )}
@@ -480,12 +551,12 @@ export const TechnicalPanel: React.FC<Props> = ({ technical, asset }) => {
                 <div className="relative h-3 bg-gradient-to-r from-emerald-500 via-yellow-400 to-rose-500 rounded-full w-full mb-2">
                     <div 
                         className="absolute top-[-4px] w-2 h-5 bg-slate-900 dark:bg-white border border-white dark:border-slate-900 shadow-md rounded"
-                        style={{ left: `${Math.min(100, Math.max(0, (technical.onChain.mvrvZScore + 1) / 8 * 100))}%` }} // Maps range -1 to 7 approx
+                        style={{ left: `${Math.min(100, Math.max(0, (Number(technical.onChain.mvrvZScore) + 1) / 8 * 100))}%` }} // Maps range -1 to 7 approx
                     ></div>
                 </div>
                 <div className="flex justify-between text-[10px] font-mono text-slate-500">
                     <span>Undervalued</span>
-                    <span className="font-bold text-slate-900 dark:text-white text-sm">{technical.onChain.mvrvZScore?.toFixed(2)}</span>
+                    <span className="font-bold text-slate-900 dark:text-white text-sm">{Number(technical.onChain.mvrvZScore).toFixed(2)}</span>
                     <span>Overvalued</span>
                 </div>
             </button>
@@ -521,8 +592,8 @@ export const TechnicalPanel: React.FC<Props> = ({ technical, asset }) => {
                 </p>
                 <div className="flex justify-between items-center pt-2 border-t border-slate-100 dark:border-white/5 mt-1">
                      <span className="text-[10px] font-bold text-slate-400 uppercase">NUPL Sentiment</span>
-                     <span className={`text-xs font-bold ${technical.onChain.nupl > 0.5 ? 'text-rose-500' : technical.onChain.nupl < 0 ? 'text-emerald-500' : 'text-orange-500'}`}>
-                        {technical.onChain.nupl?.toFixed(2)}
+                     <span className={`text-xs font-bold ${Number(technical.onChain.nupl) > 0.5 ? 'text-rose-500' : Number(technical.onChain.nupl) < 0 ? 'text-emerald-500' : 'text-orange-500'}`}>
+                        {Number(technical.onChain.nupl).toFixed(2)}
                      </span>
                 </div>
             </div>
@@ -532,66 +603,70 @@ export const TechnicalPanel: React.FC<Props> = ({ technical, asset }) => {
 
       {/* 6. ORDER BOOK BAR (Full Width) */}
       {technical.orderBook && (
-        <div 
-            onClick={() => setSelectedItem({ title: 'Order Book Depth', signal: technical.orderBook.imbalance, desc: `Buying Pressure (Bids): ${technical.orderBook.bidPressure.toFixed(1)}% vs Selling Pressure (Asks): ${technical.orderBook.askPressure.toFixed(1)}%. A predominance of Bids usually acts as support.` })}
-            className="elegant-card p-5 cursor-pointer hover:border-indigo-300 dark:hover:border-indigo-500/30 transition-colors"
-        >
-            <div className="flex justify-between items-center mb-3">
-                <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">Order Book Depth</span>
-                <span className={`text-xs font-bold ${technical.orderBook.imbalance === 'Bullish' ? 'text-emerald-600' : technical.orderBook.imbalance === 'Bearish' ? 'text-rose-600' : 'text-slate-500'}`}>
+        <div className="elegant-card p-6">
+            <div className="flex justify-between items-center mb-5">
+                <span className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-2">
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 7v10c0 2 1 3 3 3h10c2 0 3-1 3-3V7c0-2-1-3-3-3H7c-2 0-3 1-3 3z" /></svg>
+                    Real-Time Order Book Strength
+                </span>
+                <span className={`text-xs font-bold px-3 py-1 rounded-full ${technical.orderBook.imbalance === 'Bullish' ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400' : technical.orderBook.imbalance === 'Bearish' ? 'bg-rose-100 text-rose-700 dark:bg-rose-500/10 dark:text-rose-400' : 'bg-slate-100 text-slate-500'}`}>
                     {technical.orderBook.imbalance} Imbalance
                 </span>
             </div>
-            <div className="relative h-8 w-full bg-slate-100 dark:bg-slate-800 rounded-lg overflow-hidden flex">
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-8 mb-6">
+                {/* Major Bids Wall */}
+                <div className="bg-emerald-50/30 dark:bg-emerald-500/5 rounded-2xl p-4 border border-emerald-100/50 dark:border-emerald-500/10">
+                    <div className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400 uppercase mb-3 flex justify-between">
+                        <span>Principale Supporto (Wall)</span>
+                        <span>{technical.orderBook.bidPressure.toFixed(1)}%</span>
+                    </div>
+                    <div className="flex justify-between items-end">
+                        <div className="text-2xl font-mono font-bold text-emerald-700 dark:text-emerald-400">
+                            ${technical.orderBook.maxBidWall?.price.toLocaleString()}
+                        </div>
+                        <div className="text-right">
+                            <div className="text-[10px] text-slate-400 font-bold uppercase">Volume</div>
+                            <div className="text-xs font-mono font-bold text-slate-600 dark:text-slate-300">{technical.orderBook.maxBidWall?.volume.toFixed(2)} {asset}</div>
+                        </div>
+                    </div>
+                </div>
+
+                {/* Major Asks Wall */}
+                <div className="bg-rose-50/30 dark:bg-rose-500/5 rounded-2xl p-4 border border-rose-100/50 dark:border-rose-500/10">
+                    <div className="text-[10px] font-bold text-rose-600 dark:text-rose-400 uppercase mb-3 flex justify-between">
+                        <span>Principale Resistenza (Wall)</span>
+                        <span>{technical.orderBook.askPressure.toFixed(1)}%</span>
+                    </div>
+                    <div className="flex justify-between items-end">
+                        <div className="text-2xl font-mono font-bold text-rose-700 dark:text-rose-400">
+                            ${technical.orderBook.maxAskWall?.price.toLocaleString()}
+                        </div>
+                        <div className="text-right">
+                            <div className="text-[10px] text-slate-400 font-bold uppercase">Volume</div>
+                            <div className="text-xs font-mono font-bold text-slate-600 dark:text-slate-300">{technical.orderBook.maxAskWall?.volume.toFixed(2)} {asset}</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div className="relative h-4 w-full bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden flex">
                 <div 
                     style={{ width: `${technical.orderBook.bidPressure}%` }} 
-                    className="h-full bg-emerald-500/80 flex items-center pl-3 text-[10px] font-bold text-white"
-                >
-                    {technical.orderBook.bidPressure > 20 && 'BIDS'}
-                </div>
+                    className="h-full bg-emerald-500 transition-all duration-700"
+                ></div>
                 <div 
-                    className="flex-1 bg-rose-500/80 flex items-center justify-end pr-3 text-[10px] font-bold text-white"
-                >
-                    {technical.orderBook.askPressure > 20 && 'ASKS'}
-                </div>
-                
-                {/* Center Marker */}
-                <div className="absolute left-1/2 top-0 bottom-0 w-0.5 bg-white dark:bg-black z-10 opacity-30"></div>
+                    className="flex-1 bg-rose-500 transition-all duration-700"
+                ></div>
+                <div className="absolute left-1/2 top-0 bottom-0 w-1 bg-white dark:bg-black z-10 opacity-50 transform -translateX-1/2"></div>
             </div>
-            <div className="flex justify-between mt-2">
-                <span className="text-xs font-mono font-bold text-emerald-600 dark:text-emerald-400">{technical.orderBook.bidPressure.toFixed(0)}%</span>
-                <span className="text-xs font-mono font-bold text-rose-600 dark:text-rose-400">{technical.orderBook.askPressure.toFixed(0)}%</span>
+            <div className="flex justify-between mt-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+                <span>Buyer Domination</span>
+                <span>Seller Domination</span>
             </div>
         </div>
       )}
 
-      {/* A-04: Liquidation Level Estimates */}
-      {technical.liquidationLevels && (
-        <div className="elegant-card p-5">
-          <div className="flex items-center justify-between mb-5">
-            <span className="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider flex items-center gap-2">
-              <svg className="w-4 h-4 text-rose-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 18.657A8 8 0 016.343 7.343S7 9 9 10c0-2 .5-5 2.986-7C14 5 16.09 5.777 17.656 7.343A7.975 7.975 0 0120 13a7.975 7.975 0 01-2.343 5.657z" /></svg>
-              Estimated Liquidation Zones
-            </span>
-            <span className="text-[9px] font-medium text-slate-400 px-2 py-0.5 bg-slate-100 dark:bg-white/5 rounded">Math approx — not live exchange data</span>
-          </div>
-          <div className="grid grid-cols-3 gap-4">
-            {technical.liquidationLevels.leverages.map((lev, i) => (
-              <div key={i} className="flex flex-col gap-2">
-                <div className="p-3 rounded-xl bg-rose-50 dark:bg-rose-500/10 border border-rose-100 dark:border-rose-500/20 text-center">
-                  <div className="text-[9px] font-bold text-rose-400 uppercase mb-1">{lev} Shorts</div>
-                  <div className="text-sm font-mono font-bold text-rose-600 dark:text-rose-400">${parseInt(technical.liquidationLevels.bearLiqs[i]).toLocaleString()}</div>
-                </div>
-                <div className="py-1 text-center text-[10px] font-bold text-slate-400 uppercase border-y border-dashed border-slate-200 dark:border-white/10">{lev} Leverage</div>
-                <div className="p-3 rounded-xl bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-100 dark:border-emerald-500/20 text-center">
-                  <div className="text-[9px] font-bold text-emerald-500 uppercase mb-1">{lev} Longs</div>
-                  <div className="text-sm font-mono font-bold text-emerald-600 dark:text-emerald-400">${parseInt(technical.liquidationLevels.bullLiqs[i]).toLocaleString()}</div>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
 
       {/* 7. ETH SPECIFIC (Conditional) */}
       {asset === 'ETH' && technical.ethSpecificData && (

@@ -12,7 +12,7 @@ const ai = new GoogleGenAI({ apiKey: GENAI_KEY });
 // gemini-3.1-pro-preview → Phase 2: state-of-the-art reasoning (May 2026)
 const MODELS = {
   RESEARCHER: 'gemini-3.1-flash-lite',
-  STRATEGIST: 'gemini-3.1-pro-preview',
+  STRATEGIST: 'gemini-3.1-flash', // Switched from Pro to Flash for major cost savings
   FALLBACK:   'gemini-2.5-flash', 
 };
 
@@ -107,15 +107,28 @@ const getFallbackReport = (
  * Uses the fast Flash model with Google Search grounding to retrieve
  * live macro data and news. Runs in ~5–8 s instead of 20+ s.
  */
-async function fetchMacroResearch(symbol: string): Promise<{ data: any; sources: string[] }> {
-  const prompt = `
-Sei un analista macro. Cerca i seguenti dati LIVE e restituisci un JSON strutturato:
+async function fetchMacroResearch(
+  symbol: string, 
+  realData: Partial<TechnicalAnalysis>
+): Promise<{ data: any; sources: string[] }> {
+  
+  // Identify which macro assets we ALREADY have from APIs to avoid paid AI search
+  const hasSp500 = !!realData.sp500;
+  const hasDxy = !!realData.dxy;
+  const hasOil = !!realData.oil;
+  const hasRussell = !!realData.russell2000;
 
-1. MERCATI (prezzi attuali futures):
-   - S&P 500 (US500 Futures)
-   - DXY Dollar Index
-   - Russell 2000
-   - Crude Oil WTI
+  const prompt = `
+Sei un analista macro. Recupera i dati mancanti e le news per ${symbol}.
+${hasSp500 && hasDxy && hasOil && hasRussell 
+  ? 'Abbiamo già i prezzi live di S&P500, DXY, Oil e Russell. Concentrati SOLO su news, calendario e indicatori macro (inflazione/PIL).' 
+  : 'Cerca i dati LIVE mancanti tra quelli elencati sotto.'}
+
+1. MERCATI (Solo se non forniti):
+   ${!hasSp500 ? '- S&P 500 (US500 Futures)' : ''}
+   ${!hasDxy ? '- DXY Dollar Index' : ''}
+   ${!hasRussell ? '- Russell 2000' : ''}
+   ${!hasOil ? '- Crude Oil WTI' : ''}
 
 2. INDICATORI MACRO USA (ultimi dati ufficiali):
    - Unemployment Rate %
@@ -123,7 +136,7 @@ Sei un analista macro. Cerca i seguenti dati LIVE e restituisci un JSON struttur
    - GDP Growth %
 
 3. CRYPTO-SPECIFICI:
-   - BTC Dominance %
+   - BTC Dominance % (se non fornito: ${realData.dominance || 'N/A'})
    - ETF daily net flow per ${symbol} (in $M)
    - SE ${symbol} === 'ETH': Cerca Gas Fees (Gwei), Staking APY %, e ETH Burned nelle ultime 24h.
 
@@ -201,7 +214,9 @@ Analizza i dati tecnici (da Binance) e i dati macro (pre-ricercati) per generare
 REGOLE:
 - I dati tecnici forniti sono la VERITÀ ASSOLUTA. Non contraddirli mai.
 - Usa sempre l'ATR per calcolare gli Stop Loss: Entry ± (2 × ATR).
-- Correlazioni obbligatorie: DXY↑ = Bearish Crypto; OIL↑ = Bearish Crypto; SPX↑ = Bullish Crypto.
+- Correlazioni obbligatorie: analizza btcEthCorrelation e macroCorrelation (SP500/DXY). DXY↑ = Bearish Crypto.
+- Order Book Walls: Osserva maxBidWall e maxAskWall per identificare barriere reali di prezzo.
+- Volatilità: Se bollingerBands.squeeze è true, sottolinea che un'esplosione di prezzo è imminente.
 - Usa linguaggio probabilistico (es. "Alta confluenza per breakout rialzista").
 - Rispondi ESCLUSIVAMENTE con un JSON valido.
 `;
@@ -297,6 +312,11 @@ export const generateMarketAnalysis = async (
     const cached = cacheService.getValidReport(symbol);
     if (cached) {
       console.log(`Cache HIT for ${symbol} — skipping API call.`);
+      // Sanitize numeric fields that Gemini may have returned as strings
+      if (cached.technical?.onChain) {
+        cached.technical.onChain.mvrvZScore = Number(cached.technical.onChain.mvrvZScore) || 0;
+        cached.technical.onChain.nupl = Number(cached.technical.onChain.nupl) || 0;
+      }
       return cached;
     }
   }
@@ -304,7 +324,7 @@ export const generateMarketAnalysis = async (
   try {
     // ── Run both phases: Research happens first (grounding), then Strategy ──
     console.log(`[Phase 1] Research starting for ${symbol}…`);
-    const research = await fetchMacroResearch(symbol);
+    const research = await fetchMacroResearch(symbol, realData);
 
     console.log(`[Phase 2] Strategy analysis starting for ${symbol}…`);
     const { parsed } = await runStrategyAnalysis(symbol, realData, research.data);
@@ -329,7 +349,11 @@ export const generateMarketAnalysis = async (
         // Hard real data ALWAYS overwrites — price, RSI, MACD, etc.
         ...realData,
         // Merge nested objects carefully
-        onChain: parsed.technical?.onChain ?? { mvrvZScore: 0, nupl: 0, activeAddressesTrend: 'Stable', longTermHolderSupplyChange: 'Stable' },
+        onChain: parsed.technical?.onChain ? {
+          ...parsed.technical.onChain,
+          mvrvZScore: Number(parsed.technical.onChain.mvrvZScore) || 0,
+          nupl: Number(parsed.technical.onChain.nupl) || 0,
+        } : { mvrvZScore: 0, nupl: 0, activeAddressesTrend: 'Stable', longTermHolderSupplyChange: 'Stable' },
         cycles: {
           daysSinceHalving: realData.cycles?.daysSinceHalving ?? 0,
           progressInCycle:  realData.cycles?.progressInCycle  ?? 0,

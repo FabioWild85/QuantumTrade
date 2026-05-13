@@ -49,6 +49,8 @@ export interface OrderBookAnalysis {
   wallType: 'Bid' | 'Ask';
   totalBidVol: number;
   totalAskVol: number;
+  maxBidWall?: { price: number; volume: number };
+  maxAskWall?: { price: number; volume: number };
 }
 
 export interface VolatilityMetrics {
@@ -167,6 +169,11 @@ export interface TechnicalAnalysis {
   liquidationLevels?: { bullLiqs: string[]; bearLiqs: string[]; leverages: string[] };
   // A-07: 30-day Pearson correlation between BTC and ETH daily returns
   btcEthCorrelation?: number;
+  // A-08: Macro Correlation (BTC vs SP500/DXY)
+  macroCorrelation?: {
+    sp500: number;
+    dxy: number;
+  };
 }
 
 export interface TradeSetup {
