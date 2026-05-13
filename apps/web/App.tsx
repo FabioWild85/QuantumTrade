@@ -26,23 +26,6 @@ const App: React.FC = () => {
   const [isDarkMode, setIsDarkMode] = useState<boolean>(false);
   const [forceRefreshMode, setForceRefreshMode] = useState<boolean>(false);
 
-  // Render AI Trading Hub as full-page overlay
-  if (activeView === 'trading-hub') {
-    return (
-      <div>
-        <div className="fixed top-4 left-4 z-50">
-          <button
-            onClick={() => setActiveView('dashboard')}
-            className="px-3 py-1.5 bg-slate-800/90 hover:bg-slate-700 text-slate-300 text-xs font-semibold rounded-lg backdrop-blur border border-slate-600 transition-colors"
-          >
-            ← Dashboard
-          </button>
-        </div>
-        <TradingHubTab />
-      </div>
-    );
-  }
-
   // Handle Dark Mode Toggle
   const toggleTheme = () => setIsDarkMode(!isDarkMode);
 
@@ -105,6 +88,23 @@ const App: React.FC = () => {
     setAnalyzedAsset(null);
     setError(null);
     setLoading(false);
+  }
+
+  // Render AI Trading Hub as full-page overlay
+  if (activeView === 'trading-hub') {
+    return (
+      <div>
+        <div className="fixed top-4 left-4 z-50">
+          <button
+            onClick={() => setActiveView('dashboard')}
+            className="px-3 py-1.5 bg-slate-800/90 hover:bg-slate-700 text-slate-300 text-xs font-semibold rounded-lg backdrop-blur border border-slate-600 transition-colors"
+          >
+            ← Dashboard
+          </button>
+        </div>
+        <TradingHubTab />
+      </div>
+    );
   }
 
   return (

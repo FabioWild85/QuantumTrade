@@ -6,6 +6,7 @@ Single-user, single-bot, BTC-PERP on Hyperliquid (4h Trend Following)
 import asyncio
 import logging
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks
@@ -55,7 +56,15 @@ app.add_middleware(
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "engine": engine.running if engine else False}
+    status = await engine.get_status() if engine else {}
+    return {
+        "status":       "ok",
+        "running":      status.get("running", False),
+        "mode":         status.get("mode", "paper"),
+        "ws_connected": status.get("ws_connected", False),
+        "model_loaded": status.get("model_loaded", False),
+        "cycle_count":  status.get("cycle_count", 0),
+    }
 
 
 # ─── Wallet ──────────────────────────────────────────────────────────────────
@@ -218,6 +227,62 @@ async def get_inference_logs(limit: int = 50):
     db = get_supabase()
     result = db.table("inference_logs").select("*").order("time", desc=True).limit(limit).execute()
     return result.data
+
+
+# ─── Retraining ──────────────────────────────────────────────────────────────
+
+@app.post("/retrain")
+async def retrain_now(background_tasks: BackgroundTasks):
+    """Trigger an immediate LightGBM retrain (runs in background)."""
+    if not engine:
+        raise HTTPException(503, "Engine not initialized")
+
+    async def _run():
+        from services.trainer import LGBMTrainer
+        trainer = LGBMTrainer()
+        metrics = await trainer.retrain()
+        if metrics.get("status") == "ok":
+            from services.trainer import load_model
+            result = load_model()
+            if result and engine:
+                engine._lgbm_model, engine._lgbm_features = result
+        log.info("Manual retrain complete: %s", metrics)
+
+    background_tasks.add_task(_run)
+    return {"status": "retraining_started"}
+
+
+@app.get("/retrain/status")
+async def retrain_status():
+    """Check model info from disk."""
+    from services.trainer import MODEL_PATH
+    import os
+    if not MODEL_PATH.exists():
+        return {"model_exists": False}
+    mtime = os.path.getmtime(MODEL_PATH)
+    trained_at = datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat()
+    return {
+        "model_exists":  True,
+        "trained_at":    trained_at,
+        "model_loaded":  engine._lgbm_model is not None if engine else False,
+    }
+
+
+# ─── Covariates ───────────────────────────────────────────────────────────────
+
+@app.get("/covariates")
+async def get_covariates():
+    """Return latest external covariate values (F&G, BTC dominance, confluence)."""
+    from services.covariates import get_latest_covariates
+    return get_latest_covariates()
+
+
+@app.post("/covariates/refresh")
+async def refresh_covariates():
+    """Force-fetch and store updated external covariates."""
+    from services.covariates import update_covariates
+    result = await update_covariates()
+    return {"status": "ok", "values": result}
 
 
 # ─── Backtesting ─────────────────────────────────────────────────────────────

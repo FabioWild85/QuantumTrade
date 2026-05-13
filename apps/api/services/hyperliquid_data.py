@@ -121,16 +121,29 @@ class HyperliquidData:
         ]
         return pd.DataFrame(rows).set_index("time").sort_index()
 
-    # ── Liquidations (aggregate fills) ───────────────────────────────────────
+    # ── OI History (REST) ────────────────────────────────────────────────────
+
+    async def get_oi_history(
+        self, symbol: str = "BTC", hours: int = 200
+    ) -> pd.DataFrame:
+        """
+        Fetch Open Interest history from Hyperliquid.
+        HL doesn't expose a dedicated OI history endpoint; we approximate it
+        by polling metaAndAssetCtxs periodically. For historical OI, we use
+        the OHLCV candle volume as a proxy feature (build_all_features handles this).
+        Returns an empty DataFrame — WS provides live OI via activeAssetCtx.
+        """
+        return pd.DataFrame()
+
+    # ── Liquidations ─────────────────────────────────────────────────────────
 
     async def get_recent_liquidations(
         self, symbol: str = "BTC", hours: int = 24
     ) -> dict:
         """
-        Approximate liquidation volume from recent large funding events.
-        For live data: subscribe to WS trades channel and filter by type='liquidation'.
+        Liquidation volume is accumulated in real-time via the WS trades channel
+        (see HLWebSocket._on_trades). This REST method returns zeros as fallback.
         """
-        # Placeholder — in Settimana 2 viene integrato il WebSocket trades channel
         return {"liq_long_usd": 0.0, "liq_short_usd": 0.0, "hours": hours}
 
     # ── Agent Wallet ──────────────────────────────────────────────────────────

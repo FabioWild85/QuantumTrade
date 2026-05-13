@@ -1,11 +1,11 @@
 # AI Trading Hub — Python Backend Dependencies
-# Generated: 2026-05-13 | Python 3.11 | Apple Silicon (MPS)
+# Updated: 2026-05-13 (Week 2) | Python 3.11 | Apple Silicon (MPS)
 
-# ── Core ML ──────────────────────────────────────────────
+# Core ML
 torch==2.11.0
 chronos-forecasting==2.2.2
 
-# ── Data & Feature Engineering ───────────────────────────
+# Data & Feature Engineering
 pandas==3.0.3
 numpy==2.4.4
 scipy==1.17.1
@@ -13,33 +13,39 @@ ta==0.11.0
 lightgbm==4.6.0
 pyarrow==20.0.0
 
-# ── Hyperliquid ───────────────────────────────────────────
+# ML Evaluation (for retrainer walk-forward metrics)
+scikit-learn>=1.5.0
+
+# Hyperliquid
 hyperliquid-python-sdk==0.23.0
 
-# ── FastAPI Backend ───────────────────────────────────────
+# FastAPI Backend
 fastapi==0.115.12
 uvicorn[standard]==0.34.2
 pydantic==2.11.4
 pydantic-settings==2.9.1
 python-dotenv==1.1.0
 
-# ── Database ──────────────────────────────────────────────
+# Database
 sqlalchemy==2.0.41
 alembic==1.16.1
 asyncpg==0.30.0
 supabase==2.15.2
 
-# ── HTTP & Async ──────────────────────────────────────────
+# HTTP & Async
 httpx==0.28.1
 websockets==15.0.1
 aiofiles==24.1.0
 
-# ── Security (agent wallet encryption) ───────────────────
+# Security (agent wallet encryption)
 cryptography==44.0.3
 
-# ── Utilities ─────────────────────────────────────────────
+# External Data (optional covariates — NQ, DXY futures)
+yfinance>=0.2.50
+
+# Utilities
 python-jose==3.3.0
 requests==2.34.0
 
-# ── Plotting (POC only, remove in prod) ───────────────────
+# Plotting (POC only, remove in prod)
 matplotlib==3.10.3
