@@ -23,3 +23,17 @@ dist-ssr
 *.sln
 *.sw?
 scratch/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.egg-info/
+
+# Secrets (mai committare)
+.env
+.env.local
+.env.*.local
+apps/api/.env

@@ -1,0 +1,310 @@
+"""
+Smart Money Concepts (SMC) + Enhanced Feature Engineering.
+Production version of poc/phase4_enhanced_features.py.
+Includes: FVG, Liquidity Sweep, Market Structure, CVD, Order Blocks, MTF.
+"""
+
+import logging
+import numpy as np
+import pandas as pd
+import ta
+
+log = logging.getLogger(__name__)
+
+
+# ─── FVG — Fair Value Gap ─────────────────────────────────────────────────────
+
+def detect_fvg(df: pd.DataFrame, min_gap_pct: float = 0.001) -> pd.DataFrame:
+    """
+    Bullish FVG: low[i+1] > high[i-1] (gap up — zone di squilibrio rialzista).
+    Bearish FVG: high[i+1] < low[i-1] (gap down — zone di squilibrio ribassista).
+    """
+    d = df.copy()
+    gap = (d["low"].shift(-1) - d["high"].shift(1)).abs() / d["close"]
+    d["fvg_bull"] = ((d["low"].shift(-1) > d["high"].shift(1)) & (gap > min_gap_pct)).astype(float)
+    d["fvg_bear"] = ((d["high"].shift(-1) < d["low"].shift(1)) & (gap > min_gap_pct)).astype(float)
+    return d
+
+
+# ─── Liquidity Sweep ─────────────────────────────────────────────────────────
+
+def detect_liquidity_sweep(df: pd.DataFrame, lookback: int = 20) -> pd.DataFrame:
+    """
+    Price takes swing high/low then closes in the opposite direction.
+    Signals potential reversal after retail stop hunt.
+    """
+    d = df.copy()
+    swing_high = d["high"].rolling(lookback).max().shift(1)
+    swing_low  = d["low"].rolling(lookback).min().shift(1)
+    buyside  = (d["high"] > swing_high) & (d["close"] < swing_high)
+    sellside = (d["low"]  < swing_low)  & (d["close"] > swing_low)
+    d["sweep"] = (buyside | sellside).astype(float)
+    d["sweep_dir"] = np.where(buyside, "buyside", np.where(sellside, "sellside", "none"))
+    return d
+
+
+# ─── Market Structure ─────────────────────────────────────────────────────────
+
+def classify_market_structure(df: pd.DataFrame, lookback: int = 10) -> pd.DataFrame:
+    """
+    BOS_up   = close > rolling max (last N bars) — bullish continuation.
+    BOS_down = close < rolling min (last N bars) — bearish continuation.
+    CHoCH is detected when a BOS occurs opposite to the recent trend direction.
+    """
+    d = df.copy()
+    d["bos_up"]   = (d["close"] > d["high"].rolling(lookback).max().shift(1)).astype(float)
+    d["bos_down"] = (d["close"] < d["low"].rolling(lookback).min().shift(1)).astype(float)
+
+    structure = []
+    last = "ranging"
+    for up, down in zip(d["bos_up"], d["bos_down"]):
+        if up:
+            new = "CHoCH_up" if last in ("BOS_down", "CHoCH_down") else "BOS_up"
+        elif down:
+            new = "CHoCH_down" if last in ("BOS_up", "CHoCH_up") else "BOS_down"
+        else:
+            new = last
+        structure.append(new)
+        last = new
+
+    d["structure"] = structure
+    return d
+
+
+# ─── CVD — Cumulative Volume Delta ───────────────────────────────────────────
+
+def build_cvd_features(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Estimate buy/sell volume from OHLCV (Haas approximation).
+    buy_vol  = volume × (close − low) / (high − low)
+    sell_vol = volume − buy_vol
+    delta    = buy_vol − sell_vol  (positive = buying pressure)
+    cvd      = cumulative delta
+    """
+    d = df.copy()
+    hl = (d["high"] - d["low"]).replace(0, np.nan)
+    buy_vol  = d["volume"] * (d["close"] - d["low"]) / hl
+    sell_vol = d["volume"] - buy_vol
+    delta    = buy_vol - sell_vol
+
+    d["delta_raw"]     = delta
+    d["delta_ma8"]     = delta.rolling(8).mean()
+    d["delta_ma24"]    = delta.rolling(24).mean()
+    d["cvd"]           = delta.cumsum()
+    d["cvd_slope"]     = d["cvd"].diff(6) / (d["atr_14"] * d["volume"].rolling(6).mean() + 1e-9)
+    d["vol_imbalance"] = buy_vol / (d["volume"].replace(0, np.nan))
+
+    price_slope = d["close"].diff(6)
+    delta_slope = d["delta_ma8"].diff(6)
+    d["delta_price_div"] = np.where(
+        (price_slope > 0) & (delta_slope < 0), -1.0,
+        np.where((price_slope < 0) & (delta_slope > 0), 1.0, 0.0),
+    )
+    return d
+
+
+# ─── Order Blocks ────────────────────────────────────────────────────────────
+
+def build_order_block_features(
+    df: pd.DataFrame, lookback: int = 20, min_move: float = 0.005
+) -> pd.DataFrame:
+    """
+    Bullish OB: last bearish candle before a significant bullish move that breaks swing high.
+    Bearish OB: last bullish candle before a significant bearish move that breaks swing low.
+    Features are distance (ATR-normalized) and whether price is inside the OB zone.
+    """
+    d = df.copy()
+    atr_safe = d["atr_14"].replace(0, np.nan)
+
+    bull_ob_top = pd.Series(np.nan, index=d.index)
+    bull_ob_bot = pd.Series(np.nan, index=d.index)
+    bull_ob_age = pd.Series(np.nan, index=d.index)
+    bear_ob_top = pd.Series(np.nan, index=d.index)
+    bear_ob_bot = pd.Series(np.nan, index=d.index)
+    bear_ob_age = pd.Series(np.nan, index=d.index)
+
+    active_bull = None
+    active_bear = None
+
+    for i in range(lookback + 1, len(d)):
+        swing_high = d["high"].iloc[i - lookback: i - 1].max()
+        swing_low  = d["low"].iloc[i - lookback: i - 1].min()
+        curr_close = d["close"].iloc[i]
+
+        if curr_close > swing_high * (1 + min_move / 2):
+            win = d.iloc[max(0, i - lookback // 2): i]
+            mask = win["open"] > win["close"]
+            if mask.any():
+                idx = mask[::-1].idxmax()
+                active_bull = (d.loc[idx, "open"], d.loc[idx, "low"], i)
+
+        if curr_close < swing_low * (1 - min_move / 2):
+            win = d.iloc[max(0, i - lookback // 2): i]
+            mask = win["close"] > win["open"]
+            if mask.any():
+                idx = mask[::-1].idxmax()
+                active_bear = (d.loc[idx, "high"], d.loc[idx, "close"], i)
+
+        if active_bull:
+            top, bot, formed = active_bull
+            bull_ob_top.iloc[i] = top
+            bull_ob_bot.iloc[i] = bot
+            bull_ob_age.iloc[i] = i - formed
+            if curr_close < bot * 0.998:
+                active_bull = None
+
+        if active_bear:
+            top, bot, formed = active_bear
+            bear_ob_top.iloc[i] = top
+            bear_ob_bot.iloc[i] = bot
+            bear_ob_age.iloc[i] = i - formed
+            if curr_close > top * 1.002:
+                active_bear = None
+
+    d["ob_bull_dist"]   = (d["close"] - (bull_ob_top + bull_ob_bot) / 2) / atr_safe
+    d["ob_bear_dist"]   = ((bear_ob_top + bear_ob_bot) / 2 - d["close"]) / atr_safe
+    d["ob_bull_age"]    = bull_ob_age.clip(0, 100)
+    d["ob_bear_age"]    = bear_ob_age.clip(0, 100)
+    d["ob_bull_inside"] = ((d["close"] >= bull_ob_bot) & (d["close"] <= bull_ob_top)).astype(float)
+    d["ob_bear_inside"] = ((d["close"] >= bear_ob_bot) & (d["close"] <= bear_ob_top)).astype(float)
+    d["ob_bull_active"] = bull_ob_top.notna().astype(float)
+    d["ob_bear_active"] = bear_ob_top.notna().astype(float)
+    return d
+
+
+# ─── Multi-Timeframe (MTF) ────────────────────────────────────────────────────
+
+def build_mtf_features(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Resample 4h → 1D, compute daily EMA20, ADX14, RSI14.
+    Forward-fill daily values onto 4h index (no lookahead bias).
+    The daily trend context is the single most important predictor (phase4: 20.1% importance).
+    """
+    d = df.copy()
+
+    daily = df.resample("1D").agg({
+        "open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"
+    }).dropna()
+
+    daily["d_ema20"]     = ta.trend.EMAIndicator(daily["close"], 20).ema_indicator()
+    daily["d_adx"]       = ta.trend.ADXIndicator(daily["high"], daily["low"], daily["close"], 14).adx()
+    daily["d_rsi"]       = ta.momentum.RSIIndicator(daily["close"], 14).rsi()
+    daily["d_atr_daily"] = ta.volatility.AverageTrueRange(daily["high"], daily["low"], daily["close"], 14).average_true_range()
+
+    daily["d_regime"] = np.where(
+        (daily["close"] > daily["d_ema20"]) & (daily["d_adx"] > 20),  1,
+        np.where((daily["close"] < daily["d_ema20"]) & (daily["d_adx"] > 20), -1, 0)
+    )
+    daily["d_ema20_dist"] = (daily["close"] - daily["d_ema20"]) / (daily["d_atr_daily"] + 1e-9)
+
+    daily_aligned = daily[["d_ema20", "d_adx", "d_rsi", "d_regime", "d_ema20_dist"]].reindex(
+        d.index, method="ffill"
+    )
+    for col in daily_aligned.columns:
+        d[col] = daily_aligned[col]
+
+    bos_up   = d["close"] > d["close"].rolling(20).max().shift(1)
+    bos_down = d["close"] < d["close"].rolling(20).min().shift(1)
+    d["mtf_aligned"] = np.where(
+        (bos_up & (d["d_regime"] == 1)) | (bos_down & (d["d_regime"] == -1)),  1.0,
+        np.where(
+            (bos_up & (d["d_regime"] == -1)) | (bos_down & (d["d_regime"] == 1)), -1.0, 0.0
+        )
+    )
+    return d
+
+
+# ─── Full Feature Pipeline ────────────────────────────────────────────────────
+
+def build_all_features(
+    df_4h: pd.DataFrame,
+    df_funding: pd.DataFrame,
+    df_oi: pd.DataFrame,
+    df_liq: pd.DataFrame,
+) -> pd.DataFrame:
+    """
+    Builds the complete 64-feature matrix used by LightGBM.
+    Input: aligned DataFrames indexed by UTC timestamp.
+    """
+    d = df_4h.copy()
+    close, high, low, vol = d["close"], d["high"], d["low"], d["volume"]
+
+    # ── Base indicators ──────────────────────────────────────────────────────
+    d["rsi_14"]    = ta.momentum.RSIIndicator(close, 14).rsi()
+    d["adx_14"]    = ta.trend.ADXIndicator(high, low, close, 14).adx()
+    d["atr_14"]    = ta.volatility.AverageTrueRange(high, low, close, 14).average_true_range()
+    d["macd_hist"] = ta.trend.MACD(close).macd_diff()
+    bb             = ta.volatility.BollingerBands(close, 20)
+    d["bb_width"]  = (bb.bollinger_hband() - bb.bollinger_lband()) / close
+    d["ema20"]     = ta.trend.EMAIndicator(close, 20).ema_indicator()
+    d["ema50_dist"]= (close - ta.trend.EMAIndicator(close, 50).ema_indicator()) / (d["atr_14"] + 1e-9)
+
+    for lag in [1, 3, 6, 12, 24, 48]:
+        d[f"ret_{lag}"] = close.pct_change(lag)
+    for w in [24, 72]:
+        d[f"rv_{w}"] = d["ret_1"].rolling(w).std()
+
+    d["vol_ma"]    = vol.rolling(20).mean()
+    d["vol_ratio"] = vol / (d["vol_ma"].replace(0, np.nan))
+    d["hl_range"]  = (high - low) / close
+
+    # ── SMC + CVD + OB + MTF ─────────────────────────────────────────────────
+    d = detect_fvg(d)
+    d = detect_liquidity_sweep(d)
+    d = classify_market_structure(d)
+    d = build_cvd_features(d)
+    d = build_order_block_features(d)
+    d = build_mtf_features(d)
+
+    # ── Funding ───────────────────────────────────────────────────────────────
+    d = d.join(df_funding, how="left")
+    d["funding_ma24"]  = d["funding"].rolling(24).mean()
+    d["funding_z"]     = (d["funding"] - d["funding_ma24"]) / (d["funding"].rolling(24).std() + 1e-9)
+    d["funding_std12"] = d["funding"].rolling(12).std()
+    d["funding_cum48"] = d["funding"].rolling(48).sum()
+    d["premium_z"]     = (d["premium"] - d["premium"].rolling(12).mean()) / (d["premium"].rolling(12).std() + 1e-9)
+
+    # ── Open Interest ─────────────────────────────────────────────────────────
+    if "oi" in df_oi.columns:
+        d = d.join(df_oi.rename(columns={"oi": "oi_raw"}), how="left")
+    d["oi_ma8"]      = d.get("oi_raw", pd.Series(dtype=float)).rolling(8).mean()
+    d["oi_ma_ratio"] = d.get("oi_raw", pd.Series(dtype=float)) / (d["oi_ma8"].replace(0, np.nan))
+    d["oi_delta"]    = d.get("oi_raw", pd.Series(dtype=float)).diff(1)
+    d["oi_delta_z"]  = d["oi_delta"] / (d.get("oi_raw", pd.Series(dtype=float)).rolling(24).std() + 1e-9)
+    d["oi_ma24"]     = d.get("oi_raw", pd.Series(dtype=float)).rolling(24).mean()
+
+    # ── Liquidations ──────────────────────────────────────────────────────────
+    d = d.join(df_liq, how="left")
+    if "liq_long" in d.columns and "liq_short" in d.columns:
+        d["liq_total"]   = d["liq_long"] + d["liq_short"]
+        d["liq_sum_24h"] = d["liq_total"].rolling(6).sum()
+        d["liq_z"]       = (d["liq_total"] - d["liq_total"].rolling(24).mean()) / (d["liq_total"].rolling(24).std() + 1e-9)
+        d["liq_ratio"]   = d["liq_long"] / (d["liq_total"].replace(0, np.nan))
+        d["liq_long_z"]  = (d["liq_long"]  - d["liq_long"].rolling(24).mean())  / (d["liq_long"].rolling(24).std()  + 1e-9)
+        d["liq_short_z"] = (d["liq_short"] - d["liq_short"].rolling(24).mean()) / (d["liq_short"].rolling(24).std() + 1e-9)
+
+    log.debug(f"Feature matrix: {d.shape[1]} columns, {len(d)} rows")
+    return d
+
+
+# ─── Feature column lists (sync with phase4) ────────────────────────────────
+
+FEATURE_GROUPS = {
+    "base": [
+        "rsi_14", "adx_14", "atr_14", "macd_hist", "bb_width", "ema50_dist",
+        "ret_1", "ret_3", "ret_6", "ret_12", "ret_24", "ret_48",
+        "rv_24", "rv_72", "vol_ma", "vol_ratio", "hl_range",
+    ],
+    "cvd": ["delta_raw", "delta_ma8", "delta_ma24", "cvd_slope", "vol_imbalance", "delta_price_div"],
+    "ob":  ["ob_bull_dist", "ob_bear_dist", "ob_bull_age", "ob_bear_age",
+             "ob_bull_inside", "ob_bear_inside", "ob_bull_active", "ob_bear_active"],
+    "mtf": ["d_ema20_dist", "d_adx", "d_rsi", "d_regime", "mtf_aligned"],
+    "smc": ["fvg_bull", "fvg_bear", "sweep"],
+    "funding": ["funding", "funding_ma24", "funding_z", "funding_std12", "funding_cum48", "premium_z"],
+    "oi":  ["oi_raw", "oi_ma_ratio", "oi_delta", "oi_delta_z", "oi_ma24"],
+    "liq": ["liq_total", "liq_sum_24h", "liq_z", "liq_ratio", "liq_long_z", "liq_short_z"],
+    "c2":  ["c2_dir_prob", "c2_vol_prob", "c2_p10", "c2_p50", "c2_p90",
+             "c2_uncertainty", "c2_cont_prob", "c2_p50_vs_atr"],
+}
+
+ALL_FEATURES = [f for group in FEATURE_GROUPS.values() for f in group]

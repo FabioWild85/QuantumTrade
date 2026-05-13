@@ -1,0 +1,46 @@
+{
+  "date": "2026-05-13",
+  "phase": "phase4_enhanced",
+  "n_features": 64,
+  "n_test_rows": 3686,
+  "n_retrain": 31,
+  "accuracy": 0.6099,
+  "logloss": 0.7034,
+  "always_long": 0.5165,
+  "delta_vs_baseline_pp": 7.22,
+  "ev_per_trade_rr175": 0.6772,
+  "group_importance": {
+    "Chronos-2": 0.1013,
+    "OB (nuovo)": 0.0374,
+    "CVD (nuovo)": 0.0595,
+    "MTF (nuovo)": 0.201,
+    "OI": 0.0352,
+    "Liquidations": 0.0455,
+    "Funding": 0.1139,
+    "SMC base": 0.0131,
+    "Base indicators": 0.3931
+  },
+  "top_features": [
+    "d_ema20_dist",
+    "ema50_dist",
+    "d_adx",
+    "ret_48",
+    "adx_14",
+    "funding_cum48",
+    "funding_ma24",
+    "c2_cont_prob",
+    "d_rsi",
+    "ret_24",
+    "c2_vol_prob",
+    "rv_72",
+    "rsi_14",
+    "bb_width",
+    "premium_z"
+  ],
+  "test_date_range": "2024-09-05 \u2192 2026-05-13",
+  "new_feature_groups": {
+    "CVD": 6,
+    "OB": 8,
+    "MTF": 5
+  }
+}

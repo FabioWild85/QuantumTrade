@@ -1,0 +1,67 @@
+services:
+
+  # ── Python FastAPI Backend ─────────────────────────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    image: trading-hub-api:local
+    container_name: trading_hub_api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - apps/api/.env
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@db:5432/trading_hub
+      - SUPABASE_URL=${SUPABASE_URL:-}
+      - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY:-}
+    volumes:
+      - ./apps/api:/app/api          # hot-reload in dev
+      - ./poc:/app/poc               # access to POC parquet data
+      - model_cache:/root/.cache     # Chronos-2 model weights cache
+    depends_on:
+      db:
+        condition: service_healthy
+    command: uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir /app/api
+
+  # ── PostgreSQL (local dev — replace with Supabase in prod) ────────────────
+  db:
+    image: postgres:16-alpine
+    container_name: trading_hub_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: trading_hub
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./apps/api/db/schema.sql:/docker-entrypoint-initdb.d/01_schema.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ── React Frontend (dev server via vite) ───────────────────────────────────
+  web:
+    image: node:22-alpine
+    container_name: trading_hub_web
+    restart: unless-stopped
+    working_dir: /app
+    ports:
+      - "3000:3000"
+    volumes:
+      - .:/app
+      - /app/node_modules
+    command: sh -c "npm install && npm run dev"
+    environment:
+      - VITE_API_URL=http://localhost:8000
+    depends_on:
+      - api
+
+volumes:
+  postgres_data:
+  model_cache:

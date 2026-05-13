@@ -1,4 +1,5 @@
 import React, { useState, useCallback, useEffect } from 'react';
+import { TradingHubTab } from './components/trading-hub/TradingHubTab';
 import { Header } from './components/Header';
 import { MarketSummary } from './components/MarketSummary';
 import { NewsSection } from './components/NewsSection';
@@ -13,7 +14,10 @@ import { generateMarketAnalysis } from './services/geminiService';
 import { getTechnicalData } from './services/cryptoDataService';
 import { MarketReport } from './types';
 
+type AppView = 'dashboard' | 'trading-hub';
+
 const App: React.FC = () => {
+  const [activeView, setActiveView] = useState<AppView>('dashboard');
   const [report, setReport] = useState<MarketReport | null>(null);
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
@@ -21,6 +25,23 @@ const App: React.FC = () => {
   const [analyzedAsset, setAnalyzedAsset] = useState<'BTC' | 'ETH' | 'SOL' | null>(null);
   const [isDarkMode, setIsDarkMode] = useState<boolean>(false);
   const [forceRefreshMode, setForceRefreshMode] = useState<boolean>(false);
+
+  // Render AI Trading Hub as full-page overlay
+  if (activeView === 'trading-hub') {
+    return (
+      <div>
+        <div className="fixed top-4 left-4 z-50">
+          <button
+            onClick={() => setActiveView('dashboard')}
+            className="px-3 py-1.5 bg-slate-800/90 hover:bg-slate-700 text-slate-300 text-xs font-semibold rounded-lg backdrop-blur border border-slate-600 transition-colors"
+          >
+            ← Dashboard
+          </button>
+        </div>
+        <TradingHubTab />
+      </div>
+    );
+  }
 
   // Handle Dark Mode Toggle
   const toggleTheme = () => setIsDarkMode(!isDarkMode);
@@ -89,7 +110,7 @@ const App: React.FC = () => {
   return (
     <div className={isDarkMode ? 'dark' : ''}>
       <div className="min-h-screen font-sans transition-colors duration-300 bg-[#F8FAFC] dark:bg-[#0B1120] text-slate-900 dark:text-slate-200 w-full overflow-x-hidden flex flex-col selection:bg-indigo-500/20">
-        <Header isDarkMode={isDarkMode} toggleTheme={toggleTheme} />
+        <Header isDarkMode={isDarkMode} toggleTheme={toggleTheme} onOpenHub={() => setActiveView('trading-hub')} />
 
         <main className="flex-grow container mx-auto px-4 md:px-6 py-10 max-w-[1400px] pb-32">
           

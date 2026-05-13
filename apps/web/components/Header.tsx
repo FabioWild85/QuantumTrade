@@ -3,9 +3,10 @@ import React from 'react';
 interface Props {
   isDarkMode: boolean;
   toggleTheme: () => void;
+  onOpenHub?: () => void;
 }
 
-export const Header: React.FC<Props> = ({ isDarkMode, toggleTheme }) => {
+export const Header: React.FC<Props> = ({ isDarkMode, toggleTheme, onOpenHub }) => {
   return (
     <header className="w-full py-5 px-6 bg-white/80 dark:bg-[#0B1120]/90 backdrop-blur-lg sticky top-0 z-50 border-b border-slate-200 dark:border-white/5 transition-colors duration-300">
       <div className="max-w-[1400px] mx-auto flex justify-between items-center">
@@ -31,8 +32,19 @@ export const Header: React.FC<Props> = ({ isDarkMode, toggleTheme }) => {
              <span className="text-xs font-semibold text-slate-600 dark:text-slate-400">Nodes Connected</span>
           </div>
 
+          {/* AI Trading Hub button */}
+          {onOpenHub && (
+            <button
+              onClick={onOpenHub}
+              className="hidden sm:flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold rounded-xl transition-colors shadow-lg shadow-indigo-600/20"
+            >
+              <span>🤖</span>
+              <span>AI Trading Hub</span>
+            </button>
+          )}
+
           {/* Dark Mode Toggle */}
-          <button 
+          <button
             onClick={toggleTheme}
             className="p-2 rounded-xl bg-slate-50 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors border border-slate-200 dark:border-white/5"
             aria-label="Toggle Dark Mode"
