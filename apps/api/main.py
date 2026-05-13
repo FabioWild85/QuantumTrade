@@ -185,21 +185,29 @@ async def bot_status():
 
 @app.get("/forecast")
 async def get_forecast(symbol: str = "BTC", horizon: int = 3):
-    """On-demand Chronos-2 forecast for the Forecast View UI."""
+    """On-demand Chronos-2 forecast with full fan-chart data for the UI."""
+    import ta as _ta
     from services.chronos_model import ChronosForecaster
     from services.hyperliquid_data import HyperliquidData
 
     hl = HyperliquidData()
     df = await hl.get_ohlcv(symbol, "4h", limit=512)
+
+    # Compute current ATR so Chronos-2 can produce c2_p50_vs_atr
+    atr_series = _ta.volatility.AverageTrueRange(df["high"], df["low"], df["close"], 14).average_true_range()
+    atr = float(atr_series.iloc[-1]) if not atr_series.empty else None
+
     forecaster = ChronosForecaster()
-    result = forecaster.forecast(df["close"].values, horizon=horizon)
+    result = forecaster.forecast(df["close"].values, horizon=horizon, atr=atr)
+
     return {
-        "symbol": symbol,
-        "horizon_steps": horizon,
-        "horizon_hours": horizon * 4,
-        "current_price": float(df["close"].iloc[-1]),
+        "symbol":          symbol,
+        "horizon_steps":   horizon,
+        "horizon_hours":   horizon * 4,
+        "current_price":   float(df["close"].iloc[-1]),
         "last_candle_time": df.index[-1].isoformat(),
-        **result,
+        "atr":             atr,
+        **result,   # includes all c2_* keys + fan dict
     }
 
 
@@ -213,6 +221,49 @@ async def get_equity(from_ts: Optional[str] = None, to_ts: Optional[str] = None,
         q = q.lte("time", to_ts)
     result = q.execute()
     return result.data
+
+
+@app.get("/equity/stream")
+async def equity_stream():
+    """Server-Sent Events stream: pushes new equity snapshots as they arrive."""
+    import json
+    from fastapi.responses import StreamingResponse
+
+    async def generate():
+        last_time: Optional[str] = None
+        while True:
+            try:
+                db   = get_supabase()
+                rows = (
+                    db.table("equity_snapshots")
+                    .select("*")
+                    .order("time", desc=True)
+                    .limit(1)
+                    .execute()
+                    .data
+                )
+                if rows:
+                    row = rows[0]
+                    if row.get("time") != last_time:
+                        last_time = row["time"]
+                        yield f"data: {json.dumps(row)}\n\n"
+                    else:
+                        yield ": heartbeat\n\n"   # keep TCP connection alive
+                else:
+                    yield ": empty\n\n"
+            except Exception as exc:
+                yield f": error {exc}\n\n"
+            await asyncio.sleep(10)
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control":    "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection":       "keep-alive",
+        },
+    )
 
 
 @app.get("/trades")

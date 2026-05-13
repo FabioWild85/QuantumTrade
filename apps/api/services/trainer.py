@@ -25,12 +25,10 @@ log = logging.getLogger(__name__)
 MODEL_DIR  = Path(__file__).parent.parent / "models"
 MODEL_PATH = MODEL_DIR / "lgbm_latest.pkl"
 
-# Chronos-2 features are inference-time only — not available for historical retraining
-_C2_FEATURES = frozenset({
-    "c2_dir_prob", "c2_cont_prob",
-    "c2_p10_vs_atr", "c2_p50_vs_atr", "c2_p90_vs_atr",
-    "c2_p10", "c2_p50", "c2_p90",
-})
+# Chronos-2 features are inference-time only — not available for historical retraining.
+# These names MUST match FEATURE_GROUPS["c2"] in smc.py exactly.
+from services.smc import FEATURE_GROUPS as _FG
+_C2_FEATURES  = frozenset(_FG["c2"])
 LGBM_FEATURES = [f for f in ALL_FEATURES if f not in _C2_FEATURES]
 
 _LGB_PARAMS = dict(

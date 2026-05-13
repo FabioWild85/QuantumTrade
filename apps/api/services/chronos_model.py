@@ -103,6 +103,15 @@ class ChronosForecaster:
 
         p50_vs_atr = float((p50 - last_price) / atr) if atr and atr > 0 else 0.0
 
+        # Per-step fan data (for UI fan chart visualization)
+        fan = {
+            "p10": [float(np.percentile(samples_np[:, i], 10)) for i in range(horizon)],
+            "p25": [float(np.percentile(samples_np[:, i], 25)) for i in range(horizon)],
+            "p50": [float(np.percentile(samples_np[:, i], 50)) for i in range(horizon)],
+            "p75": [float(np.percentile(samples_np[:, i], 75)) for i in range(horizon)],
+            "p90": [float(np.percentile(samples_np[:, i], 90)) for i in range(horizon)],
+        }
+
         latency_ms = (time.perf_counter() - t0) * 1000
         log.debug(f"Chronos-2 inference: {latency_ms:.0f}ms | dir_prob={dir_prob:.3f} | p50={p50:.1f}")
 
@@ -115,6 +124,7 @@ class ChronosForecaster:
             "c2_uncertainty": uncertainty,
             "c2_cont_prob":   cont_prob,
             "c2_p50_vs_atr":  p50_vs_atr,
+            "fan":            fan,       # per-step quantile bands for UI
             "latency_ms":     round(latency_ms, 1),
         }
 
