@@ -300,17 +300,22 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
         {/* Base params */}
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
           {[
-            { label: 'Da', type: 'date', val: fromDate, set: setFromDate },
-            { label: 'A', type: 'date', val: toDate, set: setToDate },
-            { label: 'Capitale ($)', type: 'number', val: capital, set: setCapital },
-            { label: 'SL mult', type: 'number', val: slMult, set: setSlMult },
-            { label: 'TP mult', type: 'number', val: tpMult, set: setTpMult },
-            { label: 'Size (%)', type: 'number', val: posSizePct, set: setPosSizePct },
+            { label: 'Da (min: 2017-01-01)', type: 'date', val: fromDate, set: setFromDate, min: '2017-01-01', max: toDate },
+            { label: 'A (max: oggi)', type: 'date', val: toDate, set: setToDate, min: fromDate, max: today },
+            { label: 'Capitale ($)', type: 'number', val: capital, set: setCapital, min: undefined, max: undefined },
+            { label: 'SL mult', type: 'number', val: slMult, set: setSlMult, min: undefined, max: undefined },
+            { label: 'TP mult', type: 'number', val: tpMult, set: setTpMult, min: undefined, max: undefined },
+            { label: 'Size (%)', type: 'number', val: posSizePct, set: setPosSizePct, min: undefined, max: undefined },
           ].map(f => (
             <label key={f.label} className="flex flex-col gap-1">
               <span className="text-xs text-slate-500">{f.label}</span>
-              <input type={f.type} value={f.val} onChange={e => f.set(e.target.value)}
-                className="bg-dark-bg border border-dark-border rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500" />
+              <input
+                type={f.type} value={f.val}
+                min={f.min} max={f.max}
+                onChange={e => f.set(e.target.value)}
+                style={f.type === 'date' ? { colorScheme: 'dark' } : undefined}
+                className="bg-dark-bg border border-dark-border rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500"
+              />
             </label>
           ))}
         </div>
