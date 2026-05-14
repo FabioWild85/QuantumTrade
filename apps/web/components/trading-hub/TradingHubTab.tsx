@@ -4,14 +4,16 @@ import { ForecastView } from './ForecastView';
 import { BotConfig } from './BotConfig';
 import { TradeLog } from './TradeLog';
 import { HubSettings } from './HubSettings';
+import { BacktestPanel } from './BacktestPanel';
 
-type HubPage = 'monitor' | 'forecast' | 'config' | 'trades' | 'settings';
+type HubPage = 'monitor' | 'forecast' | 'config' | 'trades' | 'backtest' | 'settings';
 
 const NAV: { id: HubPage; label: string; icon: string }[] = [
   { id: 'monitor',  label: 'Monitor',    icon: '📡' },
   { id: 'forecast', label: 'Forecast',   icon: '🔮' },
   { id: 'config',   label: 'Bot Config', icon: '⚙️' },
   { id: 'trades',   label: 'Trade Log',  icon: '📋' },
+  { id: 'backtest', label: 'Backtest',   icon: '⏱' },
   { id: 'settings', label: 'Settings',   icon: '🔑' },
 ];
 
@@ -56,11 +58,12 @@ export const TradingHubTab: React.FC = () => {
 
       {/* Page content */}
       <div className="max-w-7xl mx-auto px-4 py-6">
-        {page === 'monitor'  && <Monitor  apiBase={API_BASE} />}
-        {page === 'forecast' && <ForecastView apiBase={API_BASE} />}
-        {page === 'config'   && <BotConfig apiBase={API_BASE} />}
-        {page === 'trades'   && <TradeLog apiBase={API_BASE} />}
-        {page === 'settings' && <HubSettings apiBase={API_BASE} />}
+        {page === 'monitor'  && <Monitor       apiBase={API_BASE} />}
+        {page === 'forecast' && <ForecastView  apiBase={API_BASE} />}
+        {page === 'config'   && <BotConfig     apiBase={API_BASE} />}
+        {page === 'trades'   && <TradeLog      apiBase={API_BASE} />}
+        {page === 'backtest' && <BacktestPanel apiBase={API_BASE} />}
+        {page === 'settings' && <HubSettings   apiBase={API_BASE} />}
       </div>
     </div>
   );

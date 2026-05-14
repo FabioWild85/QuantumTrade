@@ -257,7 +257,14 @@ def build_all_features(
     d = build_mtf_features(d)
 
     # ── Funding ───────────────────────────────────────────────────────────────
-    d = d.join(df_funding, how="left")
+    # Funding history is 8h-sampled; reindex onto 4h candle timestamps with ffill
+    # so every candle inherits the most recent funding rate (no lookahead bias).
+    if not df_funding.empty:
+        df_funding_aligned = df_funding.reindex(d.index, method="ffill")
+        d = d.join(df_funding_aligned, how="left")
+    else:
+        d["funding"] = np.nan
+        d["premium"] = np.nan
     d["funding_ma24"]  = d["funding"].rolling(24).mean()
     d["funding_z"]     = (d["funding"] - d["funding_ma24"]) / (d["funding"].rolling(24).std() + 1e-9)
     d["funding_std12"] = d["funding"].rolling(12).std()

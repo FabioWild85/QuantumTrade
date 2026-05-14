@@ -91,16 +91,24 @@ class LGBMTrainer:
 
         # Select only LGBM features that actually exist in the dataframe
         available = [f for f in LGBM_FEATURES if f in df_feat.columns]
-        df_clean  = df_feat.dropna(subset=available + ["_target"]).copy()
 
-        # Trim to requested lookback (after warm-up rows are dropped)
+        # Fill NaN in sparse features (funding, OI, liq) with 0 before dropping rows.
+        # These columns may be legitimately empty for some candles and must not
+        # cause entire rows to be eliminated by dropna.
+        df_feat[available] = df_feat[available].fillna(0)
+
+        # Only require _target (last candle has NaN target — that's the only real drop)
+        df_clean = df_feat.dropna(subset=["_target"]).copy()
+        df_clean = df_clean.iloc[64:]  # skip indicator warm-up rows
+
+        # Trim to requested lookback
         if len(df_clean) > lookback_candles:
             df_clean = df_clean.iloc[-lookback_candles:]
 
         if len(df_clean) < 100:
             raise ValueError(f"Insufficient clean rows for training: {len(df_clean)}")
 
-        X = df_clean[available].fillna(0)
+        X = df_clean[available]
         y = df_clean["_target"]
         log.info("Training set: %d rows × %d features", len(X), len(available))
 

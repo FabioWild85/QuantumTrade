@@ -91,13 +91,15 @@ async def run_backtest(req) -> dict:
     for i in range(len(df_feat)):
         row = df_feat.iloc[i]
         features = row.to_dict()
-        atr      = features.get("atr_14") or row.get("close", 0) * 0.01
+        atr_raw  = features.get("atr_14")
+        atr      = float(atr_raw) if (atr_raw is not None and pd.notna(atr_raw) and atr_raw > 0) else float(row["close"]) * 0.01
 
         # ── Funding accrual while in position ────────────────────────────────
         if position and i % FUNDING_INTERVAL_BARS == 0 and funding_col:
-            fund_rate = abs(float(df_feat.iloc[i].get("funding", 0)))
-            funding_cost = position["size_usd"] * fund_rate
-            equity -= funding_cost
+            fund_val = df_feat.iloc[i].get("funding")
+            if fund_val is not None and pd.notna(fund_val):
+                funding_cost = position["size_usd"] * abs(float(fund_val))
+                equity -= funding_cost
 
         # ── Manage existing position (SL/TP at candle close) ─────────────────
         if position:
@@ -187,7 +189,7 @@ async def run_backtest(req) -> dict:
 
     # ── 7. Calculate statistics ───────────────────────────────────────────────
     stats = _calculate_stats(trades, equity_curve, capital)
-    return {
+    result = {
         "symbol":        symbol,
         "from_date":     req.from_date,
         "to_date":       req.to_date,
@@ -195,9 +197,21 @@ async def run_backtest(req) -> dict:
         "final_equity":  round(equity, 2),
         "total_bars":    len(df_feat),
         "stats":         stats,
-        "trades":        trades[-50:],      # last 50 trades for UI
+        "trades":        trades[-50:],
         "equity_curve":  equity_curve,
     }
+    return _sanitize(result)
+
+
+def _sanitize(obj):
+    """Recursively replace nan/inf with 0 so the result is JSON-serializable."""
+    if isinstance(obj, float):
+        return 0.0 if not np.isfinite(obj) else obj
+    if isinstance(obj, dict):
+        return {k: _sanitize(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize(v) for v in obj]
+    return obj
 
 
 def _calculate_stats(trades: list, equity_curve: list, capital: float) -> dict:
@@ -213,12 +227,22 @@ def _calculate_stats(trades: list, equity_curve: list, capital: float) -> dict:
     win_rate      = len(wins) / len(trades)
     avg_win       = np.mean(wins)  if wins   else 0.0
     avg_loss      = np.mean(losses) if losses else 0.0
-    profit_factor = abs(sum(wins) / sum(losses)) if losses else float("inf")
+    profit_factor = abs(sum(wins) / sum(losses)) if losses else 99.0
 
     # Sharpe from equity curve returns
     eq_vals  = [e["equity"] for e in equity_curve]
     eq_rets  = np.diff(eq_vals) / np.array(eq_vals[:-1]) if len(eq_vals) > 1 else [0]
-    sharpe   = float(np.mean(eq_rets) / (np.std(eq_rets) + 1e-9) * np.sqrt(365 * 6)) if len(eq_rets) > 1 else 0.0
+    ann = np.sqrt(365 * 6)  # annualization factor for 4h bars
+    eq_arr  = np.array(eq_rets, dtype=float)
+    sharpe  = float(np.mean(eq_arr) / (np.std(eq_arr) + 1e-9) * ann) if len(eq_arr) > 1 else 0.0
+
+    # Sortino: penalise only downside returns
+    neg_rets = eq_arr[eq_arr < 0]
+    sortino  = float(np.mean(eq_arr) / (np.std(neg_rets) + 1e-9) * ann) if len(neg_rets) > 0 else sharpe
+
+    # Sanitize: replace inf/nan with 0
+    sharpe  = sharpe  if np.isfinite(sharpe)  else 0.0
+    sortino = sortino if np.isfinite(sortino) else 0.0
 
     # Max drawdown from equity curve
     peak = capital
@@ -231,6 +255,10 @@ def _calculate_stats(trades: list, equity_curve: list, capital: float) -> dict:
         if dd > max_dd:
             max_dd = dd
 
+    # Calmar: annualized return / max drawdown
+    total_pnl_pct = total_pnl_usd / capital * 100
+    calmar = round(total_pnl_pct / max_dd, 3) if max_dd > 0 else 0.0
+
     avg_holding_h = np.mean([t["holding_bars"] * 4 for t in trades])
 
     return {
@@ -240,8 +268,10 @@ def _calculate_stats(trades: list, equity_curve: list, capital: float) -> dict:
         "avg_loss_pct":    round(avg_loss, 4),
         "profit_factor":   round(profit_factor, 3),
         "total_pnl_usd":   round(total_pnl_usd, 2),
-        "total_pnl_pct":   round(total_pnl_usd / capital * 100, 2),
+        "total_pnl_pct":   round(total_pnl_pct, 2),
         "sharpe":          round(sharpe, 3),
+        "sortino":         round(sortino, 3),
+        "calmar":          calmar,
         "max_drawdown_pct": round(max_dd, 2),
         "avg_holding_h":   round(avg_holding_h, 1),
         "best_trade_pct":  round(max(pnls), 4),
