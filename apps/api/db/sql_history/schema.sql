@@ -19,7 +19,7 @@ CREATE TABLE IF NOT EXISTS bot_configs (
     id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     name            TEXT NOT NULL DEFAULT 'default',
     params          JSONB NOT NULL DEFAULT '{}',
-    mode            TEXT NOT NULL DEFAULT 'paper' CHECK (mode IN ('paper', 'live')),
+    mode            TEXT NOT NULL DEFAULT 'paper' CHECK (mode IN ('paper', 'live', 'backtest')),
     status          TEXT NOT NULL DEFAULT 'idle',
     last_heartbeat  TIMESTAMPTZ,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),

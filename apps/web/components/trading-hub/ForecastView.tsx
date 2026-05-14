@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { Tooltip } from './Tooltip';
 
 interface FanData {
   p10: number[];
@@ -120,59 +121,75 @@ export const ForecastView: React.FC<{ apiBase: string }> = ({ apiBase }) => {
 
             {/* Quantile strip */}
             <div className="grid grid-cols-3 gap-3">
-              <QuantileCard label="p10 — Pessimista" value={data.c2_p10} current={data.current_price} />
-              <QuantileCard label="p50 — Mediana"   value={data.c2_p50} current={data.current_price} highlight />
-              <QuantileCard label="p90 — Ottimista"  value={data.c2_p90} current={data.current_price} />
+              <Tooltip text="Scenario pessimistico: il 90% delle simulazioni prevede un prezzo finale sopra questo livello. Solo il 10% va peggio." pos="bottom">
+                <QuantileCard label="p10 — Pessimista" value={data.c2_p10} current={data.current_price} />
+              </Tooltip>
+              <Tooltip text="Scenario mediano: prezzo più probabile previsto da Chronos-2. Metà simulazioni va sopra, metà sotto." pos="bottom">
+                <QuantileCard label="p50 — Mediana" value={data.c2_p50} current={data.current_price} highlight />
+              </Tooltip>
+              <Tooltip text="Scenario ottimistico: solo il 10% delle simulazioni prevede un prezzo finale sopra questo livello." pos="bottom">
+                <QuantileCard label="p90 — Ottimista" value={data.c2_p90} current={data.current_price} />
+              </Tooltip>
             </div>
           </div>
 
           {/* 3 probabilità */}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            <ProbCard
-              label="Directional Prob"
-              description="P(prezzo sale entro 12h)"
-              value={data.c2_dir_prob}
-              threshold={0.62}
-              color="indigo"
-            />
-            <ProbCard
-              label="Volatility Prob"
-              description="P(range > 1.5% in 12h)"
-              value={data.c2_vol_prob}
-              threshold={0.50}
-              color="amber"
-            />
-            <ProbCard
-              label="Continuation Prob"
-              description="P(trend coerente passo-passo)"
-              value={data.c2_cont_prob}
-              threshold={0.60}
-              color="emerald"
-            />
+            <Tooltip text="Probabilità Direzionale: quanto il modello Chronos-2 è convinto che il prezzo salga nelle prossime 12 ore. Sopra 62% il bot considera un segnale LONG." width="wide" pos="bottom">
+              <ProbCard
+                label="Directional Prob"
+                description="P(prezzo sale entro 12h)"
+                value={data.c2_dir_prob}
+                threshold={0.62}
+                color="indigo"
+              />
+            </Tooltip>
+            <Tooltip text="Probabilità di Volatilità: quanto è probabile che il mercato si muova di oltre l'1.5% nelle prossime 12 ore. Alta volatilità = maggior potenziale ma anche maggior rischio." width="wide" pos="bottom">
+              <ProbCard
+                label="Volatility Prob"
+                description="P(range > 1.5% in 12h)"
+                value={data.c2_vol_prob}
+                threshold={0.50}
+                color="amber"
+              />
+            </Tooltip>
+            <Tooltip text="Probabilità di Continuazione: quanto è coerente il trend passo dopo passo nelle previsioni. Alta = il modello vede un movimento consistente, non oscillante." width="wide" pos="bottom">
+              <ProbCard
+                label="Continuation Prob"
+                description="P(trend coerente passo-passo)"
+                value={data.c2_cont_prob}
+                threshold={0.60}
+                color="emerald"
+              />
+            </Tooltip>
           </div>
 
           {/* Uncertainty + p50 vs ATR */}
           <div className="grid grid-cols-2 gap-4">
-            <div className="rounded-2xl bg-dark-card border border-dark-border p-5">
-              <p className="text-sm font-semibold text-slate-300">Incertezza Modello</p>
-              <p className="text-xs text-slate-500 mt-0.5 mb-3">(p90 − p10) / prezzo — più bassa = più confidenza</p>
-              <p className={`text-2xl font-bold font-mono ${
-                data.c2_uncertainty < 0.02 ? 'text-emerald-400'
-                : data.c2_uncertainty < 0.04 ? 'text-amber-400' : 'text-red-400'
-              }`}>
-                {(data.c2_uncertainty * 100).toFixed(2)}%
-              </p>
-            </div>
-            <div className="rounded-2xl bg-dark-card border border-dark-border p-5">
-              <p className="text-sm font-semibold text-slate-300">p50 vs ATR</p>
-              <p className="text-xs text-slate-500 mt-0.5 mb-3">Distanza mediana dal prezzo in unità ATR</p>
-              <p className={`text-2xl font-bold font-mono ${
-                Math.abs(data.c2_p50_vs_atr) < 0.5 ? 'text-slate-400'
-                : data.c2_p50_vs_atr > 0 ? 'text-emerald-400' : 'text-red-400'
-              }`}>
-                {data.c2_p50_vs_atr >= 0 ? '+' : ''}{data.c2_p50_vs_atr.toFixed(3)}
-              </p>
-            </div>
+            <Tooltip text="Quanto il modello è incerto sulla previsione. Calcolata come (p90 − p10) / prezzo attuale. Sotto 2% = alta confidenza (verde), 2-4% = media (giallo), sopra 4% = bassa (rosso)." width="wide" pos="top">
+              <div className="rounded-2xl bg-dark-card border border-dark-border p-5">
+                <p className="text-sm font-semibold text-slate-300">Incertezza Modello</p>
+                <p className="text-xs text-slate-500 mt-0.5 mb-3">(p90 − p10) / prezzo — più bassa = più confidenza</p>
+                <p className={`text-2xl font-bold font-mono ${
+                  data.c2_uncertainty < 0.02 ? 'text-emerald-400'
+                  : data.c2_uncertainty < 0.04 ? 'text-amber-400' : 'text-red-400'
+                }`}>
+                  {(data.c2_uncertainty * 100).toFixed(2)}%
+                </p>
+              </div>
+            </Tooltip>
+            <Tooltip text="Distanza tra il prezzo mediano previsto (p50) e il prezzo attuale, espressa in unità di ATR. Positivo = il modello prevede salita, negativo = prevede discesa. Vicino a 0 = nessuna direzione chiara." width="wide" pos="top">
+              <div className="rounded-2xl bg-dark-card border border-dark-border p-5">
+                <p className="text-sm font-semibold text-slate-300">p50 vs ATR</p>
+                <p className="text-xs text-slate-500 mt-0.5 mb-3">Distanza mediana dal prezzo in unità ATR</p>
+                <p className={`text-2xl font-bold font-mono ${
+                  Math.abs(data.c2_p50_vs_atr) < 0.5 ? 'text-slate-400'
+                  : data.c2_p50_vs_atr > 0 ? 'text-emerald-400' : 'text-red-400'
+                }`}>
+                  {data.c2_p50_vs_atr >= 0 ? '+' : ''}{data.c2_p50_vs_atr.toFixed(3)}
+                </p>
+              </div>
+            </Tooltip>
           </div>
         </>
       )}

@@ -51,6 +51,18 @@ async def run_backtest(req) -> dict:
     lgbm_exit_confirm_bars   = getattr(cfg, "lgbm_exit_confirm_bars",   2)
     use_binance              = getattr(req,  "use_binance",              True)
     use_chronos              = getattr(req,  "use_chronos",              False)
+    # Advanced signal controls
+    confluence_gate        = getattr(cfg, "confluence_gate",        0.0)
+    adx_gate_enabled       = getattr(cfg, "adx_gate_enabled",       True)
+    sweep_gate_enabled     = getattr(cfg, "sweep_gate_enabled",     True)
+    fvg_filter_enabled     = getattr(cfg, "fvg_filter_enabled",     True)
+    mtf_alignment_enabled  = getattr(cfg, "mtf_alignment_enabled",  True)
+    chronos_weight         = getattr(cfg, "chronos_weight",         0.40)
+    # Advanced position management
+    be_sl_enabled          = getattr(cfg, "be_sl_enabled",          False)
+    be_sl_activation       = getattr(cfg, "be_sl_activation",       1.0)
+    max_hold_bars_enabled  = getattr(cfg, "max_hold_bars_enabled",  False)
+    max_hold_bars_val      = getattr(cfg, "max_hold_bars",          48)
 
     hl = HyperliquidData()
 
@@ -108,7 +120,12 @@ async def run_backtest(req) -> dict:
     decision_engine = DecisionEngine(
         directional_threshold=dir_threshold,
         adx_gate=adx_gate,
-        confluence_gate=0.0,   # disable in backtest (no QT score available)
+        confluence_gate=confluence_gate,
+        adx_gate_enabled=adx_gate_enabled,
+        sweep_gate_enabled=sweep_gate_enabled,
+        fvg_filter_enabled=fvg_filter_enabled,
+        mtf_alignment_enabled=mtf_alignment_enabled,
+        chronos_weight=chronos_weight,
     )
     risk = RiskManager(
         sl_atr_mult=sl_atr_mult,
@@ -151,14 +168,36 @@ async def run_backtest(req) -> dict:
             entry       = position["entry"]
             entry_atr   = position["entry_atr"]
 
-            # ── Trailing SL: move to break-even after activation ──────────────
-            if trailing_sl_enabled and not position.get("sl_trailed"):
-                activation_dist = trailing_sl_activation * entry_atr
-                moved_enough = (side == "long"  and close_price >= entry + activation_dist) or \
-                               (side == "short" and close_price <= entry - activation_dist)
+            # ── Trailing SL: dynamic trail once activated (high water mark) ──
+            if trailing_sl_enabled:
+                trail_dist = trailing_sl_activation * entry_atr
+                if not position.get("sl_trailing_active"):
+                    moved_enough = (side == "long"  and close_price >= entry + trail_dist) or \
+                                   (side == "short" and close_price <= entry - trail_dist)
+                    if moved_enough:
+                        position["sl_trailing_active"] = True
+                        position["high_water"] = close_price
+                if position.get("sl_trailing_active"):
+                    if side == "long":
+                        position["high_water"] = max(position["high_water"], close_price)
+                        new_sl = position["high_water"] - trail_dist
+                        position["sl"] = max(position["sl"], new_sl)
+                    else:
+                        position["high_water"] = min(position["high_water"], close_price)
+                        new_sl = position["high_water"] + trail_dist
+                        position["sl"] = min(position["sl"], new_sl)
+
+            # ── Break-even SL: move SL to entry price after activation ────────
+            if be_sl_enabled and not position.get("be_sl_applied"):
+                be_dist = be_sl_activation * entry_atr
+                moved_enough = (side == "long"  and close_price >= entry + be_dist) or \
+                               (side == "short" and close_price <= entry - be_dist)
                 if moved_enough:
-                    position["sl"] = entry  # move SL to break-even
-                    position["sl_trailed"] = True
+                    if side == "long":
+                        position["sl"] = max(position["sl"], entry)
+                    else:
+                        position["sl"] = min(position["sl"], entry)
+                    position["be_sl_applied"] = True
 
             # ── Partial TP: close partial_tp_pct% at partial_tp_atr_mult×ATR ──
             if partial_tp_enabled and not position.get("partial_done"):
@@ -184,11 +223,10 @@ async def run_backtest(req) -> dict:
                     })
                     equity_curve.append({"bar": i, "equity": round(equity, 2)})
 
-            # ── LightGBM mid-trade exit (v2: consecutive-bar confirmation) ──────
-            # Exits only after lgbm_exit_confirm_bars consecutive bars with signal
-            # below threshold — avoids reacting to single-candle noise.
-            bars_held   = i - position["bar_idx"]
-            lgbm_exited = False
+            bars_held      = i - position["bar_idx"]
+            already_closed = False
+
+            # ── LightGBM mid-trade exit (consecutive-bar confirmation) ─────────
             if lgbm_exit_enabled and bars_held >= lgbm_exit_min_hold_bars:
                 row_x          = X_all.iloc[[i]]
                 lgbm_p_current = float(lgbm_model.predict_proba(row_x)[0, 1])
@@ -197,7 +235,7 @@ async def run_backtest(req) -> dict:
                 if flip_long or flip_short:
                     position["lgbm_strikes"] = position.get("lgbm_strikes", 0) + 1
                 else:
-                    position["lgbm_strikes"] = 0  # signal recovered — reset counter
+                    position["lgbm_strikes"] = 0
                 if position.get("lgbm_strikes", 0) >= lgbm_exit_confirm_bars:
                     pnl_pct_e  = (close_price - entry) / entry * 100 if side == "long" \
                                  else (entry - close_price) / entry * 100
@@ -213,11 +251,30 @@ async def run_backtest(req) -> dict:
                         "bar":         i,
                     })
                     equity_curve.append({"bar": i, "equity": round(equity, 2)})
-                    position    = None
-                    lgbm_exited = True
+                    position       = None
+                    already_closed = True
+
+            # ── Max hold bars: time-based force exit ──────────────────────────
+            if not already_closed and max_hold_bars_enabled and bars_held >= max_hold_bars_val:
+                pnl_pct_m  = (close_price - entry) / entry * 100 if side == "long" \
+                             else (entry - close_price) / entry * 100
+                pnl_usd_m  = position["size_usd"] * pnl_pct_m / 100
+                fee_m      = position["size_usd"] * HL_TAKER_FEE
+                equity    += pnl_usd_m - fee_m
+                trades.append({
+                    "side": side, "entry": entry, "exit": close_price,
+                    "pnl_pct":     round(pnl_pct_m, 4),
+                    "pnl_usd":     round(pnl_usd_m - fee_m, 2),
+                    "reason":      "max_hold",
+                    "holding_bars": bars_held,
+                    "bar":         i,
+                })
+                equity_curve.append({"bar": i, "equity": round(equity, 2)})
+                position       = None
+                already_closed = True
 
             # ── Full SL/TP check ──────────────────────────────────────────────
-            if not lgbm_exited:
+            if not already_closed:
                 hit_sl = (side == "long" and close_price <= position["sl"]) or \
                          (side == "short" and close_price >= position["sl"])
                 hit_tp = (side == "long" and close_price >= position["tp"]) or \
@@ -286,9 +343,11 @@ async def run_backtest(req) -> dict:
                     "size_usd":      params.size_usd,
                     "bar_idx":       i,
                     "entry_atr":     atr,
-                    "partial_done":  False,
-                    "sl_trailed":    False,
-                    "lgbm_strikes":  0,
+                    "partial_done":      False,
+                    "sl_trailing_active": False,
+                    "high_water":        close_price,
+                    "be_sl_applied":     False,
+                    "lgbm_strikes":      0,
                 }
 
     # ── 6. Close any open position at last price ──────────────────────────────
@@ -311,18 +370,53 @@ async def run_backtest(req) -> dict:
 
     # ── 7. Calculate statistics ───────────────────────────────────────────────
     stats = _calculate_stats(trades, equity_curve, capital)
+    duration_days = (
+        datetime.fromisoformat(req.to_date) - datetime.fromisoformat(req.from_date)
+    ).days
+
     result = {
-        "symbol":        symbol,
-        "from_date":     req.from_date,
-        "to_date":       req.to_date,
+        "symbol":          symbol,
+        "from_date":       req.from_date,
+        "to_date":         req.to_date,
         "initial_capital": capital,
-        "final_equity":  round(equity, 2),
-        "total_bars":    len(df_feat),
-        "stats":         stats,
-        "trades":        trades[-50:],
-        "equity_curve":  equity_curve,
+        "final_equity":    round(equity, 2),
+        "total_bars":      len(df_feat),
+        "stats":           stats,
+        "trades":          trades[-50:],
+        "equity_curve":    equity_curve,
     }
-    return _sanitize(result)
+    clean = _sanitize(result)
+
+    # ── 8. Persist to Supabase ────────────────────────────────────────────────
+    try:
+        from services.supabase_client import get_supabase
+        cfg_snapshot = req.config.model_dump() if req.config else {}
+        summary = {
+            "total_trades":    stats.get("total_trades", 0),
+            "win_rate":        stats.get("win_rate", 0),
+            "total_pnl_usd":   stats.get("total_pnl_usd", 0),
+            "total_pnl_pct":   stats.get("total_pnl_pct", 0),
+            "sharpe":          stats.get("sharpe", 0),
+            "max_drawdown_pct": stats.get("max_drawdown_pct", 0),
+            "profit_factor":   stats.get("profit_factor", 0),
+            "final_equity":    round(equity, 2),
+            "use_chronos":     getattr(req, "use_chronos", False),
+        }
+        db = get_supabase()
+        db.table("backtest_results").insert({
+            "symbol":          symbol,
+            "from_date":       req.from_date,
+            "to_date":         req.to_date,
+            "initial_capital": capital,
+            "duration_days":   duration_days,
+            "config":          cfg_snapshot,
+            "summary":         summary,
+            "results":         clean,
+        }).execute()
+    except Exception as exc:
+        log.warning("Backtest save to DB failed: %s", exc)
+
+    return clean
 
 
 def _sanitize(obj):

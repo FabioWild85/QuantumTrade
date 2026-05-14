@@ -37,3 +37,6 @@ __pycache__/
 .env.local
 .env.*.local
 apps/api/.env
+
+# Claude Code settings (contiene comandi con token/credenziali)
+.claude/settings.json

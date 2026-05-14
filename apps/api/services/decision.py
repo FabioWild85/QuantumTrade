@@ -40,12 +40,18 @@ class DecisionEngine:
         confluence_gate: float = 60.0,
         adx_gate_enabled: bool = True,
         sweep_gate_enabled: bool = True,
+        fvg_filter_enabled: bool = True,
+        mtf_alignment_enabled: bool = True,
+        chronos_weight: float = 0.40,
     ):
-        self.directional_threshold = directional_threshold
-        self.adx_gate = adx_gate
-        self.confluence_gate = confluence_gate
-        self.adx_gate_enabled = adx_gate_enabled
-        self.sweep_gate_enabled = sweep_gate_enabled
+        self.directional_threshold   = directional_threshold
+        self.adx_gate                = adx_gate
+        self.confluence_gate         = confluence_gate
+        self.adx_gate_enabled        = adx_gate_enabled
+        self.sweep_gate_enabled      = sweep_gate_enabled
+        self.fvg_filter_enabled      = fvg_filter_enabled
+        self.mtf_alignment_enabled   = mtf_alignment_enabled
+        self.chronos_weight          = chronos_weight
 
     def decide(
         self,
@@ -89,18 +95,22 @@ class DecisionEngine:
             return self._no_trade(reasoning, dir_prob, p10, p50, p90, features)
 
         # ── Ensemble probability (Chronos-2 + LightGBM blend) ────────────────
-        # Weighted blend: 60% LightGBM (trained), 40% Chronos-2 (zero-shot prior)
-        ensemble_prob = 0.60 * lgbm_prob + 0.40 * dir_prob
-        reasoning.append(f"Ensemble P(up): {ensemble_prob:.3f} (LGBM={lgbm_prob:.3f}, C2={dir_prob:.3f})")
+        lgbm_weight   = 1.0 - self.chronos_weight
+        ensemble_prob = lgbm_weight * lgbm_prob + self.chronos_weight * dir_prob
+        reasoning.append(
+            f"Ensemble P(up): {ensemble_prob:.3f} "
+            f"(LGBM×{lgbm_weight:.2f}={lgbm_prob:.3f}, C2×{self.chronos_weight:.2f}={dir_prob:.3f})"
+        )
 
         # ── MTF alignment bonus: if daily trend agrees, lower threshold ───────
         effective_threshold = self.directional_threshold
-        if d_regime == 1 and ensemble_prob > 0.5:
-            effective_threshold -= 0.02
-            reasoning.append(f"MTF: Daily bull regime — threshold relaxed to {effective_threshold:.2f}")
-        elif d_regime == -1 and ensemble_prob < 0.5:
-            effective_threshold -= 0.02
-            reasoning.append(f"MTF: Daily bear regime — short threshold relaxed to {effective_threshold:.2f}")
+        if self.mtf_alignment_enabled:
+            if d_regime == 1 and ensemble_prob > 0.5:
+                effective_threshold -= 0.02
+                reasoning.append(f"MTF: Daily bull regime — threshold relaxed to {effective_threshold:.2f}")
+            elif d_regime == -1 and ensemble_prob < 0.5:
+                effective_threshold -= 0.02
+                reasoning.append(f"MTF: Daily bear regime — short threshold relaxed to {effective_threshold:.2f}")
 
         # ── Confluence gate ───────────────────────────────────────────────────
         if confluence_score is not None and confluence_score < self.confluence_gate:
@@ -110,7 +120,7 @@ class DecisionEngine:
         # ── Long signal ───────────────────────────────────────────────────────
         if ensemble_prob > effective_threshold:
             # Anti-FVG filter: don't enter long into a bearish FVG zone overhead
-            if fvg_bear == 1.0:
+            if self.fvg_filter_enabled and fvg_bear == 1.0:
                 reasoning.append("FILTER: Bearish FVG detected overhead — skipping long entry")
                 return self._no_trade(reasoning, dir_prob, p10, p50, p90, features)
             # C2 directional confirmation: median forecast must be bullish
@@ -133,7 +143,7 @@ class DecisionEngine:
         # ── Short signal ──────────────────────────────────────────────────────
         short_prob = 1.0 - ensemble_prob
         if short_prob > effective_threshold:
-            if fvg_bull == 1.0:
+            if self.fvg_filter_enabled and fvg_bull == 1.0:
                 reasoning.append("FILTER: Bullish FVG detected below — skipping short entry")
                 return self._no_trade(reasoning, dir_prob, p10, p50, p90, features)
             # C2 directional confirmation: median forecast must be bearish

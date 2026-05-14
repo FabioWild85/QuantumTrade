@@ -17,7 +17,9 @@ const NAV: { id: HubPage; label: string; icon: string }[] = [
   { id: 'settings', label: 'Settings',   icon: '🔑' },
 ];
 
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+const API_BASE = import.meta.env.VITE_API_URL ?? (
+  import.meta.env.DEV ? 'http://localhost:8000' : '/api'
+);
 
 export const TradingHubTab: React.FC = () => {
   const [page, setPage] = useState<HubPage>('monitor');

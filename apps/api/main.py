@@ -45,8 +45,8 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:5173", "*"],
-    allow_credentials=True,
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -128,6 +128,18 @@ class BotConfig(BaseModel):
     lgbm_exit_threshold: float = Field(0.30, ge=0.15, le=0.50)
     lgbm_exit_min_hold_bars: int = Field(6, ge=1, le=48)
     lgbm_exit_confirm_bars: int = Field(2, ge=1, le=6)
+    # Advanced signal controls
+    chronos_enabled: bool = Field(True)
+    chronos_weight: float = Field(0.40, ge=0.0, le=0.9)
+    adx_gate_enabled: bool = Field(True)
+    sweep_gate_enabled: bool = Field(True)
+    fvg_filter_enabled: bool = Field(True)
+    mtf_alignment_enabled: bool = Field(True)
+    # Advanced exit
+    be_sl_enabled: bool = Field(False)
+    be_sl_activation: float = Field(1.0, ge=0.5, le=3.0)
+    max_hold_bars_enabled: bool = Field(False)
+    max_hold_bars: int = Field(48, ge=12, le=168)
 
 
 class StartBotRequest(BaseModel):
@@ -152,7 +164,33 @@ async def bot_update_config(cfg: BotConfig):
         "params": cfg.model_dump(),
         "mode": cfg.mode,
         "status": "updated",
-    }).execute()
+    }, on_conflict="name").execute()
+    return {"status": "updated", "config": cfg.model_dump()}
+
+
+@app.get("/bot/backtest")
+async def bot_get_backtest_config():
+    """Returns the saved backtest-specific config, falling back to BotConfig defaults."""
+    db = get_supabase()
+    result = db.table("bot_configs").select("params").eq("name", "backtest").execute()
+    if result.data:
+        params = result.data[0].get("params", {})
+        defaults = BotConfig().model_dump()
+        defaults.update(params)
+        return defaults
+    return BotConfig().model_dump()
+
+
+@app.put("/bot/backtest")
+async def bot_update_backtest_config(cfg: BotConfig):
+    """Persist backtest-specific config independently from live config."""
+    db = get_supabase()
+    db.table("bot_configs").upsert({
+        "name": "backtest",
+        "params": cfg.model_dump(),
+        "mode": "backtest",
+        "status": "updated",
+    }, on_conflict="name").execute()
     return {"status": "updated", "config": cfg.model_dump()}
 
 
@@ -383,3 +421,35 @@ async def backtest_status(job_id: str):
     if not job:
         raise HTTPException(404, "Job not found")
     return job
+
+
+# ─── Backtest History ─────────────────────────────────────────────────────────
+
+@app.get("/backtest-history")
+async def backtest_history(limit: int = 50):
+    db = get_supabase()
+    result = db.table("backtest_results").select("id,created_at,name,symbol,from_date,to_date,initial_capital,duration_days,summary").order("created_at", desc=True).limit(limit).execute()
+    return result.data
+
+
+@app.get("/backtest-history/{record_id}")
+async def backtest_history_get(record_id: str):
+    db = get_supabase()
+    result = db.table("backtest_results").select("*").eq("id", record_id).execute()
+    if not result.data:
+        raise HTTPException(404, "Backtest not found")
+    return result.data[0]
+
+
+@app.patch("/backtest-history/{record_id}")
+async def backtest_history_rename(record_id: str, body: dict):
+    db = get_supabase()
+    db.table("backtest_results").update({"name": body.get("name", "")}).eq("id", record_id).execute()
+    return {"status": "ok"}
+
+
+@app.delete("/backtest-history/{record_id}")
+async def backtest_history_delete(record_id: str):
+    db = get_supabase()
+    db.table("backtest_results").delete().eq("id", record_id).execute()
+    return {"status": "deleted"}

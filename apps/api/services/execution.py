@@ -65,6 +65,18 @@ class BotConfig:
         self.lgbm_exit_threshold     = kw.get("lgbm_exit_threshold",     0.30)
         self.lgbm_exit_min_hold_bars = kw.get("lgbm_exit_min_hold_bars", 6)
         self.lgbm_exit_confirm_bars  = kw.get("lgbm_exit_confirm_bars",  2)
+        # ── Advanced signal controls ──────────────────────────────────────────
+        self.chronos_enabled         = kw.get("chronos_enabled",         True)
+        self.chronos_weight          = kw.get("chronos_weight",          0.40)
+        self.adx_gate_enabled        = kw.get("adx_gate_enabled",        True)
+        self.sweep_gate_enabled      = kw.get("sweep_gate_enabled",      True)
+        self.fvg_filter_enabled      = kw.get("fvg_filter_enabled",      True)
+        self.mtf_alignment_enabled   = kw.get("mtf_alignment_enabled",   True)
+        # ── Advanced exit ─────────────────────────────────────────────────────
+        self.be_sl_enabled           = kw.get("be_sl_enabled",           False)
+        self.be_sl_activation        = kw.get("be_sl_activation",        1.0)
+        self.max_hold_bars_enabled   = kw.get("max_hold_bars_enabled",   False)
+        self.max_hold_bars           = kw.get("max_hold_bars",           48)
 
     def model_dump(self) -> dict:
         return self.__dict__
@@ -233,8 +245,12 @@ class ExecutionEngine:
         # Inject live WS CVD into features (overrides Haas approximation with real data)
         latest["cvd_delta"] = ws_snap["ws_cvd_delta"]
 
-        # 4. Chronos-2 inference
-        c2_out = self._chronos.forecast(df_4h["close"].values, horizon=3, atr=atr)
+        # 4. Chronos-2 inference (skip if disabled — use neutral prior)
+        cur_px = float(df_4h["close"].iloc[-1])
+        if self.config.chronos_enabled:
+            c2_out = self._chronos.forecast(df_4h["close"].values, horizon=3, atr=atr)
+        else:
+            c2_out = {"c2_dir_prob": 0.5, "c2_p10": cur_px, "c2_p50": cur_px, "c2_p90": cur_px}
 
         # 5. LightGBM probability (non-C2 features)
         lgbm_prob = self._get_lgbm_prob(df_feat)
@@ -247,9 +263,14 @@ class ExecutionEngine:
         # 7. Decision gate
         allowed, block_reason = self._risk.can_trade()
         decision_engine = DecisionEngine(
-            directional_threshold=self.config.directional_threshold,
-            adx_gate=self.config.adx_gate,
-            confluence_gate=self.config.confluence_gate,
+            directional_threshold = self.config.directional_threshold,
+            adx_gate              = self.config.adx_gate,
+            confluence_gate       = self.config.confluence_gate,
+            adx_gate_enabled      = self.config.adx_gate_enabled,
+            sweep_gate_enabled    = self.config.sweep_gate_enabled,
+            fvg_filter_enabled    = self.config.fvg_filter_enabled,
+            mtf_alignment_enabled = self.config.mtf_alignment_enabled,
+            chronos_weight        = self.config.chronos_weight if self.config.chronos_enabled else 0.0,
         )
         result = decision_engine.decide(
             features=latest,
@@ -375,8 +396,11 @@ class ExecutionEngine:
             "inference_id":   inference_id,
             "hl_order_id":    hl_order_id,
             "opened_at":      datetime.now(timezone.utc).isoformat(),
-            "bars_held":      0,
-            "lgbm_strikes":   0,
+            "bars_held":          0,
+            "lgbm_strikes":       0,
+            "be_sl_applied":      False,
+            "sl_trailing_active": False,
+            "high_water":         price,
         }
 
         try:
@@ -414,6 +438,53 @@ class ExecutionEngine:
         side  = self._position["side"]
         sl    = self._position["stop_loss"]
         tp    = self._position["take_profit"]
+
+        atr_val = float(df_feat.iloc[-1].get("atr_14", current_price * 0.01))
+
+        # ── Max hold bars: time-based exit ───────────────────────────────────
+        if (self.config.max_hold_bars_enabled
+                and self._position["bars_held"] >= self.config.max_hold_bars):
+            log.info("Max hold bars reached (%d) — closing position", self.config.max_hold_bars)
+            await self._close_position(current_price, "max_hold_bars")
+            return
+
+        # ── Trailing SL: dynamic trail once activated (high water mark) ────────
+        if self.config.trailing_sl_enabled:
+            entry     = self._position["entry_price"]
+            trail_dist = self.config.trailing_sl_activation * atr_val
+            if not self._position.get("sl_trailing_active"):
+                moved = (side == "long"  and current_price >= entry + trail_dist) or \
+                        (side == "short" and current_price <= entry - trail_dist)
+                if moved:
+                    self._position["sl_trailing_active"] = True
+                    self._position["high_water"] = current_price
+                    log.info("Trailing SL activated — high_water=%.2f trail_dist=%.2f", current_price, trail_dist)
+            if self._position.get("sl_trailing_active"):
+                if side == "long":
+                    self._position["high_water"] = max(self._position["high_water"], current_price)
+                    new_sl = self._position["high_water"] - trail_dist
+                    if new_sl > self._position["stop_loss"]:
+                        log.info("Trailing SL updated: %.2f → %.2f", self._position["stop_loss"], new_sl)
+                        self._position["stop_loss"] = new_sl
+                else:
+                    self._position["high_water"] = min(self._position["high_water"], current_price)
+                    new_sl = self._position["high_water"] + trail_dist
+                    if new_sl < self._position["stop_loss"]:
+                        log.info("Trailing SL updated: %.2f → %.2f", self._position["stop_loss"], new_sl)
+                        self._position["stop_loss"] = new_sl
+
+        # ── Break-even SL: move SL to entry once price moves activation×ATR ──
+        if self.config.be_sl_enabled and not self._position.get("be_sl_applied", False):
+            entry = self._position["entry_price"]
+            activation_dist = self.config.be_sl_activation * atr_val
+            if side == "long" and current_price >= entry + activation_dist:
+                self._position["stop_loss"] = entry
+                self._position["be_sl_applied"] = True
+                log.info("Break-even SL activated (long) — SL moved to entry %.2f", entry)
+            elif side == "short" and current_price <= entry - activation_dist:
+                self._position["stop_loss"] = entry
+                self._position["be_sl_applied"] = True
+                log.info("Break-even SL activated (short) — SL moved to entry %.2f", entry)
 
         # ── LightGBM mid-trade exit (v2: consecutive-bar confirmation) ─────────
         if (self.config.lgbm_exit_enabled and self._lgbm_model is not None

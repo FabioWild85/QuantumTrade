@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
+import { Tooltip } from './Tooltip';
 
 // Returns seconds until next 4h candle close (00:00, 04:00, 08:00, 12:00, 16:00, 20:00 UTC)
 function secsToNext4h(): number {
@@ -166,29 +167,37 @@ export const Monitor: React.FC<{ apiBase: string }> = ({ apiBase }) => {
 
       {/* ── KPI strip ─────────────────────────────────────────────────────── */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <KpiCard
-          label="Equity"
-          value={`$${currentEquity.toLocaleString('en-US', { minimumFractionDigits: 2 })}`}
-          sub={status?.mode?.toUpperCase() ?? 'PAPER'}
-          color={totalPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}
-        />
-        <KpiCard
-          label="PnL Totale"
-          value={`${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(2)}`}
-          sub={`${totalPnlPct >= 0 ? '+' : ''}${totalPnlPct.toFixed(2)}%`}
-          color={totalPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}
-        />
-        <KpiCard
-          label="Prossima Candela"
-          value={`${String(Math.floor(countdown / 3600)).padStart(2,'0')}:${String(Math.floor((countdown % 3600) / 60)).padStart(2,'0')}:${String(countdown % 60).padStart(2,'0')}`}
-          sub={`Cicli: ${status?.cycle_count ?? 0} · Retrain: ${120 - ((status?.cycle_count ?? 0) % 120)}`}
-        />
-        <KpiCard
-          label="Stato"
-          value={status?.running ? 'Running' : 'Idle'}
-          sub={status?.ws_connected ? '● WS connesso' : '○ WS disconnesso'}
-          color={status?.running ? 'text-emerald-400' : 'text-slate-400'}
-        />
+        <Tooltip text="Valore totale del tuo account, inclusi profitti e perdite realizzati. La modalità (PAPER/LIVE) indica se stai usando fondi virtuali o reali.">
+          <KpiCard
+            label="Equity"
+            value={`$${currentEquity.toLocaleString('en-US', { minimumFractionDigits: 2 })}`}
+            sub={status?.mode?.toUpperCase() ?? 'PAPER'}
+            color={totalPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}
+          />
+        </Tooltip>
+        <Tooltip text="Profitto o perdita totale dall'avvio del bot. Calcolato come differenza tra equity attuale e capitale iniziale di $10.000.">
+          <KpiCard
+            label="PnL Totale"
+            value={`${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(2)}`}
+            sub={`${totalPnlPct >= 0 ? '+' : ''}${totalPnlPct.toFixed(2)}%`}
+            color={totalPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}
+          />
+        </Tooltip>
+        <Tooltip text="Countdown alla prossima chiusura della candela da 4 ore. Il bot analizza il mercato e decide se aprire un trade ad ogni nuova candela. 'Cicli' = analisi completate. 'Retrain' = candele al prossimo riaddestramentodel modello LightGBM." width="wide">
+          <KpiCard
+            label="Prossima Candela"
+            value={`${String(Math.floor(countdown / 3600)).padStart(2,'0')}:${String(Math.floor((countdown % 3600) / 60)).padStart(2,'0')}:${String(countdown % 60).padStart(2,'0')}`}
+            sub={`Cicli: ${status?.cycle_count ?? 0} · Retrain: ${120 - ((status?.cycle_count ?? 0) % 120)}`}
+          />
+        </Tooltip>
+        <Tooltip text="Stato operativo del bot. 'Running' = analizza il mercato attivamente. 'Idle' = in pausa. Mostra anche se la connessione WebSocket a Hyperliquid è attiva.">
+          <KpiCard
+            label="Stato"
+            value={status?.running ? 'Running' : 'Idle'}
+            sub={status?.ws_connected ? '● WS connesso' : '○ WS disconnesso'}
+            color={status?.running ? 'text-emerald-400' : 'text-slate-400'}
+          />
+        </Tooltip>
       </div>
 
       {/* ── Controls ──────────────────────────────────────────────────────── */}
@@ -222,8 +231,12 @@ export const Monitor: React.FC<{ apiBase: string }> = ({ apiBase }) => {
         )}
         {/* System status badges */}
         <div className="flex gap-2 ml-auto">
-          <StatusBadge label="LightGBM" active={status?.model_loaded ?? false} />
-          <StatusBadge label="WebSocket" active={status?.ws_connected ?? false} />
+          <Tooltip text="Modello machine learning per previsione direzione del prezzo. Addestrato su 64 feature di prezzo, volume e dati on-chain. Verde = modello caricato in memoria." pos="bottom">
+            <StatusBadge label="LightGBM" active={status?.model_loaded ?? false} />
+          </Tooltip>
+          <Tooltip text="Connessione in tempo reale a Hyperliquid per ricevere prezzi, order book e aggiornamenti posizioni. Verde = connesso e riceve dati live." pos="bottom">
+            <StatusBadge label="WebSocket" active={status?.ws_connected ?? false} />
+          </Tooltip>
         </div>
       </div>
 
@@ -237,11 +250,19 @@ export const Monitor: React.FC<{ apiBase: string }> = ({ apiBase }) => {
             </span>
           </div>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-            <Stat label="Side" value={status.position.side.toUpperCase()}
-              color={status.position.side === 'long' ? 'text-emerald-400' : 'text-red-400'} />
-            <Stat label="Entry" value={`$${status.position.entry_price.toLocaleString('en-US', { maximumFractionDigits: 0 })}`} />
-            <Stat label="Stop Loss"   value={`$${status.position.stop_loss.toLocaleString('en-US', { maximumFractionDigits: 0 })}`}   color="text-red-400" />
-            <Stat label="Take Profit" value={`$${status.position.take_profit.toLocaleString('en-US', { maximumFractionDigits: 0 })}`} color="text-emerald-400" />
+            <Tooltip text="Direzione del trade. LONG = scommessa che il prezzo salga. SHORT = scommessa che il prezzo scenda." pos="bottom">
+              <Stat label="Side" value={status.position.side.toUpperCase()}
+                color={status.position.side === 'long' ? 'text-emerald-400' : 'text-red-400'} />
+            </Tooltip>
+            <Tooltip text="Prezzo a cui la posizione è stata aperta." pos="bottom">
+              <Stat label="Entry" value={`$${status.position.entry_price.toLocaleString('en-US', { maximumFractionDigits: 0 })}`} />
+            </Tooltip>
+            <Tooltip text="Livello di prezzo a cui la posizione viene chiusa automaticamente per limitare le perdite (Stop Loss)." pos="bottom">
+              <Stat label="Stop Loss" value={`$${status.position.stop_loss.toLocaleString('en-US', { maximumFractionDigits: 0 })}`} color="text-red-400" />
+            </Tooltip>
+            <Tooltip text="Livello di prezzo a cui la posizione viene chiusa per incassare il profitto (Take Profit)." pos="bottom">
+              <Stat label="Take Profit" value={`$${status.position.take_profit.toLocaleString('en-US', { maximumFractionDigits: 0 })}`} color="text-emerald-400" />
+            </Tooltip>
           </div>
           <div className="mt-3 pt-3 border-t border-amber-500/20 flex gap-6 text-xs font-mono text-amber-500/60">
             <span>Size: ${status.position.size_usd.toFixed(0)}</span>

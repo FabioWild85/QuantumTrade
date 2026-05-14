@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { Tooltip } from './Tooltip';
 
 interface Trade {
   id: string;
@@ -81,25 +82,37 @@ export const TradeLog: React.FC<{ apiBase: string }> = ({ apiBase }) => {
       {/* ── Stats strip (only when trades exist) ──────────────────────────── */}
       {closed.length > 0 && (
         <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-3">
-          <StatChip label="Trade chiusi" value={String(closed.length)} />
-          <StatChip
-            label="Win Rate"
-            value={`${winRate.toFixed(1)}%`}
-            color={winRate >= 55 ? 'text-emerald-400' : winRate >= 50 ? 'text-amber-400' : 'text-red-400'}
-          />
-          <StatChip
-            label="PnL Totale"
-            value={`${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(2)}`}
-            color={totalPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}
-          />
-          <StatChip label="Avg Win"  value={`+${avgWin.toFixed(2)}%`}  color="text-emerald-400" />
-          <StatChip label="Avg Loss" value={`${avgLoss.toFixed(2)}%`}  color="text-red-400" />
-          {pf !== null && (
+          <Tooltip text="Numero totale di trade completati (con entrata e uscita)." pos="bottom">
+            <StatChip label="Trade chiusi" value={String(closed.length)} />
+          </Tooltip>
+          <Tooltip text="Percentuale di trade chiusi in profitto. Sopra 55% è ottimo, sopra 50% è accettabile se il R:R è favorevole." pos="bottom">
             <StatChip
-              label="Profit Factor"
-              value={pf.toFixed(2)}
-              color={pf >= 1.5 ? 'text-emerald-400' : pf >= 1.0 ? 'text-amber-400' : 'text-red-400'}
+              label="Win Rate"
+              value={`${winRate.toFixed(1)}%`}
+              color={winRate >= 55 ? 'text-emerald-400' : winRate >= 50 ? 'text-amber-400' : 'text-red-400'}
             />
+          </Tooltip>
+          <Tooltip text="Somma di tutti i profitti e perdite realizzati su trade chiusi." pos="bottom">
+            <StatChip
+              label="PnL Totale"
+              value={`${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(2)}`}
+              color={totalPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}
+            />
+          </Tooltip>
+          <Tooltip text="Guadagno medio percentuale dei trade in profitto. Indica quanto si guadagna in media quando il trade va bene." pos="bottom">
+            <StatChip label="Avg Win" value={`+${avgWin.toFixed(2)}%`} color="text-emerald-400" />
+          </Tooltip>
+          <Tooltip text="Perdita media percentuale dei trade in negativo. Indica quanto si perde in media quando il trade va male." pos="bottom">
+            <StatChip label="Avg Loss" value={`${avgLoss.toFixed(2)}%`} color="text-red-400" />
+          </Tooltip>
+          {pf !== null && (
+            <Tooltip text="Profitti totali diviso perdite totali. Sopra 1.5 è buono, sopra 2.0 è eccellente. Sotto 1.0 significa che le perdite superano i guadagni." pos="bottom">
+              <StatChip
+                label="Profit Factor"
+                value={pf.toFixed(2)}
+                color={pf >= 1.5 ? 'text-emerald-400' : pf >= 1.0 ? 'text-amber-400' : 'text-red-400'}
+              />
+            </Tooltip>
           )}
         </div>
       )}
@@ -128,10 +141,26 @@ export const TradeLog: React.FC<{ apiBase: string }> = ({ apiBase }) => {
               <thead>
                 <tr className="border-b border-dark-border text-xs text-slate-500 uppercase tracking-wide">
                   <th className="px-4 py-3 text-left">Data apertura</th>
-                  <th className="px-4 py-3 text-left">Side</th>
-                  <th className="px-4 py-3 text-right">PnL netto</th>
-                  <th className="px-4 py-3 text-left hidden sm:table-cell">Chiusura</th>
-                  <th className="px-4 py-3 text-right hidden sm:table-cell">Durata</th>
+                  <th className="px-4 py-3 text-left">
+                    <Tooltip text="Direzione del trade: LONG = scommessa che il prezzo salga, SHORT = scommessa che scenda." pos="bottom">
+                      <span>Side</span>
+                    </Tooltip>
+                  </th>
+                  <th className="px-4 py-3 text-right">
+                    <Tooltip text="Profitto o perdita netta in USD dopo le commissioni di trading." pos="bottom">
+                      <span>PnL netto</span>
+                    </Tooltip>
+                  </th>
+                  <th className="px-4 py-3 text-left hidden sm:table-cell">
+                    <Tooltip text="Motivo di chiusura: stop_loss = prezzo raggiunto il limite di perdita, take_profit = raggiunto l'obiettivo, kill = chiuso manualmente, manual = chiusura utente." pos="bottom" width="wide">
+                      <span>Chiusura</span>
+                    </Tooltip>
+                  </th>
+                  <th className="px-4 py-3 text-right hidden sm:table-cell">
+                    <Tooltip text="Per quanto tempo il trade è rimasto aperto (ore e minuti)." pos="bottom">
+                      <span>Durata</span>
+                    </Tooltip>
+                  </th>
                 </tr>
               </thead>
               <tbody>
@@ -241,12 +270,24 @@ export const TradeLog: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                       <div>
                         <p className="text-xs text-slate-500 uppercase tracking-wide mb-2">Ensemble Output</p>
                         <div className="grid grid-cols-3 sm:grid-cols-6 gap-2 text-xs font-mono">
-                          <FCell label="C2 P(up)"   value={`${((log.forecast.c2_dir_prob ?? 0) * 100).toFixed(1)}%`} />
-                          <FCell label="LGBM P(up)" value={`${((log.forecast.lgbm_prob ?? 0) * 100).toFixed(1)}%`} />
-                          <FCell label="p10" value={`$${(log.forecast.c2_p10 ?? 0).toFixed(0)}`} />
-                          <FCell label="p50" value={`$${(log.forecast.c2_p50 ?? 0).toFixed(0)}`} highlight />
-                          <FCell label="p90" value={`$${(log.forecast.c2_p90 ?? 0).toFixed(0)}`} />
-                          <FCell label="Latency" value={`${(log.forecast.latency_ms ?? 0).toFixed(0)}ms`} />
+                          <Tooltip text="Probabilità Chronos-2 che il prezzo salga nel prossimo orizzonte di 12 ore." pos="bottom">
+                            <FCell label="C2 P(up)" value={`${((log.forecast.c2_dir_prob ?? 0) * 100).toFixed(1)}%`} />
+                          </Tooltip>
+                          <Tooltip text="Probabilità LightGBM che il prezzo salga. Modello basato su feature tecniche e on-chain." pos="bottom">
+                            <FCell label="LGBM P(up)" value={`${((log.forecast.lgbm_prob ?? 0) * 100).toFixed(1)}%`} />
+                          </Tooltip>
+                          <Tooltip text="Percentile 10: prezzo pessimistico. Il 10% delle simulazioni prevede un prezzo sotto questo livello." pos="bottom">
+                            <FCell label="p10" value={`$${(log.forecast.c2_p10 ?? 0).toFixed(0)}`} />
+                          </Tooltip>
+                          <Tooltip text="Percentile 50: prezzo mediano. La metà delle simulazioni prevede un prezzo sopra, l'altra metà sotto." pos="bottom">
+                            <FCell label="p50" value={`$${(log.forecast.c2_p50 ?? 0).toFixed(0)}`} highlight />
+                          </Tooltip>
+                          <Tooltip text="Percentile 90: prezzo ottimistico. Il 10% delle simulazioni prevede un prezzo sopra questo livello." pos="bottom">
+                            <FCell label="p90" value={`$${(log.forecast.c2_p90 ?? 0).toFixed(0)}`} />
+                          </Tooltip>
+                          <Tooltip text="Tempo impiegato dall'ensemble (Chronos-2 + LightGBM) per completare l'inferenza e produrre la decisione." pos="bottom">
+                            <FCell label="Latency" value={`${(log.forecast.latency_ms ?? 0).toFixed(0)}ms`} />
+                          </Tooltip>
                         </div>
                       </div>
                     )}

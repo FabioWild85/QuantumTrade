@@ -1,18 +1,33 @@
 import React, { useState, useEffect } from 'react';
+import { Tooltip } from './Tooltip';
 
 interface FeatureFlags {
+  // Exit strategies
   trailing_sl_enabled: boolean;
   trailing_sl_activation: number;
   partial_tp_enabled: boolean;
   partial_tp_atr_mult: number;
   partial_tp_pct: number;
-  confluence_gate: number;
-  adx_gate: number;
-  directional_threshold: number;
   lgbm_exit_enabled: boolean;
   lgbm_exit_threshold: number;
   lgbm_exit_min_hold_bars: number;
   lgbm_exit_confirm_bars: number;
+  // Base gates
+  confluence_gate: number;
+  adx_gate: number;
+  directional_threshold: number;
+  // Advanced signal controls
+  chronos_enabled: boolean;
+  chronos_weight: number;
+  adx_gate_enabled: boolean;
+  sweep_gate_enabled: boolean;
+  fvg_filter_enabled: boolean;
+  mtf_alignment_enabled: boolean;
+  // Advanced exit
+  be_sl_enabled: boolean;
+  be_sl_activation: number;
+  max_hold_bars_enabled: boolean;
+  max_hold_bars: number;
 }
 
 export const HubSettings: React.FC<{ apiBase: string }> = ({ apiBase }) => {
@@ -25,13 +40,24 @@ export const HubSettings: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     partial_tp_enabled:      false,
     partial_tp_atr_mult:     1.5,
     partial_tp_pct:          50.0,
-    confluence_gate:         60.0,
-    adx_gate:                20.0,
-    directional_threshold:   0.62,
     lgbm_exit_enabled:       false,
     lgbm_exit_threshold:     0.30,
     lgbm_exit_min_hold_bars: 6,
     lgbm_exit_confirm_bars:  2,
+    confluence_gate:         60.0,
+    adx_gate:                20.0,
+    directional_threshold:   0.62,
+    // Advanced
+    chronos_enabled:         true,
+    chronos_weight:          0.40,
+    adx_gate_enabled:        true,
+    sweep_gate_enabled:      true,
+    fvg_filter_enabled:      true,
+    mtf_alignment_enabled:   true,
+    be_sl_enabled:           false,
+    be_sl_activation:        1.0,
+    max_hold_bars_enabled:   false,
+    max_hold_bars:           48,
   });
   const [saving, setSaving]     = useState(false);
   const [saveMsg, setSaveMsg]   = useState<string | null>(null);
@@ -145,56 +171,165 @@ export const HubSettings: React.FC<{ apiBase: string }> = ({ apiBase }) => {
         </p>
       </Section>
 
-      {/* Trading Strategy Toggles */}
-      <Section title="⚡ Strategie di Trading" description="Abilita o disabilita modalità avanzate. Le modifiche vengono applicate al prossimo ciclo del bot.">
-        <div className="space-y-5">
-          <ToggleRow
-            label="Trailing Stop Loss"
-            desc="Sposta SL al break-even quando il prezzo si muove a favore di trading_sl_activation × ATR. Riduce i trade che tornano in perdita dopo essere stati in profitto."
-            checked={flags.trailing_sl_enabled}
-            onChange={v => setFlag('trailing_sl_enabled', v)}
-          >
-            {flags.trailing_sl_enabled && (
-              <NumInput label="Attivazione (× ATR)" value={flags.trailing_sl_activation} onChange={v => setFlag('trailing_sl_activation', v)} step={0.1} min={0.5} max={3} />
-            )}
-          </ToggleRow>
 
-          <ToggleRow
-            label="Partial Take Profit"
-            desc="Chiudi una quota della posizione al primo target di prezzo, lascia il resto correre fino al TP finale. Migliora il profit factor riducendo i gain che si trasformano in loss."
-            checked={flags.partial_tp_enabled}
-            onChange={v => setFlag('partial_tp_enabled', v)}
-          >
-            {flags.partial_tp_enabled && (
-              <div className="flex gap-4 flex-wrap">
-                <NumInput label="Target (× ATR)" value={flags.partial_tp_atr_mult} onChange={v => setFlag('partial_tp_atr_mult', v)} step={0.1} min={0.5} max={5} />
-                <NumInput label="Quota da chiudere (%)" value={flags.partial_tp_pct} onChange={v => setFlag('partial_tp_pct', v)} step={5} min={10} max={90} />
-              </div>
-            )}
-          </ToggleRow>
+      {/* Advanced Controls */}
+      <Section title="🧠 Controlli Avanzati" description="Parametri che influenzano direttamente il motore decisionale e le strategie di uscita. Tutti effettivi e salvati sul database.">
+        <div className="space-y-6">
 
-          <ToggleRow
-            label="LightGBM Mid-Trade Exit"
-            desc="Rivaluta il segnale LightGBM ogni candela mentre il trade è aperto. Se la probabilità direzionale scende sotto la soglia (es. 0.40 per long), chiude anticipatamente prima di SL/TP. Richiede un numero minimo di barre in posizione prima di attivarsi."
-            checked={flags.lgbm_exit_enabled}
-            onChange={v => setFlag('lgbm_exit_enabled', v)}
-          >
-            {flags.lgbm_exit_enabled && (
-              <div className="flex gap-4 flex-wrap">
-                <NumInput label="Soglia (p <)" value={flags.lgbm_exit_threshold} onChange={v => setFlag('lgbm_exit_threshold', v)} step={0.01} min={0.15} max={0.50} />
-                <NumInput label="Hold minimo (barre)" value={flags.lgbm_exit_min_hold_bars} onChange={v => setFlag('lgbm_exit_min_hold_bars', v)} step={1} min={1} max={48} />
-                <NumInput label="Conferma (barre consec.)" value={flags.lgbm_exit_confirm_bars} onChange={v => setFlag('lgbm_exit_confirm_bars', v)} step={1} min={1} max={6} />
-              </div>
-            )}
-          </ToggleRow>
+          {/* Motore Decisionale */}
+          <div>
+            <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-3">Motore Decisionale</p>
+            <div className="space-y-4">
+              <ToggleRow
+                label="Chronos-2 attivo"
+                desc="Abilita il modello transformer Chronos-2 nell'ensemble. Se disattivo, il bot usa solo LightGBM (peso 100%). Utile per confrontare i due approcci."
+                checked={flags.chronos_enabled}
+                onChange={v => setFlag('chronos_enabled', v)}
+              >
+                {flags.chronos_enabled && (
+                  <Tooltip text="Quanto peso dare a Chronos-2 nella decisione finale. Il peso rimanente va a LightGBM. Es: 0.4 = 40% Chronos + 60% LightGBM." pos="right" width="wide">
+                    <NumInput label="Peso Chronos-2 (0.0–0.9)" value={flags.chronos_weight} onChange={v => setFlag('chronos_weight', v)} step={0.05} min={0.1} max={0.9} />
+                  </Tooltip>
+                )}
+              </ToggleRow>
 
-          <div className="border-t border-dark-border pt-4 grid grid-cols-1 sm:grid-cols-3 gap-4">
-            <NumInput label="ADX Gate (no-trade)" value={flags.adx_gate} onChange={v => setFlag('adx_gate', v)} step={1} min={10} max={40} />
-            <NumInput label="Directional Threshold" value={flags.directional_threshold} onChange={v => setFlag('directional_threshold', v)} step={0.01} min={0.5} max={0.9} />
-            <NumInput label="Confluence Gate (%)" value={flags.confluence_gate} onChange={v => setFlag('confluence_gate', v)} step={5} min={0} max={100} />
+              <ToggleRow
+                label="ADX Gate"
+                desc="Blocca il trade quando ADX < soglia: mercato in compressione senza trend. Disattivarlo può aumentare i trade in regime laterale ma peggiora il win rate."
+                checked={flags.adx_gate_enabled}
+                onChange={v => setFlag('adx_gate_enabled', v)}
+              />
+
+              <ToggleRow
+                label="Liquidity Sweep Gate"
+                desc="Salta il segnale quando è rilevato uno sweep di liquidità nell'ultima candela. Evita di entrare in falsi breakout dopo caccia agli stop."
+                checked={flags.sweep_gate_enabled}
+                onChange={v => setFlag('sweep_gate_enabled', v)}
+              />
+
+              <ToggleRow
+                label="Filtro FVG Anti-entry"
+                desc="Non entrare long se c'è un Fair Value Gap ribassista sopra il prezzo, e viceversa per short. Evita di comprare in una zona di resistenza SMC."
+                checked={flags.fvg_filter_enabled}
+                onChange={v => setFlag('fvg_filter_enabled', v)}
+              />
+
+              <ToggleRow
+                label="Bonus MTF Alignment (Daily)"
+                desc="Se il regime daily è allineato con il segnale (bull + long, o bear + short), abbassa la soglia direzionale di 0.02. Favorisce i trade in direzione del trend macro."
+                checked={flags.mtf_alignment_enabled}
+                onChange={v => setFlag('mtf_alignment_enabled', v)}
+              />
+            </div>
           </div>
 
-          <div className="flex items-center gap-3">
+          {/* Soglie Base */}
+          <div>
+            <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-3">Soglie Segnale</p>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <Tooltip text="ADX (Average Directional Index): misura la forza del trend da 0 a 100. Il bot non apre trade quando ADX è sotto questa soglia (mercato laterale, senza direzione chiara)." pos="bottom" width="wide">
+                <NumInput label="ADX Gate (no-trade < x)" value={flags.adx_gate} onChange={v => setFlag('adx_gate', v)} step={1} min={10} max={40} />
+              </Tooltip>
+              <Tooltip text="Soglia minima di probabilità direzionale (0–1). Il modello ensemble deve essere almeno questa percentuale sicuro della direzione per aprire un trade." pos="bottom" width="wide">
+                <NumInput label="Directional Threshold" value={flags.directional_threshold} onChange={v => setFlag('directional_threshold', v)} step={0.01} min={0.5} max={0.9} />
+              </Tooltip>
+              <Tooltip text="Punteggio minimo del sistema Quantum Trade (0–100). Combina più indicatori tecnici. 0 = filtro disabilitato. Aumentarlo riduce i trade ma li rende più selezionati." pos="bottom" width="wide">
+                <NumInput label="Confluence Gate (%)" value={flags.confluence_gate} onChange={v => setFlag('confluence_gate', v)} step={5} min={0} max={100} />
+              </Tooltip>
+            </div>
+          </div>
+
+          {/* Exit Avanzato */}
+          <div>
+            <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-3">Exit Avanzato</p>
+            <div className="space-y-4">
+              <ToggleRow
+                label="Break-Even SL"
+                desc="Sposta lo Stop Loss al prezzo di entrata (break-even) quando il prezzo si muove di activation × ATR a favore. Elimina il rischio di perdita dopo essere stati in profitto."
+                checked={flags.be_sl_enabled}
+                onChange={v => setFlag('be_sl_enabled', v)}
+              >
+                {flags.be_sl_enabled && (
+                  <Tooltip text="Distanza minima di profitto (in multipli di ATR) prima che lo SL venga spostato al break-even. Es: 1.0 ATR = lo SL si sposta a pareggio quando sei in guadagno di 1 ATR." pos="right" width="wide">
+                    <NumInput label="Attivazione (× ATR)" value={flags.be_sl_activation} onChange={v => setFlag('be_sl_activation', v)} step={0.1} min={0.5} max={3.0} />
+                  </Tooltip>
+                )}
+              </ToggleRow>
+
+              <ToggleRow
+                label="Exit Temporale Massimo"
+                desc="Chiude la posizione dopo un numero massimo di barre indipendentemente da SL/TP. Evita di tenere trade aperti indefinitamente in mercati laterali."
+                checked={flags.max_hold_bars_enabled}
+                onChange={v => setFlag('max_hold_bars_enabled', v)}
+              >
+                {flags.max_hold_bars_enabled && (
+                  <Tooltip text="Numero massimo di candele 4h prima della chiusura forzata. 48 barre = 8 giorni. Utile per evitare di bloccare capitale in trade che non si muovono." pos="right" width="wide">
+                    <NumInput label="Max barre (1 barra = 4h)" value={flags.max_hold_bars} onChange={v => setFlag('max_hold_bars', Math.round(v))} step={4} min={12} max={168} />
+                  </Tooltip>
+                )}
+              </ToggleRow>
+            </div>
+          </div>
+
+          {/* Strategie Exit Esistenti */}
+          <div>
+            <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-3">Strategie di Uscita</p>
+            <div className="space-y-4">
+              <ToggleRow
+                label="Trailing Stop Loss"
+                desc="Lo SL segue dinamicamente il prezzo: si attiva dopo N×ATR di profitto e poi si aggiorna ad ogni candela seguendo il massimo/minimo raggiunto (high water mark). Cattura profitto crescente se il trend continua."
+                checked={flags.trailing_sl_enabled}
+                onChange={v => setFlag('trailing_sl_enabled', v)}
+              >
+                {flags.trailing_sl_enabled && (
+                  <Tooltip text="Distanza di profitto minima per attivare il trailing. Una volta attivato, lo SL insegue il prezzo restando a questa distanza dal massimo raggiunto." pos="right" width="wide">
+                    <NumInput label="Attivazione (× ATR)" value={flags.trailing_sl_activation} onChange={v => setFlag('trailing_sl_activation', v)} step={0.1} min={0.5} max={3} />
+                  </Tooltip>
+                )}
+              </ToggleRow>
+
+              <ToggleRow
+                label="Partial Take Profit"
+                desc="Chiudi una quota della posizione al primo target, lascia il resto correre fino al TP finale. Utile per incassare profitti parziali riducendo il rischio."
+                checked={flags.partial_tp_enabled}
+                onChange={v => setFlag('partial_tp_enabled', v)}
+              >
+                {flags.partial_tp_enabled && (
+                  <div className="flex gap-4 flex-wrap">
+                    <Tooltip text="Distanza in ATR dal prezzo di entrata a cui scatta il primo take profit parziale." pos="top" width="wide">
+                      <NumInput label="Target (× ATR)" value={flags.partial_tp_atr_mult} onChange={v => setFlag('partial_tp_atr_mult', v)} step={0.1} min={0.5} max={5} />
+                    </Tooltip>
+                    <Tooltip text="Percentuale della posizione da chiudere al primo target. Il resto continua fino al TP finale." pos="top" width="wide">
+                      <NumInput label="Quota da chiudere (%)" value={flags.partial_tp_pct} onChange={v => setFlag('partial_tp_pct', v)} step={5} min={10} max={90} />
+                    </Tooltip>
+                  </div>
+                )}
+              </ToggleRow>
+
+              <ToggleRow
+                label="LightGBM Mid-Trade Exit"
+                desc="Rivaluta il segnale LightGBM ogni candela mentre il trade è aperto. Chiude anticipatamente se la probabilità scende sotto soglia per N barre consecutive."
+                checked={flags.lgbm_exit_enabled}
+                onChange={v => setFlag('lgbm_exit_enabled', v)}
+              >
+                {flags.lgbm_exit_enabled && (
+                  <div className="flex gap-4 flex-wrap">
+                    <Tooltip text="Se la probabilità LightGBM scende sotto questo valore per N barre consecutive, il trade viene chiuso." pos="top" width="wide">
+                      <NumInput label="Soglia (p <)" value={flags.lgbm_exit_threshold} onChange={v => setFlag('lgbm_exit_threshold', v)} step={0.01} min={0.15} max={0.50} />
+                    </Tooltip>
+                    <Tooltip text="Il bot non può uscire prima di aver tenuto la posizione per almeno questo numero di candele 4h." pos="top" width="wide">
+                      <NumInput label="Hold minimo (barre)" value={flags.lgbm_exit_min_hold_bars} onChange={v => setFlag('lgbm_exit_min_hold_bars', v)} step={1} min={1} max={48} />
+                    </Tooltip>
+                    <Tooltip text="Numero di barre consecutive in cui la probabilità deve essere bassa prima di chiudere. Evita uscite premature su segnali rumorosi." pos="top" width="wide">
+                      <NumInput label="Conferma (barre consec.)" value={flags.lgbm_exit_confirm_bars} onChange={v => setFlag('lgbm_exit_confirm_bars', v)} step={1} min={1} max={6} />
+                    </Tooltip>
+                  </div>
+                )}
+              </ToggleRow>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-3 pt-2">
             <button onClick={saveFlags} disabled={saving}
               className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-sm font-semibold rounded-lg transition-colors">
               {saving ? 'Salvataggio…' : 'Salva e Applica'}
@@ -206,17 +341,19 @@ export const HubSettings: React.FC<{ apiBase: string }> = ({ apiBase }) => {
 
       {/* Kill Switch */}
       <Section title="🔴 Kill Switch Globale" description="Cancella tutti gli ordini aperti e chiude tutte le posizioni immediatamente. Irreversibile.">
-        <button
-          onClick={async () => {
-            if (!confirm('⚠️ KILL SWITCH: chiude tutto immediatamente. Sei sicuro?')) return;
-            const r = await fetch(`${apiBase}/bot/kill`, { method: 'POST' });
-            const d = await r.json();
-            alert(`Kill completato. Posizioni chiuse: ${d.positions_closed}. Ordini cancellati: ${d.orders_cancelled}.`);
-          }}
-          className="px-6 py-3 bg-red-700 hover:bg-red-600 text-white text-sm font-bold rounded-xl transition-colors"
-        >
-          🔴 Attiva Kill Switch
-        </button>
+        <Tooltip text="Azione irreversibile: invia immediatamente ordini di chiusura per tutte le posizioni aperte su Hyperliquid e cancella tutti gli ordini pendenti. Usa in caso di emergenza o malfunzionamento del bot." pos="right" width="wide">
+          <button
+            onClick={async () => {
+              if (!confirm('⚠️ KILL SWITCH: chiude tutto immediatamente. Sei sicuro?')) return;
+              const r = await fetch(`${apiBase}/bot/kill`, { method: 'POST' });
+              const d = await r.json();
+              alert(`Kill completato. Posizioni chiuse: ${d.positions_closed}. Ordini cancellati: ${d.orders_cancelled}.`);
+            }}
+            className="px-6 py-3 bg-red-700 hover:bg-red-600 text-white text-sm font-bold rounded-xl transition-colors"
+          >
+            🔴 Attiva Kill Switch
+          </button>
+        </Tooltip>
       </Section>
 
       {/* Telegram */}
