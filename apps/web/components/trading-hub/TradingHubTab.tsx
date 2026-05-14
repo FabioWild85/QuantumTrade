@@ -81,7 +81,7 @@ const StatusBadge: React.FC<{ apiBase: string }> = ({ apiBase }) => {
         if (r.ok) {
           const d = await r.json();
           setStatus('online');
-          setRunning(d.engine);
+          setRunning(d.running);
         } else {
           setStatus('offline');
         }

@@ -108,15 +108,21 @@ async def wallet_revoke_agent(agent_id: str):
 # ─── Bot ─────────────────────────────────────────────────────────────────────
 
 class BotConfig(BaseModel):
-    sl_atr_mult: float = Field(2.0, ge=0.5, le=5.0, description="Stop Loss = entry ± N * ATR")
-    tp_atr_mult: float = Field(3.5, ge=1.0, le=10.0, description="Take Profit = entry ± N * ATR")
-    position_size_pct: float = Field(1.5, ge=0.1, le=5.0, description="Capital per trade (%)")
-    max_daily_dd_pct: float = Field(3.0, ge=0.5, le=10.0, description="Max daily drawdown (%)")
+    sl_atr_mult: float = Field(2.0, ge=0.5, le=5.0)
+    tp_atr_mult: float = Field(3.5, ge=1.0, le=10.0)
+    position_size_pct: float = Field(1.5, ge=0.1, le=5.0)
+    max_daily_dd_pct: float = Field(3.0, ge=0.5, le=10.0)
     directional_threshold: float = Field(0.62, ge=0.50, le=0.90)
-    adx_gate: float = Field(20.0, ge=10.0, le=40.0, description="ADX gate for no-trade")
+    adx_gate: float = Field(20.0, ge=10.0, le=40.0)
     confluence_gate: float = Field(60.0, ge=0.0, le=100.0)
     max_consecutive_losses: int = Field(4, ge=1, le=10)
     mode: str = Field("paper", pattern="^(paper|live)$")
+    # Advanced exit strategies
+    partial_tp_enabled: bool = Field(False)
+    partial_tp_atr_mult: float = Field(1.5, ge=0.5, le=5.0)
+    partial_tp_pct: float = Field(50.0, ge=10.0, le=90.0)
+    trailing_sl_enabled: bool = Field(False)
+    trailing_sl_activation: float = Field(1.0, ge=0.5, le=3.0)
 
 
 class StartBotRequest(BaseModel):
@@ -344,6 +350,7 @@ class BacktestRequest(BaseModel):
     to_date: str = Field(..., description="YYYY-MM-DD")
     initial_capital: float = Field(10000.0, gt=0)
     config: Optional[BotConfig] = None
+    use_binance: bool = Field(True, description="Use Binance OHLCV for periods older than ~11 months")
 
 
 backtest_jobs: dict = {}

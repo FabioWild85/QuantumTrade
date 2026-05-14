@@ -1,4 +1,11 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
+
+// Returns seconds until next 4h candle close (00:00, 04:00, 08:00, 12:00, 16:00, 20:00 UTC)
+function secsToNext4h(): number {
+  const now = Date.now();
+  const interval = 4 * 3600 * 1000;
+  return Math.ceil((interval - (now % interval)) / 1000);
+}
 
 interface BotStatus {
   running: boolean;
@@ -37,12 +44,18 @@ interface EquitySnap {
 const INITIAL_EQUITY = 10_000;
 
 export const Monitor: React.FC<{ apiBase: string }> = ({ apiBase }) => {
-  const [status,   setStatus]   = useState<BotStatus | null>(null);
-  const [logs,     setLogs]     = useState<InferenceLog[]>([]);
-  const [equity,   setEquity]   = useState<EquitySnap[]>([]);
-  const [error,    setError]    = useState<string | null>(null);
-  const [starting, setStarting] = useState(false);
+  const [status,    setStatus]   = useState<BotStatus | null>(null);
+  const [logs,      setLogs]     = useState<InferenceLog[]>([]);
+  const [equity,    setEquity]   = useState<EquitySnap[]>([]);
+  const [error,     setError]    = useState<string | null>(null);
+  const [starting,  setStarting] = useState(false);
+  const [countdown, setCountdown] = useState(secsToNext4h());
   const esRef = useRef<EventSource | null>(null);
+
+  useEffect(() => {
+    const t = setInterval(() => setCountdown(secsToNext4h()), 1000);
+    return () => clearInterval(t);
+  }, []);
 
   // ── REST polling (status + logs every 15s) ────────────────────────────────
   const fetchAll = async () => {
@@ -166,9 +179,9 @@ export const Monitor: React.FC<{ apiBase: string }> = ({ apiBase }) => {
           color={totalPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}
         />
         <KpiCard
-          label="Cicli Completati"
-          value={String(status?.cycle_count ?? 0)}
-          sub={`Prossimo retrain: ${120 - ((status?.cycle_count ?? 0) % 120)} cicli`}
+          label="Prossima Candela"
+          value={`${String(Math.floor(countdown / 3600)).padStart(2,'0')}:${String(Math.floor((countdown % 3600) / 60)).padStart(2,'0')}:${String(countdown % 60).padStart(2,'0')}`}
+          sub={`Cicli: ${status?.cycle_count ?? 0} · Retrain: ${120 - ((status?.cycle_count ?? 0) % 120)}`}
         />
         <KpiCard
           label="Stato"

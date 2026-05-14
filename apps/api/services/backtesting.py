@@ -31,14 +31,21 @@ async def run_backtest(req) -> dict:
     """
     symbol  = req.symbol
     capital = float(req.initial_capital)
-    cfg     = req.config  # BotConfig-like pydantic model or None
+    cfg     = req.config
 
     # Strategy parameters
-    sl_atr_mult   = cfg.sl_atr_mult           if cfg else 2.0
-    tp_atr_mult   = cfg.tp_atr_mult           if cfg else 3.5
-    pos_size_pct  = cfg.position_size_pct     if cfg else 1.5
+    sl_atr_mult   = cfg.sl_atr_mult            if cfg else 2.0
+    tp_atr_mult   = cfg.tp_atr_mult            if cfg else 3.5
+    pos_size_pct  = cfg.position_size_pct      if cfg else 1.5
     dir_threshold = cfg.directional_threshold  if cfg else 0.62
-    adx_gate      = cfg.adx_gate              if cfg else 20.0
+    adx_gate      = cfg.adx_gate               if cfg else 20.0
+    # Advanced exit strategy flags
+    partial_tp_enabled     = getattr(cfg, "partial_tp_enabled",     False)
+    partial_tp_atr_mult    = getattr(cfg, "partial_tp_atr_mult",    1.5)
+    partial_tp_pct         = getattr(cfg, "partial_tp_pct",         50.0)
+    trailing_sl_enabled    = getattr(cfg, "trailing_sl_enabled",    False)
+    trailing_sl_activation = getattr(cfg, "trailing_sl_activation", 1.0)
+    use_binance            = getattr(req,  "use_binance",            True)
 
     hl = HyperliquidData()
 
@@ -47,18 +54,40 @@ async def run_backtest(req) -> dict:
     dt_from = datetime.strptime(req.from_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
     dt_to   = datetime.strptime(req.to_date,   "%Y-%m-%d").replace(tzinfo=timezone.utc)
     days    = (dt_to - dt_from).days + 1
-    limit   = days * 6 + 128  # 6 bars/day on 4h tf + warm-up
+    limit   = days * 6 + 200
 
-    df_ohlcv = await hl.get_ohlcv(symbol, "4h", limit=limit, end_time=dt_to)
-    df_ohlcv = df_ohlcv[df_ohlcv.index >= dt_from]
+    # Use Binance for periods older than ~11 months (HL data limit)
+    from datetime import timedelta
+    hl_cutoff = datetime.now(timezone.utc) - timedelta(days=330)
+    if use_binance and dt_from < hl_cutoff:
+        from services.binance_data import get_ohlcv_binance
+        df_ohlcv = await get_ohlcv_binance(symbol, "4h", start_date=req.from_date, end_date=req.to_date)
+        log.info("Using Binance OHLCV: %d candles", len(df_ohlcv))
+    else:
+        df_ohlcv = await hl.get_ohlcv(symbol, "4h", limit=limit, end_time=dt_to)
+        df_ohlcv = df_ohlcv[df_ohlcv.index >= dt_from]
 
     if len(df_ohlcv) < 100:
         return {"error": f"Dati insufficienti per il periodo {req.from_date}→{req.to_date}"}
 
-    df_fund = await hl.get_funding_history(symbol, hours=days * 24 + 200)
+    df_fund = await hl.get_funding_history(symbol, hours=min(days * 24 + 200, 8760))
+
+    # Try to enrich with real OI + liquidation data from Coinglass/Coinalyze
+    try:
+        from services.external_data import get_best_oi, get_best_liquidations
+        df_oi  = await get_best_oi(symbol, start_date=req.from_date, end_date=req.to_date)
+        df_liq = await get_best_liquidations(symbol, start_date=req.from_date, end_date=req.to_date)
+        if not df_oi.empty:
+            log.info("External OI data: %d rows", len(df_oi))
+        if not df_liq.empty:
+            log.info("External liquidation data: %d rows", len(df_liq))
+    except Exception as e:
+        log.warning("External data fetch failed (non-blocking): %s", e)
+        df_oi  = pd.DataFrame()
+        df_liq = pd.DataFrame()
 
     # ── 2. Build features ────────────────────────────────────────────────────
-    df_feat = build_all_features(df_ohlcv, df_fund, pd.DataFrame(), pd.DataFrame())
+    df_feat = build_all_features(df_ohlcv, df_fund, df_oi, df_liq)
 
     # ── 3. Load LightGBM model ───────────────────────────────────────────────
     model_result = load_model()
@@ -83,7 +112,7 @@ async def run_backtest(req) -> dict:
     )
 
     equity        = capital
-    position      = None   # {side, entry, sl, tp, size_usd, bar_idx}
+    position      = None   # {side, entry, sl, tp, size_usd, bar_idx, partial_done, entry_atr}
     trades        = []
     equity_curve  = [{"bar": 0, "equity": equity}]
     funding_col   = "funding" in df_feat.columns
@@ -101,30 +130,62 @@ async def run_backtest(req) -> dict:
                 funding_cost = position["size_usd"] * abs(float(fund_val))
                 equity -= funding_cost
 
-        # ── Manage existing position (SL/TP at candle close) ─────────────────
+        # ── Manage existing position ──────────────────────────────────────────
         if position:
             close_price = float(row["close"])
             side        = position["side"]
+            entry       = position["entry"]
+            entry_atr   = position["entry_atr"]
+
+            # ── Trailing SL: move to break-even after activation ──────────────
+            if trailing_sl_enabled and not position.get("sl_trailed"):
+                activation_dist = trailing_sl_activation * entry_atr
+                moved_enough = (side == "long"  and close_price >= entry + activation_dist) or \
+                               (side == "short" and close_price <= entry - activation_dist)
+                if moved_enough:
+                    position["sl"] = entry  # move SL to break-even
+                    position["sl_trailed"] = True
+
+            # ── Partial TP: close partial_tp_pct% at partial_tp_atr_mult×ATR ──
+            if partial_tp_enabled and not position.get("partial_done"):
+                partial_target = entry + partial_tp_atr_mult * entry_atr if side == "long" \
+                                 else entry - partial_tp_atr_mult * entry_atr
+                hit_partial = (side == "long"  and close_price >= partial_target) or \
+                              (side == "short" and close_price <= partial_target)
+                if hit_partial:
+                    partial_frac = partial_tp_pct / 100.0
+                    partial_size = position["size_usd"] * partial_frac
+                    pnl_pct_p = (close_price - entry) / entry * 100 if side == "long" \
+                                else (entry - close_price) / entry * 100
+                    pnl_usd_p = partial_size * pnl_pct_p / 100
+                    fee_p     = partial_size * HL_TAKER_FEE
+                    equity   += pnl_usd_p - fee_p
+                    position["size_usd"]   *= (1.0 - partial_frac)
+                    position["partial_done"] = True
+                    trades.append({
+                        "side": side, "entry": entry, "exit": close_price,
+                        "pnl_pct": round(pnl_pct_p, 4),
+                        "pnl_usd": round(pnl_usd_p - fee_p, 2),
+                        "reason": "partial_tp", "holding_bars": i - position["bar_idx"], "bar": i,
+                    })
+                    equity_curve.append({"bar": i, "equity": round(equity, 2)})
+
+            # ── Full SL/TP check ──────────────────────────────────────────────
             hit_sl = (side == "long" and close_price <= position["sl"]) or \
                      (side == "short" and close_price >= position["sl"])
             hit_tp = (side == "long" and close_price >= position["tp"]) or \
                      (side == "short" and close_price <= position["tp"])
 
             if hit_sl or hit_tp:
-                reason  = "stop_loss" if hit_sl else "take_profit"
-                entry   = position["entry"]
-                pnl_pct = (
-                    (close_price - entry) / entry * 100 if side == "long"
-                    else (entry - close_price) / entry * 100
-                )
-                pnl_usd = position["size_usd"] * pnl_pct / 100
+                reason   = "stop_loss" if hit_sl else "take_profit"
+                pnl_pct  = (close_price - entry) / entry * 100 if side == "long" \
+                           else (entry - close_price) / entry * 100
+                pnl_usd  = position["size_usd"] * pnl_pct / 100
                 fee_exit = position["size_usd"] * HL_TAKER_FEE
 
                 equity += pnl_usd - fee_exit
                 trades.append({
-                    "side":       side,
-                    "entry":      entry,
-                    "exit":       close_price,
+                    "side": side, "entry": entry, "exit": close_price,
                     "pnl_pct":    round(pnl_pct, 4),
                     "pnl_usd":    round(pnl_usd - fee_exit, 2),
                     "reason":     reason,
@@ -161,12 +222,15 @@ async def run_backtest(req) -> dict:
                 fee_entry = params.size_usd * HL_TAKER_FEE
                 equity   -= fee_entry
                 position  = {
-                    "side":     result.action,
-                    "entry":    close_price,
-                    "sl":       params.stop_loss,
-                    "tp":       params.take_profit,
-                    "size_usd": params.size_usd,
-                    "bar_idx":  i,
+                    "side":         result.action,
+                    "entry":        close_price,
+                    "sl":           params.stop_loss,
+                    "tp":           params.take_profit,
+                    "size_usd":     params.size_usd,
+                    "bar_idx":      i,
+                    "entry_atr":    atr,
+                    "partial_done": False,
+                    "sl_trailed":   False,
                 }
 
     # ── 6. Close any open position at last price ──────────────────────────────

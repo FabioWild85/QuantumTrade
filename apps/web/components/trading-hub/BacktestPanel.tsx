@@ -43,35 +43,28 @@ interface BacktestResult {
 }
 
 // ── Equity curve SVG ──────────────────────────────────────────────────────────
-const EquityChart: React.FC<{ data: EquityPoint[]; initialCapital: number }> = ({ data, initialCapital }) => {
+const EquityChart: React.FC<{ data: EquityPoint[]; initialCapital: number; color?: string }> = ({
+  data, initialCapital, color,
+}) => {
   if (data.length < 2) return null;
-
-  const W = 700, H = 160, PAD = { t: 10, r: 10, b: 28, l: 52 };
-  const cW = W - PAD.l - PAD.r;
-  const cH = H - PAD.t - PAD.b;
-
+  const W = 680, H = 150, PAD = { t: 8, r: 8, b: 24, l: 52 };
+  const cW = W - PAD.l - PAD.r, cH = H - PAD.t - PAD.b;
   const vals = data.map(d => d.equity);
-  const minV = Math.min(...vals, initialCapital * 0.9);
-  const maxV = Math.max(...vals, initialCapital * 1.01);
+  const minV = Math.min(...vals, initialCapital * 0.995);
+  const maxV = Math.max(...vals, initialCapital * 1.005);
   const range = maxV - minV || 1;
-
   const px = (i: number) => PAD.l + (i / (data.length - 1)) * cW;
   const py = (v: number) => PAD.t + cH - ((v - minV) / range) * cH;
-
   const poly = data.map((d, i) => `${px(i)},${py(d.equity)}`).join(' ');
   const fillPoly = `${PAD.l},${PAD.t + cH} ${poly} ${PAD.l + cW},${PAD.t + cH}`;
-
   const capY = py(initialCapital);
   const isProfit = vals[vals.length - 1] >= initialCapital;
-  const stroke = isProfit ? '#34d399' : '#f87171';
+  const stroke = color ?? (isProfit ? '#34d399' : '#f87171');
   const fill   = isProfit ? 'rgba(52,211,153,0.10)' : 'rgba(248,113,113,0.10)';
-
-  const ticks = 4;
+  const ticks  = 3;
   const yLabels = Array.from({ length: ticks + 1 }, (_, i) => minV + (range * i) / ticks);
-
   return (
-    <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ height: 160 }}>
-      {/* Grid */}
+    <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ height: 140 }}>
       {yLabels.map((v, i) => {
         const y = py(v);
         return (
@@ -83,222 +76,363 @@ const EquityChart: React.FC<{ data: EquityPoint[]; initialCapital: number }> = (
           </g>
         );
       })}
-
-      {/* Initial capital reference */}
       <line x1={PAD.l} y1={capY} x2={W - PAD.r} y2={capY} stroke="#475569" strokeWidth="1" strokeDasharray="4 3" />
-
-      {/* Fill */}
       <polygon points={fillPoly} fill={fill} />
-
-      {/* Line */}
       <polyline points={poly} fill="none" stroke={stroke} strokeWidth="1.5" strokeLinejoin="round" />
-
-      {/* Axis labels */}
-      {[0, Math.floor(data.length / 2), data.length - 1].map((idx) => {
-        const bar = data[idx]?.bar ?? idx;
-        const label = `Bar ${bar}`;
-        return (
-          <text key={idx} x={px(idx)} y={H - 4} textAnchor="middle" fill="#64748b" fontSize={9}>
-            {label}
-          </text>
-        );
-      })}
+      {[0, Math.floor(data.length / 2), data.length - 1].map((idx) => (
+        <text key={idx} x={px(idx)} y={H - 4} textAnchor="middle" fill="#64748b" fontSize={9}>
+          {data[idx]?.bar ?? idx}
+        </text>
+      ))}
     </svg>
   );
 };
 
-// ── Stat card ─────────────────────────────────────────────────────────────────
-const Stat: React.FC<{ label: string; value: string; sub?: string; color?: string }> = ({
-  label, value, sub, color = 'text-white',
+// ── Stat card ──────────────────────────────────────────────────────────────────
+const Stat: React.FC<{ label: string; value: string; sub?: string; color?: string; delta?: number }> = ({
+  label, value, sub, color = 'text-white', delta,
 }) => (
   <div className="bg-dark-bg rounded-lg p-3 flex flex-col gap-0.5">
     <span className="text-xs text-slate-500 uppercase tracking-wide">{label}</span>
-    <span className={`text-lg font-bold font-mono ${color}`}>{value}</span>
+    <div className="flex items-baseline gap-2">
+      <span className={`text-base font-bold font-mono ${color}`}>{value}</span>
+      {delta !== undefined && delta !== 0 && (
+        <span className={`text-xs font-mono ${delta > 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+          {delta > 0 ? '+' : ''}{delta.toFixed(2)}
+        </span>
+      )}
+    </div>
     {sub && <span className="text-xs text-slate-600">{sub}</span>}
   </div>
 );
 
+// ── Toggle ─────────────────────────────────────────────────────────────────────
+const Toggle: React.FC<{ label: string; desc: string; checked: boolean; onChange: (v: boolean) => void }> = ({
+  label, desc, checked, onChange,
+}) => (
+  <label className="flex items-start gap-3 cursor-pointer group">
+    <div className="relative mt-0.5">
+      <input type="checkbox" className="sr-only" checked={checked} onChange={e => onChange(e.target.checked)} />
+      <div className={`w-10 h-5 rounded-full transition-colors ${checked ? 'bg-indigo-600' : 'bg-slate-700'}`} />
+      <div className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${checked ? 'translate-x-5' : ''}`} />
+    </div>
+    <div>
+      <p className="text-sm font-medium text-slate-300 group-hover:text-white transition-colors">{label}</p>
+      <p className="text-xs text-slate-600">{desc}</p>
+    </div>
+  </label>
+);
+
+// ── Stats comparison grid ──────────────────────────────────────────────────────
+const StatsGrid: React.FC<{ stats: BacktestStats; compare?: BacktestStats; label?: string }> = ({ stats: s, compare: c, label }) => {
+  const pnlColor = (v: number) => v > 0 ? 'text-emerald-400' : v < 0 ? 'text-red-400' : 'text-slate-400';
+  const delta = (a: number, b?: number) => b !== undefined ? a - b : undefined;
+  return (
+    <div>
+      {label && <h4 className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">{label}</h4>}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
+        <Stat label="Trades"      value={String(s.total_trades)} delta={delta(s.total_trades, c?.total_trades)} />
+        <Stat label="Win Rate"    value={`${s.win_rate}%`} color={s.win_rate >= 50 ? 'text-emerald-400' : 'text-red-400'} delta={delta(s.win_rate, c?.win_rate)} />
+        <Stat label="PnL %"       value={`${s.total_pnl_pct > 0 ? '+' : ''}${s.total_pnl_pct}%`} color={pnlColor(s.total_pnl_pct)} delta={delta(s.total_pnl_pct, c?.total_pnl_pct)} />
+        <Stat label="Profit Factor" value={s.profit_factor >= 99 ? '∞' : s.profit_factor.toFixed(2)} color={s.profit_factor >= 1.5 ? 'text-emerald-400' : s.profit_factor >= 1 ? 'text-amber-400' : 'text-red-400'} delta={delta(s.profit_factor, c?.profit_factor)} />
+        <Stat label="Sharpe"      value={s.sharpe.toFixed(3)} color={s.sharpe >= 0.7 ? 'text-emerald-400' : s.sharpe >= 0 ? 'text-amber-400' : 'text-red-400'} delta={delta(s.sharpe, c?.sharpe)} />
+        <Stat label="Sortino"     value={s.sortino.toFixed(3)} color={s.sortino >= 1 ? 'text-emerald-400' : s.sortino >= 0 ? 'text-amber-400' : 'text-red-400'} delta={delta(s.sortino, c?.sortino)} />
+        <Stat label="Calmar"      value={s.calmar.toFixed(3)} color={s.calmar >= 0.5 ? 'text-emerald-400' : s.calmar >= 0 ? 'text-amber-400' : 'text-red-400'} delta={delta(s.calmar, c?.calmar)} />
+        <Stat label="Max DD"      value={`-${s.max_drawdown_pct}%`} color="text-red-400" delta={c ? -(s.max_drawdown_pct - c.max_drawdown_pct) : undefined} />
+        <Stat label="Avg Win"     value={`+${s.avg_win_pct}%`} color="text-emerald-400" delta={delta(s.avg_win_pct, c?.avg_win_pct)} />
+        <Stat label="Avg Loss"    value={`${s.avg_loss_pct}%`} color="text-red-400" delta={delta(s.avg_loss_pct, c?.avg_loss_pct)} />
+        <Stat label="Best"        value={`+${s.best_trade_pct}%`} color="text-emerald-400" />
+        <Stat label="Avg Hold"    value={`${s.avg_holding_h}h`} />
+      </div>
+    </div>
+  );
+};
+
+// ── Trade table ────────────────────────────────────────────────────────────────
+const TradeTable: React.FC<{ trades: BacktestTrade[] }> = ({ trades }) => {
+  const numColor = (v: number) => v > 0 ? 'text-emerald-400' : 'text-red-400';
+  const reasonStyle: Record<string, string> = {
+    take_profit: 'bg-emerald-900/50 text-emerald-400',
+    partial_tp:  'bg-teal-900/50 text-teal-400',
+    stop_loss:   'bg-red-900/50 text-red-400',
+    end_of_period: 'bg-slate-800 text-slate-400',
+  };
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-xs">
+        <thead>
+          <tr className="border-b border-dark-border text-slate-500 uppercase tracking-wide">
+            <th className="px-3 py-2 text-left">Bar</th>
+            <th className="px-3 py-2 text-left">Side</th>
+            <th className="px-3 py-2 text-right">Entry</th>
+            <th className="px-3 py-2 text-right">Exit</th>
+            <th className="px-3 py-2 text-right">PnL %</th>
+            <th className="px-3 py-2 text-right">PnL $</th>
+            <th className="px-3 py-2 text-left">Reason</th>
+            <th className="px-3 py-2 text-right">Hold</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-dark-border">
+          {[...trades].reverse().map((t, i) => (
+            <tr key={i} className="hover:bg-dark-bg/50 transition-colors">
+              <td className="px-3 py-1.5 text-slate-500 font-mono">{t.bar}</td>
+              <td className="px-3 py-1.5">
+                <span className={`px-1.5 py-0.5 rounded text-xs font-bold ${t.side === 'long' ? 'bg-emerald-900/60 text-emerald-300' : 'bg-red-900/60 text-red-300'}`}>
+                  {t.side.toUpperCase()}
+                </span>
+              </td>
+              <td className="px-3 py-1.5 text-right font-mono text-slate-300">${t.entry.toLocaleString(undefined, { maximumFractionDigits: 0 })}</td>
+              <td className="px-3 py-1.5 text-right font-mono text-slate-300">${t.exit.toLocaleString(undefined, { maximumFractionDigits: 0 })}</td>
+              <td className={`px-3 py-1.5 text-right font-mono font-bold ${numColor(t.pnl_pct)}`}>
+                {t.pnl_pct > 0 ? '+' : ''}{t.pnl_pct}%
+              </td>
+              <td className={`px-3 py-1.5 text-right font-mono ${numColor(t.pnl_usd)}`}>
+                {t.pnl_usd > 0 ? '+' : ''}${t.pnl_usd.toFixed(0)}
+              </td>
+              <td className="px-3 py-1.5">
+                <span className={`px-1.5 py-0.5 rounded text-xs ${reasonStyle[t.reason] ?? 'bg-slate-800 text-slate-400'}`}>
+                  {t.reason.replace(/_/g, ' ')}
+                </span>
+              </td>
+              <td className="px-3 py-1.5 text-right text-slate-500">{t.holding_bars * 4}h</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+};
+
+// ── Job runner helper ──────────────────────────────────────────────────────────
+async function runJob(apiBase: string, body: object): Promise<BacktestResult> {
+  const startRes = await fetch(`${apiBase}/backtest`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const { job_id } = await startRes.json();
+  return new Promise((resolve, reject) => {
+    const t = setInterval(async () => {
+      const r = await fetch(`${apiBase}/backtest/${job_id}`);
+      const job = await r.json();
+      if (job.status === 'done') {
+        clearInterval(t);
+        job.result?.error ? reject(new Error(job.result.error)) : resolve(job.result);
+      }
+    }, 2000);
+  });
+}
+
 // ── Main component ─────────────────────────────────────────────────────────────
 export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
-  const today = new Date().toISOString().slice(0, 10);
-  const sixMonthsAgo = new Date(Date.now() - 180 * 864e5).toISOString().slice(0, 10);
+  const today        = new Date().toISOString().slice(0, 10);
+  const twoYearsAgo  = new Date(Date.now() - 730 * 864e5).toISOString().slice(0, 10);
 
-  const [fromDate, setFromDate]   = useState(sixMonthsAgo);
-  const [toDate, setToDate]       = useState(today);
-  const [capital, setCapital]     = useState('10000');
-  const [slMult, setSlMult]       = useState('2.0');
-  const [tpMult, setTpMult]       = useState('3.5');
-  const [posSizePct, setPosSizePct] = useState('1.5');
-  const [status, setStatus]       = useState<'idle' | 'running' | 'done' | 'error'>('idle');
-  const [result, setResult]       = useState<BacktestResult | null>(null);
-  const [errorMsg, setErrorMsg]   = useState('');
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [fromDate,    setFromDate]    = useState(twoYearsAgo);
+  const [toDate,      setToDate]      = useState(today);
+  const [capital,     setCapital]     = useState('10000');
+  const [slMult,      setSlMult]      = useState('2.0');
+  const [tpMult,      setTpMult]      = useState('3.5');
+  const [posSizePct,  setPosSizePct]  = useState('1.5');
+  // Advanced toggles
+  const [trailingSL,  setTrailingSL]  = useState(false);
+  const [trailAct,    setTrailAct]    = useState('1.0');
+  const [partialTP,   setPartialTP]   = useState(false);
+  const [partialMult, setPartialMult] = useState('1.5');
+  const [partialPct,  setPartialPct]  = useState('50');
+  const [compareMode, setCompareMode] = useState(false);
+  // Results
+  const [status,   setStatus]   = useState<'idle' | 'running' | 'done' | 'error'>('idle');
+  const [result,   setResult]   = useState<BacktestResult | null>(null);
+  const [baseline, setBaseline] = useState<BacktestResult | null>(null);
+  const [errorMsg, setErrorMsg] = useState('');
+
+  const buildConfig = (withAdvanced: boolean) => ({
+    sl_atr_mult: parseFloat(slMult),
+    tp_atr_mult: parseFloat(tpMult),
+    position_size_pct: parseFloat(posSizePct),
+    max_daily_dd_pct: 3.0,
+    directional_threshold: 0.62,
+    adx_gate: 20.0,
+    confluence_gate: 0.0,
+    max_consecutive_losses: 4,
+    mode: 'paper',
+    trailing_sl_enabled:    withAdvanced && trailingSL,
+    trailing_sl_activation: parseFloat(trailAct),
+    partial_tp_enabled:     withAdvanced && partialTP,
+    partial_tp_atr_mult:    parseFloat(partialMult),
+    partial_tp_pct:         parseFloat(partialPct),
+  });
 
   const runBacktest = async () => {
     setStatus('running');
     setResult(null);
+    setBaseline(null);
     setErrorMsg('');
-
     try {
-      const body = {
-        symbol: 'BTC',
-        from_date: fromDate,
-        to_date: toDate,
-        initial_capital: parseFloat(capital) || 10000,
-        config: {
-          sl_atr_mult: parseFloat(slMult),
-          tp_atr_mult: parseFloat(tpMult),
-          position_size_pct: parseFloat(posSizePct),
-          max_daily_dd_pct: 3.0,
-          directional_threshold: 0.62,
-          adx_gate: 20.0,
-          confluence_gate: 0.0,
-          max_consecutive_losses: 4,
-          mode: 'paper',
-        },
-      };
-
-      const startRes = await fetch(`${apiBase}/backtest`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-      const { job_id } = await startRes.json();
-
-      pollRef.current = setInterval(async () => {
-        const r = await fetch(`${apiBase}/backtest/${job_id}`);
-        const job = await r.json();
-        if (job.status === 'done') {
-          clearInterval(pollRef.current!);
-          if (job.result?.error) {
-            setErrorMsg(job.result.error);
-            setStatus('error');
-          } else {
-            setResult(job.result);
-            setStatus('done');
-          }
-        }
-      }, 2000);
+      const body = { symbol: 'BTC', from_date: fromDate, to_date: toDate, initial_capital: parseFloat(capital) || 10000, config: buildConfig(true) };
+      if (compareMode && (trailingSL || partialTP)) {
+        const bodyBase = { ...body, config: buildConfig(false) };
+        const [r1, r2] = await Promise.all([runJob(apiBase, body), runJob(apiBase, bodyBase)]);
+        setResult(r1);
+        setBaseline(r2);
+      } else {
+        const r = await runJob(apiBase, body);
+        setResult(r);
+      }
+      setStatus('done');
     } catch (e: any) {
       setErrorMsg(e.message);
       setStatus('error');
     }
   };
 
-  const pnlColor = (v: number) => v > 0 ? 'text-emerald-400' : v < 0 ? 'text-red-400' : 'text-slate-400';
-  const numColor = (v: number) => v > 0 ? 'text-emerald-400' : 'text-red-400';
+  const advancedActive = trailingSL || partialTP;
 
   return (
-    <div className="space-y-6">
-      {/* ── Config panel ─────────────────────────────────────────────────────── */}
-      <div className="bg-dark-card rounded-xl p-5 border border-dark-border">
-        <h2 className="text-sm font-semibold text-slate-300 mb-4 flex items-center gap-2">
-          <span className="text-indigo-400">◈</span> Backtest Configuration
+    <div className="space-y-5">
+      {/* ── Config ─────────────────────────────────────────────────────────── */}
+      <div className="bg-dark-card rounded-xl p-5 border border-dark-border space-y-5">
+        <h2 className="text-sm font-semibold text-slate-300 flex items-center gap-2">
+          <span className="text-indigo-400">◈</span> Configurazione Backtest
         </h2>
 
+        {/* Base params */}
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
-          <label className="flex flex-col gap-1">
-            <span className="text-xs text-slate-500">From</span>
-            <input type="date" value={fromDate} onChange={e => setFromDate(e.target.value)}
-              className="bg-dark-bg border border-dark-border rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500" />
-          </label>
-          <label className="flex flex-col gap-1">
-            <span className="text-xs text-slate-500">To</span>
-            <input type="date" value={toDate} onChange={e => setToDate(e.target.value)}
-              className="bg-dark-bg border border-dark-border rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500" />
-          </label>
-          <label className="flex flex-col gap-1">
-            <span className="text-xs text-slate-500">Capital ($)</span>
-            <input type="number" value={capital} onChange={e => setCapital(e.target.value)} min="1000"
-              className="bg-dark-bg border border-dark-border rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500" />
-          </label>
-          <label className="flex flex-col gap-1">
-            <span className="text-xs text-slate-500">SL mult (ATR)</span>
-            <input type="number" value={slMult} onChange={e => setSlMult(e.target.value)} step="0.1" min="0.5" max="5"
-              className="bg-dark-bg border border-dark-border rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500" />
-          </label>
-          <label className="flex flex-col gap-1">
-            <span className="text-xs text-slate-500">TP mult (ATR)</span>
-            <input type="number" value={tpMult} onChange={e => setTpMult(e.target.value)} step="0.1" min="1" max="10"
-              className="bg-dark-bg border border-dark-border rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500" />
-          </label>
-          <label className="flex flex-col gap-1">
-            <span className="text-xs text-slate-500">Size (%)</span>
-            <input type="number" value={posSizePct} onChange={e => setPosSizePct(e.target.value)} step="0.1" min="0.1" max="5"
-              className="bg-dark-bg border border-dark-border rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500" />
-          </label>
+          {[
+            { label: 'Da', type: 'date', val: fromDate, set: setFromDate },
+            { label: 'A', type: 'date', val: toDate, set: setToDate },
+            { label: 'Capitale ($)', type: 'number', val: capital, set: setCapital },
+            { label: 'SL mult', type: 'number', val: slMult, set: setSlMult },
+            { label: 'TP mult', type: 'number', val: tpMult, set: setTpMult },
+            { label: 'Size (%)', type: 'number', val: posSizePct, set: setPosSizePct },
+          ].map(f => (
+            <label key={f.label} className="flex flex-col gap-1">
+              <span className="text-xs text-slate-500">{f.label}</span>
+              <input type={f.type} value={f.val} onChange={e => f.set(e.target.value)}
+                className="bg-dark-bg border border-dark-border rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500" />
+            </label>
+          ))}
         </div>
 
-        <div className="mt-4 flex items-center gap-4">
-          <button
-            onClick={runBacktest}
-            disabled={status === 'running'}
-            className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:bg-indigo-800 disabled:cursor-not-allowed text-white text-sm font-semibold rounded-lg transition-colors flex items-center gap-2"
-          >
+        {/* Advanced exit strategies */}
+        <div className="border-t border-dark-border pt-4 space-y-4">
+          <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide">Strategie di uscita avanzate</p>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="space-y-3">
+              <Toggle label="Trailing Stop Loss" desc="Sposta SL al break-even quando il prezzo si muove in nostro favore" checked={trailingSL} onChange={setTrailingSL} />
+              {trailingSL && (
+                <label className="ml-13 flex items-center gap-2 text-xs text-slate-400">
+                  <span>Attivazione dopo</span>
+                  <input type="number" value={trailAct} onChange={e => setTrailAct(e.target.value)} step="0.1" min="0.5" max="3"
+                    className="w-16 bg-dark-bg border border-dark-border rounded px-2 py-1 text-white text-xs focus:outline-none focus:border-indigo-500" />
+                  <span>× ATR dal entry</span>
+                </label>
+              )}
+            </div>
+            <div className="space-y-3">
+              <Toggle label="Partial Take Profit" desc="Chiudi una quota della posizione al primo target, lascia correre il resto" checked={partialTP} onChange={setPartialTP} />
+              {partialTP && (
+                <div className="flex items-center gap-3 text-xs text-slate-400">
+                  <label className="flex items-center gap-1">
+                    <span>Target:</span>
+                    <input type="number" value={partialMult} onChange={e => setPartialMult(e.target.value)} step="0.1" min="0.5" max="5"
+                      className="w-14 bg-dark-bg border border-dark-border rounded px-2 py-1 text-white text-xs focus:outline-none focus:border-indigo-500" />
+                    <span>× ATR</span>
+                  </label>
+                  <label className="flex items-center gap-1">
+                    <span>Quota:</span>
+                    <input type="number" value={partialPct} onChange={e => setPartialPct(e.target.value)} step="5" min="10" max="90"
+                      className="w-14 bg-dark-bg border border-dark-border rounded px-2 py-1 text-white text-xs focus:outline-none focus:border-indigo-500" />
+                    <span>%</span>
+                  </label>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {advancedActive && (
+            <Toggle label="Confronto A/B" desc="Esegue anche il backtest senza le strategie avanzate per mostrare le differenze" checked={compareMode} onChange={setCompareMode} />
+          )}
+        </div>
+
+        {/* Run button */}
+        <div className="flex items-center gap-4">
+          <button onClick={runBacktest} disabled={status === 'running'}
+            className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:bg-indigo-800 disabled:cursor-not-allowed text-white text-sm font-semibold rounded-lg transition-colors flex items-center gap-2">
             {status === 'running' ? (
               <>
                 <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none">
                   <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="40 20" />
                 </svg>
-                Running…
+                {compareMode && advancedActive ? 'Eseguendo 2 backtest…' : 'Eseguendo…'}
               </>
-            ) : 'Run Backtest'}
+            ) : 'Avvia Backtest'}
           </button>
-          {status === 'running' && (
-            <span className="text-xs text-slate-500 animate-pulse">
-              Fetching historical data + running decision loop…
-            </span>
-          )}
-          {status === 'error' && (
-            <span className="text-xs text-red-400">{errorMsg}</span>
-          )}
+          {status === 'error' && <span className="text-xs text-red-400">{errorMsg}</span>}
         </div>
       </div>
 
       {/* ── Results ──────────────────────────────────────────────────────────── */}
       {result && (
         <>
-          {/* Summary bar */}
-          <div className="bg-dark-card rounded-xl p-4 border border-dark-border flex flex-wrap items-center gap-6 text-sm">
+          {/* Header */}
+          <div className="bg-dark-card rounded-xl p-4 border border-dark-border flex flex-wrap gap-6 text-sm">
             <div>
-              <span className="text-slate-500 text-xs">Period</span>
+              <span className="text-slate-500 text-xs">Periodo</span>
               <p className="text-white font-medium">{result.from_date} → {result.to_date}</p>
             </div>
             <div>
-              <span className="text-slate-500 text-xs">Capital</span>
-              <p className="text-white font-medium">${result.initial_capital.toLocaleString()} → ${result.final_equity.toLocaleString()}</p>
-            </div>
-            <div>
-              <span className="text-slate-500 text-xs">Total PnL</span>
-              <p className={`font-bold text-base ${pnlColor(result.stats.total_pnl_usd)}`}>
-                {result.stats.total_pnl_usd > 0 ? '+' : ''}${result.stats.total_pnl_usd.toLocaleString()} ({result.stats.total_pnl_pct > 0 ? '+' : ''}{result.stats.total_pnl_pct}%)
+              <span className="text-slate-500 text-xs">Capitale iniziale → finale</span>
+              <p className={`font-bold ${result.final_equity >= result.initial_capital ? 'text-emerald-400' : 'text-red-400'}`}>
+                ${result.initial_capital.toLocaleString()} → ${result.final_equity.toLocaleString()}
               </p>
             </div>
             <div>
-              <span className="text-slate-500 text-xs">Bars simulated</span>
-              <p className="text-white font-medium">{result.total_bars}</p>
+              <span className="text-slate-500 text-xs">PnL totale</span>
+              <p className={`font-bold text-base ${result.stats.total_pnl_usd >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                {result.stats.total_pnl_usd >= 0 ? '+' : ''}${result.stats.total_pnl_usd.toFixed(2)} ({result.stats.total_pnl_pct > 0 ? '+' : ''}{result.stats.total_pnl_pct}%)
+              </p>
             </div>
+            {advancedActive && (
+              <div className="ml-auto flex items-center gap-2">
+                <span className="text-xs px-2 py-1 rounded-full bg-indigo-600/20 text-indigo-400 border border-indigo-600/30">
+                  {[trailingSL && 'Trailing SL', partialTP && `Partial TP ${partialPct}%`].filter(Boolean).join(' + ')}
+                </span>
+              </div>
+            )}
           </div>
 
-          {/* Equity curve */}
+          {/* Equity curves */}
+          <div className={`grid gap-4 ${baseline ? 'grid-cols-1 lg:grid-cols-2' : 'grid-cols-1'}`}>
+            <div className="bg-dark-card rounded-xl p-4 border border-dark-border">
+              <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">
+                {baseline ? '✦ Con strategie avanzate' : 'Curva Equity'}
+              </h3>
+              <EquityChart data={result.equity_curve} initialCapital={result.initial_capital} color={baseline ? '#818cf8' : undefined} />
+            </div>
+            {baseline && (
+              <div className="bg-dark-card rounded-xl p-4 border border-dark-border">
+                <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">
+                  ○ Baseline (solo SL/TP fisso)
+                </h3>
+                <EquityChart data={baseline.equity_curve} initialCapital={baseline.initial_capital} color="#64748b" />
+              </div>
+            )}
+          </div>
+
+          {/* Stats */}
           <div className="bg-dark-card rounded-xl p-4 border border-dark-border">
-            <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-3">Equity Curve</h3>
-            <EquityChart data={result.equity_curve} initialCapital={result.initial_capital} />
-          </div>
-
-          {/* Stats grid */}
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
-            <Stat label="Win Rate"       value={`${result.stats.win_rate}%`} sub={`${result.stats.total_trades} trades`} color={result.stats.win_rate >= 50 ? 'text-emerald-400' : 'text-red-400'} />
-            <Stat label="Profit Factor"  value={result.stats.profit_factor === Infinity ? '∞' : result.stats.profit_factor.toFixed(2)} sub="wins/losses gross" color={result.stats.profit_factor >= 1.5 ? 'text-emerald-400' : result.stats.profit_factor >= 1 ? 'text-amber-400' : 'text-red-400'} />
-            <Stat label="Sharpe"         value={result.stats.sharpe.toFixed(3)} sub="annualized" color={result.stats.sharpe >= 0.7 ? 'text-emerald-400' : result.stats.sharpe >= 0 ? 'text-amber-400' : 'text-red-400'} />
-            <Stat label="Sortino"        value={result.stats.sortino.toFixed(3)} sub="downside risk" color={result.stats.sortino >= 1 ? 'text-emerald-400' : result.stats.sortino >= 0 ? 'text-amber-400' : 'text-red-400'} />
-            <Stat label="Calmar"         value={result.stats.calmar.toFixed(3)} sub="return/max DD" color={result.stats.calmar >= 0.5 ? 'text-emerald-400' : result.stats.calmar >= 0 ? 'text-amber-400' : 'text-red-400'} />
-            <Stat label="Max Drawdown"   value={`-${result.stats.max_drawdown_pct}%`} color="text-red-400" />
-            <Stat label="Avg Win"        value={`+${result.stats.avg_win_pct}%`} color="text-emerald-400" />
-            <Stat label="Avg Loss"       value={`${result.stats.avg_loss_pct}%`} color="text-red-400" />
-            <Stat label="Best Trade"     value={`+${result.stats.best_trade_pct}%`} color="text-emerald-400" />
-            <Stat label="Worst Trade"    value={`${result.stats.worst_trade_pct}%`} color="text-red-400" />
-            <Stat label="Avg Hold"       value={`${result.stats.avg_holding_h}h`} sub="per trade" />
+            {baseline ? (
+              <div className="space-y-4">
+                <StatsGrid stats={result.stats}   compare={baseline.stats} label="✦ Con strategie avanzate (δ = differenza rispetto al baseline)" />
+                <div className="border-t border-dark-border pt-4">
+                  <StatsGrid stats={baseline.stats} label="○ Baseline" />
+                </div>
+              </div>
+            ) : (
+              <StatsGrid stats={result.stats} />
+            )}
           </div>
 
           {/* Trade table */}
@@ -306,55 +440,10 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
             <div className="bg-dark-card rounded-xl border border-dark-border overflow-hidden">
               <div className="px-4 py-3 border-b border-dark-border">
                 <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wide">
-                  Last {result.trades.length} Trades
+                  Ultimi {result.trades.length} trade
                 </h3>
               </div>
-              <div className="overflow-x-auto">
-                <table className="w-full text-xs">
-                  <thead>
-                    <tr className="border-b border-dark-border text-slate-500 uppercase tracking-wide">
-                      <th className="px-4 py-2 text-left">Bar</th>
-                      <th className="px-4 py-2 text-left">Side</th>
-                      <th className="px-4 py-2 text-right">Entry</th>
-                      <th className="px-4 py-2 text-right">Exit</th>
-                      <th className="px-4 py-2 text-right">PnL %</th>
-                      <th className="px-4 py-2 text-right">PnL $</th>
-                      <th className="px-4 py-2 text-left">Reason</th>
-                      <th className="px-4 py-2 text-right">Hold</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-dark-border">
-                    {[...result.trades].reverse().map((t, i) => (
-                      <tr key={i} className="hover:bg-dark-bg/50 transition-colors">
-                        <td className="px-4 py-2 text-slate-500 font-mono">{t.bar}</td>
-                        <td className="px-4 py-2">
-                          <span className={`px-1.5 py-0.5 rounded text-xs font-bold ${t.side === 'long' ? 'bg-emerald-900/60 text-emerald-300' : 'bg-red-900/60 text-red-300'}`}>
-                            {t.side.toUpperCase()}
-                          </span>
-                        </td>
-                        <td className="px-4 py-2 text-right font-mono text-slate-300">${t.entry.toLocaleString(undefined, { minimumFractionDigits: 0 })}</td>
-                        <td className="px-4 py-2 text-right font-mono text-slate-300">${t.exit.toLocaleString(undefined, { minimumFractionDigits: 0 })}</td>
-                        <td className={`px-4 py-2 text-right font-mono font-bold ${numColor(t.pnl_pct)}`}>
-                          {t.pnl_pct > 0 ? '+' : ''}{t.pnl_pct}%
-                        </td>
-                        <td className={`px-4 py-2 text-right font-mono ${numColor(t.pnl_usd)}`}>
-                          {t.pnl_usd > 0 ? '+' : ''}${t.pnl_usd.toFixed(0)}
-                        </td>
-                        <td className="px-4 py-2">
-                          <span className={`px-1.5 py-0.5 rounded text-xs ${
-                            t.reason === 'take_profit' ? 'bg-emerald-900/50 text-emerald-400' :
-                            t.reason === 'stop_loss'   ? 'bg-red-900/50 text-red-400' :
-                            'bg-slate-800 text-slate-400'
-                          }`}>
-                            {t.reason.replace('_', ' ')}
-                          </span>
-                        </td>
-                        <td className="px-4 py-2 text-right text-slate-500">{t.holding_bars * 4}h</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+              <TradeTable trades={result.trades} />
             </div>
           )}
         </>

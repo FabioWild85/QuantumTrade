@@ -1,9 +1,55 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+
+interface FeatureFlags {
+  trailing_sl_enabled: boolean;
+  trailing_sl_activation: number;
+  partial_tp_enabled: boolean;
+  partial_tp_atr_mult: number;
+  partial_tp_pct: number;
+  confluence_gate: number;
+  adx_gate: number;
+  directional_threshold: number;
+}
 
 export const HubSettings: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   const [walletAddress, setWalletAddress] = useState('');
   const [agentResult, setAgentResult]     = useState<string | null>(null);
   const [connecting, setConnecting]       = useState(false);
+  const [flags, setFlags]                 = useState<FeatureFlags>({
+    trailing_sl_enabled:    false,
+    trailing_sl_activation: 1.0,
+    partial_tp_enabled:     false,
+    partial_tp_atr_mult:    1.5,
+    partial_tp_pct:         50.0,
+    confluence_gate:        60.0,
+    adx_gate:               20.0,
+    directional_threshold:  0.62,
+  });
+  const [saving, setSaving]     = useState(false);
+  const [saveMsg, setSaveMsg]   = useState<string | null>(null);
+
+  useEffect(() => {
+    fetch(`${apiBase}/bot`)
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (d) setFlags(f => ({ ...f, ...d })); })
+      .catch(() => {});
+  }, [apiBase]);
+
+  const saveFlags = async () => {
+    setSaving(true); setSaveMsg(null);
+    try {
+      const r = await fetch(`${apiBase}/bot`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...flags, mode: 'paper' }),
+      });
+      setSaveMsg(r.ok ? '✓ Impostazioni salvate' : '❌ Errore salvataggio');
+    } catch { setSaveMsg('❌ Errore salvataggio'); }
+    finally { setSaving(false); setTimeout(() => setSaveMsg(null), 3000); }
+  };
+
+  const setFlag = <K extends keyof FeatureFlags>(k: K, v: FeatureFlags[K]) =>
+    setFlags(f => ({ ...f, [k]: v }));
 
   const connectWallet = async () => {
     if (!walletAddress.startsWith('0x')) {
@@ -91,6 +137,50 @@ export const HubSettings: React.FC<{ apiBase: string }> = ({ apiBase }) => {
         </p>
       </Section>
 
+      {/* Trading Strategy Toggles */}
+      <Section title="⚡ Strategie di Trading" description="Abilita o disabilita modalità avanzate. Le modifiche vengono applicate al prossimo ciclo del bot.">
+        <div className="space-y-5">
+          <ToggleRow
+            label="Trailing Stop Loss"
+            desc="Sposta SL al break-even quando il prezzo si muove a favore di trading_sl_activation × ATR. Riduce i trade che tornano in perdita dopo essere stati in profitto."
+            checked={flags.trailing_sl_enabled}
+            onChange={v => setFlag('trailing_sl_enabled', v)}
+          >
+            {flags.trailing_sl_enabled && (
+              <NumInput label="Attivazione (× ATR)" value={flags.trailing_sl_activation} onChange={v => setFlag('trailing_sl_activation', v)} step={0.1} min={0.5} max={3} />
+            )}
+          </ToggleRow>
+
+          <ToggleRow
+            label="Partial Take Profit"
+            desc="Chiudi una quota della posizione al primo target di prezzo, lascia il resto correre fino al TP finale. Migliora il profit factor riducendo i gain che si trasformano in loss."
+            checked={flags.partial_tp_enabled}
+            onChange={v => setFlag('partial_tp_enabled', v)}
+          >
+            {flags.partial_tp_enabled && (
+              <div className="flex gap-4 flex-wrap">
+                <NumInput label="Target (× ATR)" value={flags.partial_tp_atr_mult} onChange={v => setFlag('partial_tp_atr_mult', v)} step={0.1} min={0.5} max={5} />
+                <NumInput label="Quota da chiudere (%)" value={flags.partial_tp_pct} onChange={v => setFlag('partial_tp_pct', v)} step={5} min={10} max={90} />
+              </div>
+            )}
+          </ToggleRow>
+
+          <div className="border-t border-dark-border pt-4 grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <NumInput label="ADX Gate (no-trade)" value={flags.adx_gate} onChange={v => setFlag('adx_gate', v)} step={1} min={10} max={40} />
+            <NumInput label="Directional Threshold" value={flags.directional_threshold} onChange={v => setFlag('directional_threshold', v)} step={0.01} min={0.5} max={0.9} />
+            <NumInput label="Confluence Gate (%)" value={flags.confluence_gate} onChange={v => setFlag('confluence_gate', v)} step={5} min={0} max={100} />
+          </div>
+
+          <div className="flex items-center gap-3">
+            <button onClick={saveFlags} disabled={saving}
+              className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-sm font-semibold rounded-lg transition-colors">
+              {saving ? 'Salvataggio…' : 'Salva e Applica'}
+            </button>
+            {saveMsg && <span className={`text-xs font-mono ${saveMsg.startsWith('✓') ? 'text-emerald-400' : 'text-red-400'}`}>{saveMsg}</span>}
+          </div>
+        </div>
+      </Section>
+
       {/* Kill Switch */}
       <Section title="🔴 Kill Switch Globale" description="Cancella tutti gli ordini aperti e chiude tutte le posizioni immediatamente. Irreversibile.">
         <button
@@ -151,4 +241,36 @@ const InfoRow: React.FC<{ label: string; value: string }> = ({ label, value }) =
     <span className="font-mono text-slate-400">{label}</span>
     <span className="text-slate-600">{value}</span>
   </div>
+);
+
+const ToggleRow: React.FC<{
+  label: string; desc: string; checked: boolean;
+  onChange: (v: boolean) => void; children?: React.ReactNode;
+}> = ({ label, desc, checked, onChange, children }) => (
+  <div className="space-y-2">
+    <label className="flex items-start gap-3 cursor-pointer">
+      <div className="relative mt-0.5 flex-shrink-0">
+        <input type="checkbox" className="sr-only" checked={checked} onChange={e => onChange(e.target.checked)} />
+        <div className={`w-10 h-5 rounded-full transition-colors ${checked ? 'bg-indigo-600' : 'bg-slate-700'}`} />
+        <div className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${checked ? 'translate-x-5' : ''}`} />
+      </div>
+      <div>
+        <p className="text-sm font-medium text-slate-300">{label}</p>
+        <p className="text-xs text-slate-600 mt-0.5">{desc}</p>
+      </div>
+    </label>
+    {checked && children && <div className="ml-13 pl-1">{children}</div>}
+  </div>
+);
+
+const NumInput: React.FC<{
+  label: string; value: number; onChange: (v: number) => void;
+  step?: number; min?: number; max?: number;
+}> = ({ label, value, onChange, step = 0.1, min, max }) => (
+  <label className="flex flex-col gap-1">
+    <span className="text-xs text-slate-500">{label}</span>
+    <input type="number" value={value} step={step} min={min} max={max}
+      onChange={e => onChange(parseFloat(e.target.value))}
+      className="w-28 bg-dark-bg border border-dark-border rounded-lg px-3 py-1.5 text-sm text-white focus:outline-none focus:border-indigo-500" />
+  </label>
 );

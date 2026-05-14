@@ -52,6 +52,14 @@ class BotConfig:
         self.confluence_gate        = kw.get("confluence_gate", 60.0)
         self.max_consecutive_losses = kw.get("max_consecutive_losses", 4)
         self.mode                   = kw.get("mode", "paper")
+        # ── Advanced exit strategies ──────────────────────────────────────────
+        # Partial TP: close partial_tp_pct% of position at partial_tp_atr_mult×ATR
+        self.partial_tp_enabled     = kw.get("partial_tp_enabled", False)
+        self.partial_tp_atr_mult    = kw.get("partial_tp_atr_mult", 1.5)
+        self.partial_tp_pct         = kw.get("partial_tp_pct", 50.0)
+        # Trailing SL: move SL to break-even once price moves trailing_sl_activation×ATR in our favour
+        self.trailing_sl_enabled    = kw.get("trailing_sl_enabled", False)
+        self.trailing_sl_activation = kw.get("trailing_sl_activation", 1.0)
 
     def model_dump(self) -> dict:
         return self.__dict__
