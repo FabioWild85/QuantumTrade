@@ -40,12 +40,17 @@ async def run_backtest(req) -> dict:
     dir_threshold = cfg.directional_threshold  if cfg else 0.62
     adx_gate      = cfg.adx_gate               if cfg else 20.0
     # Advanced exit strategy flags
-    partial_tp_enabled     = getattr(cfg, "partial_tp_enabled",     False)
-    partial_tp_atr_mult    = getattr(cfg, "partial_tp_atr_mult",    1.5)
-    partial_tp_pct         = getattr(cfg, "partial_tp_pct",         50.0)
-    trailing_sl_enabled    = getattr(cfg, "trailing_sl_enabled",    False)
-    trailing_sl_activation = getattr(cfg, "trailing_sl_activation", 1.0)
-    use_binance            = getattr(req,  "use_binance",            True)
+    partial_tp_enabled       = getattr(cfg, "partial_tp_enabled",       False)
+    partial_tp_atr_mult      = getattr(cfg, "partial_tp_atr_mult",      1.5)
+    partial_tp_pct           = getattr(cfg, "partial_tp_pct",           50.0)
+    trailing_sl_enabled      = getattr(cfg, "trailing_sl_enabled",      False)
+    trailing_sl_activation   = getattr(cfg, "trailing_sl_activation",   1.0)
+    lgbm_exit_enabled        = getattr(cfg, "lgbm_exit_enabled",        False)
+    lgbm_exit_threshold      = getattr(cfg, "lgbm_exit_threshold",      0.30)
+    lgbm_exit_min_hold_bars  = getattr(cfg, "lgbm_exit_min_hold_bars",  6)
+    lgbm_exit_confirm_bars   = getattr(cfg, "lgbm_exit_confirm_bars",   2)
+    use_binance              = getattr(req,  "use_binance",              True)
+    use_chronos              = getattr(req,  "use_chronos",              False)
 
     hl = HyperliquidData()
 
@@ -111,6 +116,15 @@ async def run_backtest(req) -> dict:
         position_size_pct=pos_size_pct,
     )
 
+    # Chronos-2: load once and reuse across all candles (slow on CPU, ~3s/candle)
+    chronos_forecaster = None
+    if use_chronos:
+        from services.chronos_model import ChronosForecaster
+        chronos_forecaster = ChronosForecaster()
+        log.info("Chronos-2 ENABLED for backtest — ~%ds expected", len(df_feat) * 3)
+    else:
+        log.info("Chronos-2 disabled — using corrected neutral prior (p10=p50=p90=price)")
+
     equity        = capital
     position      = None   # {side, entry, sl, tp, size_usd, bar_idx, partial_done, entry_atr}
     trades        = []
@@ -170,11 +184,46 @@ async def run_backtest(req) -> dict:
                     })
                     equity_curve.append({"bar": i, "equity": round(equity, 2)})
 
+            # ── LightGBM mid-trade exit (v2: consecutive-bar confirmation) ──────
+            # Exits only after lgbm_exit_confirm_bars consecutive bars with signal
+            # below threshold — avoids reacting to single-candle noise.
+            bars_held   = i - position["bar_idx"]
+            lgbm_exited = False
+            if lgbm_exit_enabled and bars_held >= lgbm_exit_min_hold_bars:
+                row_x          = X_all.iloc[[i]]
+                lgbm_p_current = float(lgbm_model.predict_proba(row_x)[0, 1])
+                flip_long      = side == "long"  and lgbm_p_current < lgbm_exit_threshold
+                flip_short     = side == "short" and lgbm_p_current > (1.0 - lgbm_exit_threshold)
+                if flip_long or flip_short:
+                    position["lgbm_strikes"] = position.get("lgbm_strikes", 0) + 1
+                else:
+                    position["lgbm_strikes"] = 0  # signal recovered — reset counter
+                if position.get("lgbm_strikes", 0) >= lgbm_exit_confirm_bars:
+                    pnl_pct_e  = (close_price - entry) / entry * 100 if side == "long" \
+                                 else (entry - close_price) / entry * 100
+                    pnl_usd_e  = position["size_usd"] * pnl_pct_e / 100
+                    fee_e      = position["size_usd"] * HL_TAKER_FEE
+                    equity    += pnl_usd_e - fee_e
+                    trades.append({
+                        "side": side, "entry": entry, "exit": close_price,
+                        "pnl_pct":     round(pnl_pct_e, 4),
+                        "pnl_usd":     round(pnl_usd_e - fee_e, 2),
+                        "reason":      "lgbm_exit",
+                        "holding_bars": bars_held,
+                        "bar":         i,
+                    })
+                    equity_curve.append({"bar": i, "equity": round(equity, 2)})
+                    position    = None
+                    lgbm_exited = True
+
             # ── Full SL/TP check ──────────────────────────────────────────────
-            hit_sl = (side == "long" and close_price <= position["sl"]) or \
-                     (side == "short" and close_price >= position["sl"])
-            hit_tp = (side == "long" and close_price >= position["tp"]) or \
-                     (side == "short" and close_price <= position["tp"])
+            if not lgbm_exited:
+                hit_sl = (side == "long" and close_price <= position["sl"]) or \
+                         (side == "short" and close_price >= position["sl"])
+                hit_tp = (side == "long" and close_price >= position["tp"]) or \
+                         (side == "short" and close_price <= position["tp"])
+            else:
+                hit_sl = hit_tp = False
 
             if hit_sl or hit_tp:
                 reason   = "stop_loss" if hit_sl else "take_profit"
@@ -200,15 +249,23 @@ async def run_backtest(req) -> dict:
             # LightGBM probability (non-C2 features)
             row_x    = X_all.iloc[[i]]
             lgbm_p   = float(lgbm_model.predict_proba(row_x)[0, 1])
-            # C2 neutral (not running Chronos-2 in backtest)
-            c2_out   = {"c2_dir_prob": 0.5, "c2_p10": 0.0, "c2_p50": 0.0, "c2_p90": 0.0}
+            cur_px   = float(row["close"])
+
+            # Chronos-2: real forecast OR corrected neutral prior
+            # Bug fix: neutral must use current_price for p10/p50/p90, not 0.0
+            # (p10=0 was blocking all longs via the p10 < price*0.995 filter)
+            if use_chronos and chronos_forecaster is not None:
+                close_so_far = df_feat["close"].values[:i + 1]
+                c2_out = chronos_forecaster.forecast(close_so_far, horizon=3, atr=atr)
+            else:
+                c2_out = {"c2_dir_prob": 0.5, "c2_p10": cur_px, "c2_p50": cur_px, "c2_p90": cur_px}
 
             result = decision_engine.decide(
                 features=features,
                 c2_output=c2_out,
                 lgbm_prob=lgbm_p,
                 confluence_score=None,
-                current_price=float(row["close"]),
+                current_price=cur_px,
             )
 
             if result.action != "no_trade":
@@ -222,15 +279,16 @@ async def run_backtest(req) -> dict:
                 fee_entry = params.size_usd * HL_TAKER_FEE
                 equity   -= fee_entry
                 position  = {
-                    "side":         result.action,
-                    "entry":        close_price,
-                    "sl":           params.stop_loss,
-                    "tp":           params.take_profit,
-                    "size_usd":     params.size_usd,
-                    "bar_idx":      i,
-                    "entry_atr":    atr,
-                    "partial_done": False,
-                    "sl_trailed":   False,
+                    "side":          result.action,
+                    "entry":         close_price,
+                    "sl":            params.stop_loss,
+                    "tp":            params.take_profit,
+                    "size_usd":      params.size_usd,
+                    "bar_idx":       i,
+                    "entry_atr":     atr,
+                    "partial_done":  False,
+                    "sl_trailed":    False,
+                    "lgbm_strikes":  0,
                 }
 
     # ── 6. Close any open position at last price ──────────────────────────────

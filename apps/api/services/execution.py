@@ -60,6 +60,11 @@ class BotConfig:
         # Trailing SL: move SL to break-even once price moves trailing_sl_activation×ATR in our favour
         self.trailing_sl_enabled    = kw.get("trailing_sl_enabled", False)
         self.trailing_sl_activation = kw.get("trailing_sl_activation", 1.0)
+        # LightGBM mid-trade exit: exit only after N consecutive bars below threshold
+        self.lgbm_exit_enabled       = kw.get("lgbm_exit_enabled",       False)
+        self.lgbm_exit_threshold     = kw.get("lgbm_exit_threshold",     0.30)
+        self.lgbm_exit_min_hold_bars = kw.get("lgbm_exit_min_hold_bars", 6)
+        self.lgbm_exit_confirm_bars  = kw.get("lgbm_exit_confirm_bars",  2)
 
     def model_dump(self) -> dict:
         return self.__dict__
@@ -83,9 +88,10 @@ class ExecutionEngine:
         # Persistent risk manager — must survive across cycles to track daily PnL
         self._risk = self._build_risk_manager()
 
-        # Model cache
+        # Model cache — load immediately if available on disk
         self._lgbm_model    = None
         self._lgbm_features = None
+        self._load_model_from_disk()
 
         # State
         self._position: Optional[dict]  = None   # active position dict
@@ -262,9 +268,9 @@ class ExecutionEngine:
         elif not allowed:
             log.info("Trade blocked: %s", block_reason)
 
-        # 9. Manage existing position (SL/TP bot-side check)
+        # 9. Manage existing position (SL/TP + optional LightGBM mid-trade exit)
         if self._position:
-            await self._manage_position(snap["mark_price"])
+            await self._manage_position(snap["mark_price"], df_feat)
 
         # 10. Heartbeat
         await self._risk.write_heartbeat()
@@ -369,6 +375,8 @@ class ExecutionEngine:
             "inference_id":   inference_id,
             "hl_order_id":    hl_order_id,
             "opened_at":      datetime.now(timezone.utc).isoformat(),
+            "bars_held":      0,
+            "lgbm_strikes":   0,
         }
 
         try:
@@ -398,14 +406,34 @@ class ExecutionEngine:
             inference_id=inference_id,
         )
 
-    async def _manage_position(self, current_price: float):
+    async def _manage_position(self, current_price: float, df_feat: pd.DataFrame):
         if not self._position:
             return
 
-        side = self._position["side"]
-        sl   = self._position["stop_loss"]
-        tp   = self._position["take_profit"]
+        self._position["bars_held"] = self._position.get("bars_held", 0) + 1
+        side  = self._position["side"]
+        sl    = self._position["stop_loss"]
+        tp    = self._position["take_profit"]
 
+        # ── LightGBM mid-trade exit (v2: consecutive-bar confirmation) ─────────
+        if (self.config.lgbm_exit_enabled and self._lgbm_model is not None
+                and self._position["bars_held"] >= self.config.lgbm_exit_min_hold_bars):
+            lgbm_p     = self._get_lgbm_prob(df_feat)
+            flip_long  = side == "long"  and lgbm_p < self.config.lgbm_exit_threshold
+            flip_short = side == "short" and lgbm_p > (1.0 - self.config.lgbm_exit_threshold)
+            if flip_long or flip_short:
+                self._position["lgbm_strikes"] = self._position.get("lgbm_strikes", 0) + 1
+            else:
+                self._position["lgbm_strikes"] = 0
+            if self._position.get("lgbm_strikes", 0) >= self.config.lgbm_exit_confirm_bars:
+                log.info(
+                    "LightGBM mid-trade exit: %s | p=%.3f | bars_held=%d | strikes=%d",
+                    side, lgbm_p, self._position["bars_held"], self._position["lgbm_strikes"],
+                )
+                await self._close_position(current_price, "lgbm_exit")
+                return
+
+        # ── Standard SL / TP check ───────────────────────────────────────────
         reason = None
         if self._risk.should_stop_loss(side, current_price, sl):
             reason = "stop_loss"

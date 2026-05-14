@@ -123,6 +123,11 @@ class BotConfig(BaseModel):
     partial_tp_pct: float = Field(50.0, ge=10.0, le=90.0)
     trailing_sl_enabled: bool = Field(False)
     trailing_sl_activation: float = Field(1.0, ge=0.5, le=3.0)
+    # LightGBM mid-trade exit (v2: consecutive-bar confirmation)
+    lgbm_exit_enabled: bool = Field(False)
+    lgbm_exit_threshold: float = Field(0.30, ge=0.15, le=0.50)
+    lgbm_exit_min_hold_bars: int = Field(6, ge=1, le=48)
+    lgbm_exit_confirm_bars: int = Field(2, ge=1, le=6)
 
 
 class StartBotRequest(BaseModel):
@@ -351,6 +356,7 @@ class BacktestRequest(BaseModel):
     initial_capital: float = Field(10000.0, gt=0)
     config: Optional[BotConfig] = None
     use_binance: bool = Field(True, description="Use Binance OHLCV for periods older than ~11 months")
+    use_chronos: bool = Field(False, description="Enable Chronos-2 inference per candle (~3s/candle, slow)")
 
 
 backtest_jobs: dict = {}

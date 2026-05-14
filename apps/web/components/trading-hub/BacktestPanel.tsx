@@ -235,12 +235,17 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   const [tpMult,      setTpMult]      = useState('3.5');
   const [posSizePct,  setPosSizePct]  = useState('1.5');
   // Advanced toggles
-  const [trailingSL,  setTrailingSL]  = useState(false);
-  const [trailAct,    setTrailAct]    = useState('1.0');
-  const [partialTP,   setPartialTP]   = useState(false);
-  const [partialMult, setPartialMult] = useState('1.5');
-  const [partialPct,  setPartialPct]  = useState('50');
-  const [compareMode, setCompareMode] = useState(false);
+  const [trailingSL,    setTrailingSL]    = useState(false);
+  const [trailAct,      setTrailAct]      = useState('1.0');
+  const [partialTP,     setPartialTP]     = useState(false);
+  const [partialMult,   setPartialMult]   = useState('1.5');
+  const [partialPct,    setPartialPct]    = useState('50');
+  const [lgbmExit,      setLgbmExit]      = useState(false);
+  const [lgbmThresh,    setLgbmThresh]    = useState('0.30');
+  const [lgbmMinHold,   setLgbmMinHold]   = useState('6');
+  const [lgbmConfirm,   setLgbmConfirm]   = useState('2');
+  const [useChronos,    setUseChronos]    = useState(false);
+  const [compareMode,   setCompareMode]   = useState(false);
   // Results
   const [status,   setStatus]   = useState<'idle' | 'running' | 'done' | 'error'>('idle');
   const [result,   setResult]   = useState<BacktestResult | null>(null);
@@ -257,11 +262,15 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     confluence_gate: 0.0,
     max_consecutive_losses: 4,
     mode: 'paper',
-    trailing_sl_enabled:    withAdvanced && trailingSL,
-    trailing_sl_activation: parseFloat(trailAct),
-    partial_tp_enabled:     withAdvanced && partialTP,
-    partial_tp_atr_mult:    parseFloat(partialMult),
-    partial_tp_pct:         parseFloat(partialPct),
+    trailing_sl_enabled:     withAdvanced && trailingSL,
+    trailing_sl_activation:  parseFloat(trailAct),
+    partial_tp_enabled:      withAdvanced && partialTP,
+    partial_tp_atr_mult:     parseFloat(partialMult),
+    partial_tp_pct:          parseFloat(partialPct),
+    lgbm_exit_enabled:       withAdvanced && lgbmExit,
+    lgbm_exit_threshold:     parseFloat(lgbmThresh),
+    lgbm_exit_min_hold_bars: parseInt(lgbmMinHold),
+    lgbm_exit_confirm_bars:  parseInt(lgbmConfirm),
   });
 
   const runBacktest = async () => {
@@ -270,7 +279,7 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     setBaseline(null);
     setErrorMsg('');
     try {
-      const body = { symbol: 'BTC', from_date: fromDate, to_date: toDate, initial_capital: parseFloat(capital) || 10000, config: buildConfig(true) };
+      const body = { symbol: 'BTC', from_date: fromDate, to_date: toDate, initial_capital: parseFloat(capital) || 10000, use_chronos: useChronos, config: buildConfig(true) };
       if (compareMode && (trailingSL || partialTP)) {
         const bodyBase = { ...body, config: buildConfig(false) };
         const [r1, r2] = await Promise.all([runJob(apiBase, body), runJob(apiBase, bodyBase)]);
@@ -356,9 +365,58 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
             </div>
           </div>
 
+          {/* LightGBM mid-trade exit */}
+          <div className="border-t border-dark-border pt-3">
+            <div className="space-y-3">
+              <Toggle
+                label="LightGBM Mid-Trade Exit"
+                desc="Rivaluta il segnale ogni candela mentre il trade è aperto. Se la probabilità direzionale crolla sotto la soglia, chiude prima di SL/TP. Hold minimo evita uscite premature da rumore di breve termine."
+                checked={lgbmExit}
+                onChange={setLgbmExit}
+              />
+              {lgbmExit && (
+                <div className="flex items-center gap-4 text-xs text-slate-400">
+                  <label className="flex items-center gap-1">
+                    <span>Soglia p &lt;</span>
+                    <input type="number" value={lgbmThresh} onChange={e => setLgbmThresh(e.target.value)} step="0.01" min="0.20" max="0.50"
+                      className="w-16 bg-dark-bg border border-dark-border rounded px-2 py-1 text-white text-xs focus:outline-none focus:border-indigo-500" />
+                    <span>(default 0.40)</span>
+                  </label>
+                  <label className="flex items-center gap-1">
+                    <span>Hold min</span>
+                    <input type="number" value={lgbmMinHold} onChange={e => setLgbmMinHold(e.target.value)} step="1" min="1" max="48"
+                      className="w-14 bg-dark-bg border border-dark-border rounded px-2 py-1 text-white text-xs focus:outline-none focus:border-indigo-500" />
+                    <span>barre</span>
+                  </label>
+                  <label className="flex items-center gap-1">
+                    <span>Conferma</span>
+                    <input type="number" value={lgbmConfirm} onChange={e => setLgbmConfirm(e.target.value)} step="1" min="1" max="6"
+                      className="w-12 bg-dark-bg border border-dark-border rounded px-2 py-1 text-white text-xs focus:outline-none focus:border-indigo-500" />
+                    <span>consec.</span>
+                  </label>
+                </div>
+              )}
+            </div>
+          </div>
+
           {advancedActive && (
             <Toggle label="Confronto A/B" desc="Esegue anche il backtest senza le strategie avanzate per mostrare le differenze" checked={compareMode} onChange={setCompareMode} />
           )}
+
+          {/* Chronos-2 toggle */}
+          <div className="border-t border-dark-border pt-3">
+            <Toggle
+              label="Chronos-2 attivo"
+              desc={`Abilita l'inferenza reale di Chronos-2 per ogni candela (blend 40% C2 + 60% LightGBM). Attenzione: ~3s per candela — su periodi lunghi può richiedere ore. Consigliato solo su periodi di 1-2 mesi.`}
+              checked={useChronos}
+              onChange={setUseChronos}
+            />
+            {useChronos && (
+              <p className="mt-2 ml-13 text-xs text-amber-400/80 font-mono">
+                ⚠ 1 mese ≈ 10 min · 3 mesi ≈ 30 min · 1 anno ≈ 2h — usa periodi brevi
+              </p>
+            )}
+          </div>
         </div>
 
         {/* Run button */}

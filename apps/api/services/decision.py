@@ -113,12 +113,12 @@ class DecisionEngine:
             if fvg_bear == 1.0:
                 reasoning.append("FILTER: Bearish FVG detected overhead — skipping long entry")
                 return self._no_trade(reasoning, dir_prob, p10, p50, p90, features)
-            # Pessimistic scenario must be positive
-            if p10 < current_price * 0.995:
-                reasoning.append(f"FILTER: p10 ({p10:.1f}) < current price — risk too wide for long")
+            # C2 directional confirmation: median forecast must be bullish
+            if p50 > 0 and p50 < current_price:
+                reasoning.append(f"FILTER: C2 median ({p50:.1f}) below entry — C2 bearish, skipping long")
                 return self._no_trade(reasoning, dir_prob, p10, p50, p90, features)
 
-            reasoning.append(f"LONG: P(up)={ensemble_prob:.3f} > {effective_threshold:.2f}, p10={p10:.1f} ≥ price")
+            reasoning.append(f"LONG: P(up)={ensemble_prob:.3f} > {effective_threshold:.2f}, C2_p50={p50:.1f}")
             return DecisionResult(
                 action="long",
                 confidence=ensemble_prob,
@@ -136,11 +136,12 @@ class DecisionEngine:
             if fvg_bull == 1.0:
                 reasoning.append("FILTER: Bullish FVG detected below — skipping short entry")
                 return self._no_trade(reasoning, dir_prob, p10, p50, p90, features)
-            if p90 > current_price * 1.005:
-                reasoning.append(f"FILTER: p90 ({p90:.1f}) > current price — risk too wide for short")
+            # C2 directional confirmation: median forecast must be bearish
+            if p50 > 0 and p50 > current_price:
+                reasoning.append(f"FILTER: C2 median ({p50:.1f}) above entry — C2 bullish, skipping short")
                 return self._no_trade(reasoning, dir_prob, p10, p50, p90, features)
 
-            reasoning.append(f"SHORT: P(down)={short_prob:.3f} > {effective_threshold:.2f}")
+            reasoning.append(f"SHORT: P(down)={short_prob:.3f} > {effective_threshold:.2f}, C2_p50={p50:.1f}")
             return DecisionResult(
                 action="short",
                 confidence=short_prob,

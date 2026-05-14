@@ -9,6 +9,10 @@ interface FeatureFlags {
   confluence_gate: number;
   adx_gate: number;
   directional_threshold: number;
+  lgbm_exit_enabled: boolean;
+  lgbm_exit_threshold: number;
+  lgbm_exit_min_hold_bars: number;
+  lgbm_exit_confirm_bars: number;
 }
 
 export const HubSettings: React.FC<{ apiBase: string }> = ({ apiBase }) => {
@@ -16,14 +20,18 @@ export const HubSettings: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   const [agentResult, setAgentResult]     = useState<string | null>(null);
   const [connecting, setConnecting]       = useState(false);
   const [flags, setFlags]                 = useState<FeatureFlags>({
-    trailing_sl_enabled:    false,
-    trailing_sl_activation: 1.0,
-    partial_tp_enabled:     false,
-    partial_tp_atr_mult:    1.5,
-    partial_tp_pct:         50.0,
-    confluence_gate:        60.0,
-    adx_gate:               20.0,
-    directional_threshold:  0.62,
+    trailing_sl_enabled:     false,
+    trailing_sl_activation:  1.0,
+    partial_tp_enabled:      false,
+    partial_tp_atr_mult:     1.5,
+    partial_tp_pct:          50.0,
+    confluence_gate:         60.0,
+    adx_gate:                20.0,
+    directional_threshold:   0.62,
+    lgbm_exit_enabled:       false,
+    lgbm_exit_threshold:     0.30,
+    lgbm_exit_min_hold_bars: 6,
+    lgbm_exit_confirm_bars:  2,
   });
   const [saving, setSaving]     = useState(false);
   const [saveMsg, setSaveMsg]   = useState<string | null>(null);
@@ -161,6 +169,21 @@ export const HubSettings: React.FC<{ apiBase: string }> = ({ apiBase }) => {
               <div className="flex gap-4 flex-wrap">
                 <NumInput label="Target (× ATR)" value={flags.partial_tp_atr_mult} onChange={v => setFlag('partial_tp_atr_mult', v)} step={0.1} min={0.5} max={5} />
                 <NumInput label="Quota da chiudere (%)" value={flags.partial_tp_pct} onChange={v => setFlag('partial_tp_pct', v)} step={5} min={10} max={90} />
+              </div>
+            )}
+          </ToggleRow>
+
+          <ToggleRow
+            label="LightGBM Mid-Trade Exit"
+            desc="Rivaluta il segnale LightGBM ogni candela mentre il trade è aperto. Se la probabilità direzionale scende sotto la soglia (es. 0.40 per long), chiude anticipatamente prima di SL/TP. Richiede un numero minimo di barre in posizione prima di attivarsi."
+            checked={flags.lgbm_exit_enabled}
+            onChange={v => setFlag('lgbm_exit_enabled', v)}
+          >
+            {flags.lgbm_exit_enabled && (
+              <div className="flex gap-4 flex-wrap">
+                <NumInput label="Soglia (p <)" value={flags.lgbm_exit_threshold} onChange={v => setFlag('lgbm_exit_threshold', v)} step={0.01} min={0.15} max={0.50} />
+                <NumInput label="Hold minimo (barre)" value={flags.lgbm_exit_min_hold_bars} onChange={v => setFlag('lgbm_exit_min_hold_bars', v)} step={1} min={1} max={48} />
+                <NumInput label="Conferma (barre consec.)" value={flags.lgbm_exit_confirm_bars} onChange={v => setFlag('lgbm_exit_confirm_bars', v)} step={1} min={1} max={6} />
               </div>
             )}
           </ToggleRow>
