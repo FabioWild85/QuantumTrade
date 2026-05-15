@@ -51,10 +51,51 @@ class RiskManager:
     # ── Trade Parameter Calculation ───────────────────────────────────────────
 
     def calculate_trade_params(
-        self, side: Side, entry_price: float, atr: float, equity_usd: float
+        self,
+        side: Side,
+        entry_price: float,
+        atr: float,
+        equity_usd: float,
+        c2_p10: Optional[float] = None,
+        c2_p90: Optional[float] = None,
+        c2_uncertainty: Optional[float] = None,
+        dynamic_sl_tp_enabled: bool = False,
+        dynamic_sl_tp_blend: float = 0.50,
     ) -> TradeParams:
-        sl_dist = self.sl_atr_mult * atr
-        tp_dist = self.tp_atr_mult * atr
+        atr_sl_dist = self.sl_atr_mult * atr
+        atr_tp_dist = self.tp_atr_mult * atr
+
+        if dynamic_sl_tp_enabled and c2_p10 is not None and c2_p90 is not None:
+            # Chronos-derived distance from entry to each percentile
+            if side == "long":
+                c2_sl_dist = max(entry_price - c2_p10, 1e-6)
+                c2_tp_dist = max(c2_p90 - entry_price, 1e-6)
+            else:
+                c2_sl_dist = max(c2_p90 - entry_price, 1e-6)
+                c2_tp_dist = max(entry_price - c2_p10, 1e-6)
+
+            # Weighted blend: (1-blend)×ATR + blend×Chronos
+            sl_dist = (1.0 - dynamic_sl_tp_blend) * atr_sl_dist + dynamic_sl_tp_blend * c2_sl_dist
+            tp_dist = (1.0 - dynamic_sl_tp_blend) * atr_tp_dist + dynamic_sl_tp_blend * c2_tp_dist
+
+            # Floors: SL and TP never narrower than 1×ATR (prevents stop-hunt noise)
+            sl_dist = max(sl_dist, 1.0 * atr)
+            tp_dist = max(tp_dist, 1.0 * atr)
+        else:
+            sl_dist = atr_sl_dist
+            tp_dist = atr_tp_dist
+
+        # Uncertainty-based size scaling (only when real Chronos data is present)
+        size_mult = 1.0
+        if dynamic_sl_tp_enabled and c2_uncertainty is not None and c2_uncertainty > 0:
+            if c2_uncertainty < 0.02:
+                size_mult = 1.20   # tight band → high confidence
+            elif c2_uncertainty < 0.04:
+                size_mult = 1.00
+            elif c2_uncertainty < 0.06:
+                size_mult = 0.75
+            else:
+                size_mult = 0.50   # wide band → high uncertainty
 
         if side == "long":
             stop_loss   = entry_price - sl_dist
@@ -64,9 +105,8 @@ class RiskManager:
             take_profit = entry_price - tp_dist
 
         # Risk-based sizing: position_size_pct = % of equity AT RISK per trade.
-        # Notional is scaled so that hitting the SL exactly costs that % of equity.
         sl_pct   = sl_dist / entry_price if entry_price > 0 else 0.02
-        risk_usd = equity_usd * (self.position_size_pct / 100)
+        risk_usd = equity_usd * (self.position_size_pct / 100) * size_mult
         size_usd = risk_usd / sl_pct if sl_pct > 1e-6 else risk_usd
 
         size_contracts = size_usd / entry_price
@@ -76,6 +116,8 @@ class RiskManager:
             f"Trade params: {side.upper()} entry={entry_price:.2f} "
             f"SL={stop_loss:.2f} TP={take_profit:.2f} "
             f"size=${size_usd:.0f} ({size_contracts:.4f} BTC) R:R={rr_ratio:.2f}"
+            + (f" [adaptive: uncertainty={c2_uncertainty:.3f} size_mult={size_mult:.2f}]"
+               if dynamic_sl_tp_enabled and c2_uncertainty is not None else "")
         )
         return TradeParams(
             side=side,

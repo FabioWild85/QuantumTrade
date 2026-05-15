@@ -63,6 +63,11 @@ async def run_backtest(req) -> dict:
     be_sl_activation       = getattr(cfg, "be_sl_activation",       1.0)
     max_hold_bars_enabled  = getattr(cfg, "max_hold_bars_enabled",  False)
     max_hold_bars_val      = getattr(cfg, "max_hold_bars",          48)
+    # Chronos-2 adaptive features
+    c2_uncertainty_gate_enabled = getattr(cfg, "c2_uncertainty_gate_enabled", False)
+    c2_uncertainty_threshold    = getattr(cfg, "c2_uncertainty_threshold",    0.05)
+    dynamic_sl_tp_enabled       = getattr(cfg, "dynamic_sl_tp_enabled",       False)
+    dynamic_sl_tp_blend         = getattr(cfg, "dynamic_sl_tp_blend",         0.50)
 
     hl = HyperliquidData()
 
@@ -126,6 +131,8 @@ async def run_backtest(req) -> dict:
         fvg_filter_enabled=fvg_filter_enabled,
         mtf_alignment_enabled=mtf_alignment_enabled,
         chronos_weight=chronos_weight if use_chronos else 0.0,
+        c2_uncertainty_gate_enabled=c2_uncertainty_gate_enabled if use_chronos else False,
+        c2_uncertainty_threshold=c2_uncertainty_threshold,
     )
     risk = RiskManager(
         sl_atr_mult=sl_atr_mult,
@@ -342,11 +349,17 @@ async def run_backtest(req) -> dict:
 
             if result.action != "no_trade":
                 close_price = float(row["close"])
+                _use_dynamic = dynamic_sl_tp_enabled and use_chronos
                 params = risk.calculate_trade_params(
                     side=result.action,
                     entry_price=close_price,
                     atr=atr,
                     equity_usd=equity,
+                    c2_p10=c2_out.get("c2_p10") if _use_dynamic else None,
+                    c2_p90=c2_out.get("c2_p90") if _use_dynamic else None,
+                    c2_uncertainty=c2_out.get("c2_uncertainty") if _use_dynamic else None,
+                    dynamic_sl_tp_enabled=_use_dynamic,
+                    dynamic_sl_tp_blend=dynamic_sl_tp_blend,
                 )
                 fee_entry = params.size_usd * HL_TAKER_FEE
                 equity   -= fee_entry

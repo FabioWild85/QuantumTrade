@@ -7,6 +7,7 @@ LightGBM is retrained automatically every 120 cycles (~30 days).
 
 import asyncio
 import logging
+import math
 import os
 import uuid
 from datetime import datetime, timezone
@@ -39,6 +40,8 @@ HL_AGENT_PRIVKEY  = os.getenv("HL_AGENT_PRIVATE_KEY", "")  # for live order sign
 
 # Retrain every N completed cycles (~30 days on 4h bars)
 RETRAIN_INTERVAL = 120
+
+CIRCUIT_BREAKER_THRESHOLD = 5   # stop bot after N consecutive cycle errors
 
 
 # ── Config dataclass ──────────────────────────────────────────────────────────
@@ -77,8 +80,13 @@ class BotConfig:
         # ── Advanced exit ─────────────────────────────────────────────────────
         self.be_sl_enabled           = kw.get("be_sl_enabled",           False)
         self.be_sl_activation        = kw.get("be_sl_activation",        1.0)
-        self.max_hold_bars_enabled   = kw.get("max_hold_bars_enabled",   False)
-        self.max_hold_bars           = kw.get("max_hold_bars",           48)
+        self.max_hold_bars_enabled      = kw.get("max_hold_bars_enabled",      False)
+        self.max_hold_bars              = kw.get("max_hold_bars",              48)
+        # Chronos-2 adaptive features
+        self.c2_uncertainty_gate_enabled = kw.get("c2_uncertainty_gate_enabled", False)
+        self.c2_uncertainty_threshold    = kw.get("c2_uncertainty_threshold",    0.05)
+        self.dynamic_sl_tp_enabled       = kw.get("dynamic_sl_tp_enabled",       False)
+        self.dynamic_sl_tp_blend         = kw.get("dynamic_sl_tp_blend",         0.50)
 
     def model_dump(self) -> dict:
         return self.__dict__
@@ -111,6 +119,7 @@ class ExecutionEngine:
         self._position: Optional[dict]  = None   # active position dict
         self._equity: float             = 10_000.0  # paper equity (USD)
         self._cycle_count: int          = 0
+        self._consecutive_errors: int   = 0
         self._retrain_task: Optional[asyncio.Task] = None
         self._task: Optional[asyncio.Task]         = None
 
@@ -130,12 +139,21 @@ class ExecutionEngine:
             return
         self.mode    = mode
         self.running = True
+        self._consecutive_errors = 0
 
         # Load model from disk if available
         self._load_model_from_disk()
 
+        # Restore paper equity from last DB snapshot (avoids reset to $10k on every restart)
+        if mode == "paper":
+            await self._restore_paper_state()
+
         # Start WebSocket
         await self._ws.start()
+
+        # Live only: reconcile open positions before starting the loop
+        if mode == "live":
+            await self._reconcile_position()
 
         # Kick off the main loop
         self._task = asyncio.create_task(self._loop())
@@ -181,6 +199,111 @@ class ExecutionEngine:
         log.warning("KILL SWITCH activated")
         return {"orders_cancelled": orders_cancelled, "positions_closed": positions_closed}
 
+    async def _reconcile_position(self):
+        """
+        On live startup: query HL for any existing open position and restore
+        self._position from it, preventing a double-open on restart.
+        """
+        wallet = os.getenv("HL_WALLET_ADDRESS", "")
+        if not wallet:
+            log.warning("Reconciliation skipped: HL_WALLET_ADDRESS not set")
+            return
+
+        hl_pos = await self._hl.get_open_position(wallet, SYMBOL)
+        if hl_pos is None:
+            log.info("Reconciliation: no open position on HL")
+            return
+
+        # Restore in-memory position from HL state
+        self._position = {
+            "side":               hl_pos["side"],
+            "entry_price":        hl_pos["entry_price"],
+            "stop_loss":          0.0,   # unknown — will be managed conservatively
+            "take_profit":        0.0,   # unknown
+            "size_usd":           hl_pos["size_contracts"] * hl_pos["entry_price"],
+            "size_contracts":     hl_pos["size_contracts"],
+            "entry_atr":          None,
+            "inference_id":       None,
+            "hl_order_id":        None,
+            "opened_at":          datetime.now(timezone.utc).isoformat(),
+            "bars_held":          0,
+            "lgbm_strikes":       0,
+            "be_sl_applied":      False,
+            "sl_trailing_active": False,
+            "high_water":         hl_pos["entry_price"],
+            "partial_done":       False,
+            "reconciled":         True,   # flag: SL/TP are unknown, use caution
+        }
+        log.warning(
+            "Reconciliation: restored %s position %.4f BTC @ %.2f (unrealized PnL: $%.2f). "
+            "SL/TP unknown — position will be managed without stops until next cycle.",
+            hl_pos["side"].upper(), hl_pos["size_contracts"],
+            hl_pos["entry_price"], hl_pos["unrealized_pnl"],
+        )
+        try:
+            db = get_supabase()
+            db.table("events").insert({
+                "severity": "warning",
+                "kind":     "position_reconciled",
+                "message":  (
+                    f"Posizione esistente rilevata su HL al restart: "
+                    f"{hl_pos['side'].upper()} {hl_pos['size_contracts']} BTC @ {hl_pos['entry_price']:.2f}"
+                ),
+                "payload":  hl_pos,
+            }).execute()
+        except Exception:
+            pass
+        await self._notifier.send_error(
+            f"⚠️ Posizione esistente rilevata su HL al restart: "
+            f"{hl_pos['side'].upper()} {hl_pos['size_contracts']} BTC @ {hl_pos['entry_price']:.2f}. "
+            "SL/TP non noti — verificare manualmente.",
+            "reconciliation"
+        )
+
+    async def _restore_paper_state(self):
+        """
+        Paper mode startup: restore equity from last DB snapshot and
+        rehydrate any open paper position from bot_configs.params.
+        Prevents equity reset to $10k and open-trade loss on every restart.
+        """
+        try:
+            db = get_supabase()
+
+            # 1. Restore equity from most recent snapshot
+            snap = db.table("equity_snapshots") \
+                     .select("equity_usd") \
+                     .order("time", desc=True) \
+                     .limit(1).execute()
+            if snap.data:
+                self._equity = float(snap.data[0]["equity_usd"])
+                log.info("Paper equity restored from DB: $%.2f", self._equity)
+
+            # 2. Restore open paper position if saved in bot_configs
+            cfg_row = db.table("bot_configs") \
+                        .select("params") \
+                        .eq("name", "default").execute()
+            if cfg_row.data:
+                saved_pos = (cfg_row.data[0].get("params") or {}).get("_paper_position")
+                if saved_pos:
+                    self._position = saved_pos
+                    log.info(
+                        "Paper position restored: %s %.4f BTC @ %.2f",
+                        saved_pos["side"].upper(), saved_pos["size_contracts"], saved_pos["entry_price"],
+                    )
+        except Exception as exc:
+            log.warning("Could not restore paper state: %s", exc)
+
+    def _save_paper_position(self):
+        """Persist current paper position (or None) to bot_configs.params._paper_position."""
+        try:
+            db = get_supabase()
+            row = db.table("bot_configs").select("params").eq("name", "default").execute()
+            existing = (row.data[0].get("params") or {}) if row.data else {}
+            existing["_paper_position"] = self._position  # None clears it
+            db.table("bot_configs").update({"params": existing}).eq("name", "default").execute()
+        except Exception as exc:
+            log.warning("Could not save paper position: %s", exc)
+
     async def get_status(self) -> dict:
         return {
             "running":       self.running,
@@ -210,12 +333,61 @@ class ExecutionEngine:
                     await self._sleep_until_next_candle()
 
                 await self._cycle()
+                self._consecutive_errors = 0  # reset on successful cycle
 
             except asyncio.CancelledError:
                 break
             except Exception as exc:
-                log.error("Cycle error: %s", exc, exc_info=True)
+                self._consecutive_errors += 1
+                log.error(
+                    "Cycle error [%d/%d]: %s",
+                    self._consecutive_errors, CIRCUIT_BREAKER_THRESHOLD,
+                    exc, exc_info=True,
+                )
                 await self._notifier.send_error(str(exc), "main loop")
+                try:
+                    db = get_supabase()
+                    db.table("events").insert({
+                        "severity": "error",
+                        "kind": "cycle_error",
+                        "message": f"Errore nel ciclo di trading [{self._consecutive_errors}/{CIRCUIT_BREAKER_THRESHOLD}]: {type(exc).__name__}: {exc}",
+                        "payload": {
+                            "error": str(exc), "type": type(exc).__name__,
+                            "consecutive": self._consecutive_errors,
+                        },
+                    }).execute()
+                except Exception:
+                    pass
+
+                if self._consecutive_errors >= CIRCUIT_BREAKER_THRESHOLD:
+                    log.critical(
+                        "Circuit breaker triggered after %d consecutive errors — stopping bot.",
+                        self._consecutive_errors,
+                    )
+                    try:
+                        db = get_supabase()
+                        db.table("events").insert({
+                            "severity": "critical",
+                            "kind":     "circuit_breaker",
+                            "message":  f"Circuit breaker attivato dopo {self._consecutive_errors} errori consecutivi. Bot fermato automaticamente.",
+                            "payload":  {"consecutive_errors": self._consecutive_errors},
+                        }).execute()
+                    except Exception:
+                        pass
+                    await self._notifier.send_error(
+                        f"🚨 Circuit breaker attivato dopo {self._consecutive_errors} errori consecutivi. "
+                        "Bot fermato automaticamente. Controlla i log.",
+                        "circuit_breaker"
+                    )
+                    self.running = False
+                    # Persist stopped state so no auto-resume until manually restarted
+                    try:
+                        db = get_supabase()
+                        db.table("bot_configs").update({"running": False}).eq("name", "default").execute()
+                    except Exception:
+                        pass
+                    break
+
                 await asyncio.sleep(60)  # brief pause before retry
 
     async def _cycle(self):
@@ -270,14 +442,16 @@ class ExecutionEngine:
         # 7. Decision gate
         allowed, block_reason = self._risk.can_trade()
         decision_engine = DecisionEngine(
-            directional_threshold = self.config.directional_threshold,
-            adx_gate              = self.config.adx_gate,
-            confluence_gate       = self.config.confluence_gate,
-            adx_gate_enabled      = self.config.adx_gate_enabled,
-            sweep_gate_enabled    = self.config.sweep_gate_enabled,
-            fvg_filter_enabled    = self.config.fvg_filter_enabled,
-            mtf_alignment_enabled = self.config.mtf_alignment_enabled,
-            chronos_weight        = self.config.chronos_weight if self.config.chronos_enabled else 0.0,
+            directional_threshold       = self.config.directional_threshold,
+            adx_gate                    = self.config.adx_gate,
+            confluence_gate             = self.config.confluence_gate,
+            adx_gate_enabled            = self.config.adx_gate_enabled,
+            sweep_gate_enabled          = self.config.sweep_gate_enabled,
+            fvg_filter_enabled          = self.config.fvg_filter_enabled,
+            mtf_alignment_enabled       = self.config.mtf_alignment_enabled,
+            chronos_weight              = self.config.chronos_weight if self.config.chronos_enabled else 0.0,
+            c2_uncertainty_gate_enabled = self.config.c2_uncertainty_gate_enabled if self.config.chronos_enabled else False,
+            c2_uncertainty_threshold    = self.config.c2_uncertainty_threshold,
         )
         result = decision_engine.decide(
             features=latest,
@@ -288,8 +462,9 @@ class ExecutionEngine:
         )
 
         # 8. Execute
-        inference_id = str(uuid.uuid4())[:12]
-        await self._log_inference(inference_id, latest, c2_out, lgbm_prob, result, covars)
+        _raw_id = str(uuid.uuid4())[:12]
+        inference_id = await self._log_inference(_raw_id, latest, c2_out, lgbm_prob, result, covars)
+        # inference_id is None if log write failed; orders insert will use NULL FK (safe)
 
         if result.action != "no_trade" and allowed and self._position is None:
             await self._open_position(result, snap, atr, inference_id)
@@ -374,17 +549,35 @@ class ExecutionEngine:
         price = snap["mark_price"]
         atr   = atr or price * 0.01  # fallback 1% ATR
 
+        _use_dynamic = self.config.dynamic_sl_tp_enabled and self.config.chronos_enabled
         params = self._risk.calculate_trade_params(
             side=result.action,
             entry_price=price,
             atr=atr,
             equity_usd=self._equity,
+            c2_p10=result.forecast_p10 if _use_dynamic else None,
+            c2_p90=result.forecast_p90 if _use_dynamic else None,
+            c2_uncertainty=result.forecast_uncertainty if (_use_dynamic and result.forecast_uncertainty > 0) else None,
+            dynamic_sl_tp_enabled=_use_dynamic,
+            dynamic_sl_tp_blend=self.config.dynamic_sl_tp_blend,
         )
         # Round to 4 decimal places (HL BTC min size = 0.001)
         size = max(round(params.size_contracts, 4), 0.001)
 
         if self.mode == "live":
-            hl_order_id = await self._submit_open_order(result.action, size, price, params.stop_loss)
+            # Idempotency guard: abort if a position already exists on HL
+            wallet = os.getenv("HL_WALLET_ADDRESS", "")
+            if wallet:
+                existing = await self._hl.get_open_position(wallet, SYMBOL)
+                if existing is not None:
+                    log.warning(
+                        "Idempotency guard: position already open on HL (%s %.4f BTC). Skipping order.",
+                        existing["side"].upper(), existing["size_contracts"],
+                    )
+                    # Reconcile in-memory state instead of opening a duplicate
+                    await self._reconcile_position()
+                    return
+            hl_order_id = await self._submit_open_order(result.action, size, price, params.stop_loss, inference_id)
         else:
             hl_order_id = None
             log.info(
@@ -412,6 +605,10 @@ class ExecutionEngine:
             "partial_done":       False,
         }
 
+        # Persist paper position immediately so it survives a restart
+        if self.mode == "paper":
+            self._save_paper_position()
+
         try:
             db = get_supabase()
             db.table("orders").insert({
@@ -423,6 +620,16 @@ class ExecutionEngine:
                 "price":        price,
                 "status":       "filled" if self.mode == "paper" else "pending",
                 "inference_id": inference_id,
+            }).execute()
+            db.table("events").insert({
+                "severity": "info",
+                "kind": "trade_opened",
+                "message": f"[{self.mode.upper()}] {result.action.upper()} {size} BTC @ {price:.2f} | SL={params.stop_loss:.2f} TP={params.take_profit:.2f} R:R={params.rr_ratio:.2f}",
+                "payload": {
+                    "side": result.action, "symbol": SYMBOL, "size": size,
+                    "price": price, "sl": params.stop_loss, "tp": params.take_profit,
+                    "rr": params.rr_ratio, "size_usd": params.size_usd, "mode": self.mode,
+                },
             }).execute()
         except Exception as exc:
             log.warning("Order DB insert failed: %s", exc)
@@ -556,11 +763,15 @@ class ExecutionEngine:
         # ── 6. Standard SL / TP check ─────────────────────────────────────────
         sl = self._position["stop_loss"]
         tp = self._position["take_profit"]
+        # Skip SL/TP checks when values are 0.0 (unknown after reconciliation).
+        # The native HL trigger order still protects capital in live mode.
+        # Values get recalculated from ATR on the next new-trade cycle.
         reason = None
-        if self._risk.should_stop_loss(side, current_price, sl):
-            reason = "stop_loss"
-        elif self._risk.should_take_profit(side, current_price, tp):
-            reason = "take_profit"
+        if sl > 0.0 or tp > 0.0:
+            if sl > 0.0 and self._risk.should_stop_loss(side, current_price, sl):
+                reason = "stop_loss"
+            elif tp > 0.0 and self._risk.should_take_profit(side, current_price, tp):
+                reason = "take_profit"
 
         if reason:
             await self._close_position(current_price, reason)
@@ -615,15 +826,32 @@ class ExecutionEngine:
                 "realized_pnl":  pnl_usd,
                 "drawdown_pct":  min(0.0, pnl_pct),
             }).execute()
+            severity = "info" if pnl_usd >= 0 else "warning"
+            db.table("events").insert({
+                "severity": severity,
+                "kind": "trade_closed",
+                "message": f"[{self.mode.upper()}] {side.upper()} chiuso ({reason}) | PnL {pnl_pct:+.2f}% (${pnl_usd:+.2f}) in {holding_h:.1f}h",
+                "payload": {
+                    "side": side, "symbol": SYMBOL, "reason": reason,
+                    "pnl_pct": round(pnl_pct, 4), "pnl_usd": round(pnl_usd, 2),
+                    "entry": entry, "exit": exit_price, "holding_h": round(holding_h, 2),
+                    "mode": self.mode,
+                },
+            }).execute()
         except Exception as exc:
             log.warning("Equity snapshot write failed: %s", exc)
 
         self._position = None
 
+        # Clear persisted paper position now that the trade is closed
+        if self.mode == "paper":
+            self._save_paper_position()
+
     # ── Live order submission (Hyperliquid SDK) ───────────────────────────────
 
     async def _submit_open_order(
-        self, side: str, size: float, mark_price: float, stop_loss: float
+        self, side: str, size: float, mark_price: float, stop_loss: float,
+        inference_id: Optional[str] = None,
     ) -> Optional[str]:
         """
         Submit a market-like IOC entry + native SL trigger order via HL SDK.
@@ -643,6 +871,12 @@ class ExecutionEngine:
             endpoint = constants.TESTNET_API_URL if HL_TESTNET else constants.MAINNET_API_URL
             exchange = Exchange(wallet, endpoint, account_address=os.getenv("HL_WALLET_ADDRESS"))
 
+            # Derive deterministic cloid from inference_id for deduplication
+            # HL expects a 16-byte hex string prefixed with "0x"
+            import hashlib
+            _seed = (inference_id or str(uuid.uuid4())).encode()
+            cloid = "0x" + hashlib.md5(_seed).hexdigest()  # 16 bytes = 32 hex chars
+
             is_buy  = (side == "long")
             # IOC at 50bps slippage for market-like fill
             slip_px = mark_price * (1.005 if is_buy else 0.995)
@@ -653,16 +887,20 @@ class ExecutionEngine:
                 SYMBOL, is_buy, size, slip_px,
                 {"limit": {"tif": "Ioc"}},
                 False,   # reduce_only
+                cloid,   # client order ID for deduplication
             )
             log.info("Live entry order submitted: %s", result)
 
             # Native SL trigger order
             sl_is_buy = not is_buy
+            _sl_seed = (_seed + b"_sl")
+            sl_cloid = "0x" + hashlib.md5(_sl_seed).hexdigest()
             sl_result = await asyncio.to_thread(
                 exchange.order,
                 SYMBOL, sl_is_buy, size, stop_loss,
                 {"trigger": {"triggerPx": round(stop_loss, 1), "isMarket": True, "tpsl": "sl"}},
                 True,    # reduce_only
+                sl_cloid,
             )
             log.info("Native SL order submitted: %s", sl_result)
 
@@ -733,6 +971,14 @@ class ExecutionEngine:
 
     # ── Inference logging ─────────────────────────────────────────────────────
 
+    @staticmethod
+    def _safe_float(v):
+        """Convert to float, returning None for NaN/Inf (not JSON-safe)."""
+        if hasattr(v, "__float__"):
+            f = float(v)
+            return None if (math.isnan(f) or math.isinf(f)) else f
+        return str(v)
+
     async def _log_inference(
         self,
         inference_id: str,
@@ -741,24 +987,32 @@ class ExecutionEngine:
         lgbm_prob: float,
         result: DecisionResult,
         covars: dict,
-    ):
+    ) -> Optional[str]:
+        """Write inference log. Returns inference_id on success, None on failure."""
         try:
+            safe_lgbm = self._safe_float(lgbm_prob)
             db = get_supabase()
             db.table("inference_logs").insert({
                 "id":       inference_id,
-                "bot_id":   None,  # UUID lookup not needed; NULL is allowed
+                "bot_id":   None,
                 "model":    "chronos2_lgbm_ensemble_v2",
                 "features": {
-                    k: (float(v) if hasattr(v, "__float__") else str(v))
+                    k: self._safe_float(v)
                     for k, v in {**features, **covars}.items()
                 },
-                "forecast": {**c2, "lgbm_prob": lgbm_prob},
+                "forecast": {
+                    **{k: (self._safe_float(v) if isinstance(v, float) else v)
+                       for k, v in c2.items()},
+                    "lgbm_prob": safe_lgbm,
+                },
                 "decision": result.action,
                 "reasoning": result.reasoning,
                 "latency_ms": c2.get("latency_ms", 0),
             }).execute()
+            return inference_id
         except Exception as exc:
             log.warning("Inference log write failed: %s", exc)
+            return None
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 

@@ -424,7 +424,9 @@ const ConfigSummary: React.FC<{ config: Record<string, any> }> = ({ config: c })
   if (c.lgbm_exit_enabled)    activeBadges.push(badge(`LGBM Exit p<${c.lgbm_exit_threshold}`, 'bg-purple-50 dark:bg-purple-500/10 text-purple-600 dark:text-purple-400 border-purple-100 dark:border-purple-500/20'));
   if (c.be_sl_enabled)        activeBadges.push(badge(`BE SL @${c.be_sl_activation}ATR`, 'bg-amber-50 dark:bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-100 dark:border-amber-500/20'));
   if (c.max_hold_bars_enabled) activeBadges.push(badge(`Max ${c.max_hold_bars} barre`, 'bg-slate-50 dark:bg-white/10 text-slate-600 dark:text-slate-400 border-slate-200 dark:border-white/20'));
-  if (c.chronos_enabled)      activeBadges.push(badge(`Chronos ${Math.round((c.chronos_weight ?? 0.4) * 100)}%`, 'bg-cyan-50 dark:bg-cyan-500/10 text-cyan-600 dark:text-cyan-400 border-cyan-100 dark:border-cyan-500/20'));
+  if (c.chronos_enabled)               activeBadges.push(badge(`Chronos ${Math.round((c.chronos_weight ?? 0.4) * 100)}%`, 'bg-cyan-50 dark:bg-cyan-500/10 text-cyan-600 dark:text-cyan-400 border-cyan-100 dark:border-cyan-500/20'));
+  if (c.c2_uncertainty_gate_enabled)   activeBadges.push(badge(`C2 Gate <${c.c2_uncertainty_threshold ?? 0.05}`, 'bg-cyan-50 dark:bg-cyan-500/10 text-cyan-600 dark:text-cyan-400 border-cyan-100 dark:border-cyan-500/20'));
+  if (c.dynamic_sl_tp_enabled)         activeBadges.push(badge(`Adaptive SL/TP ${Math.round((c.dynamic_sl_tp_blend ?? 0.5) * 100)}% C2`, 'bg-violet-50 dark:bg-violet-500/10 text-violet-600 dark:text-violet-400 border-violet-100 dark:border-violet-500/20'));
 
   const disabledFilters: string[] = [];
   if (c.adx_gate_enabled      === false) disabledFilters.push('ADX OFF');
@@ -793,8 +795,12 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   const [lgbmThresh,    setLgbmThresh]    = useState('0.30');
   const [lgbmMinHold,   setLgbmMinHold]   = useState('6');
   const [lgbmConfirm,   setLgbmConfirm]   = useState('2');
-  const [useChronos,    setUseChronos]    = useState(false);
-  const [compareMode,   setCompareMode]   = useState(false);
+  const [useChronos,          setUseChronos]          = useState(false);
+  const [c2UncertaintyGate,   setC2UncertaintyGate]   = useState(false);
+  const [c2UncertaintyThresh, setC2UncertaintyThresh] = useState('0.05');
+  const [dynamicSlTp,         setDynamicSlTp]         = useState(false);
+  const [dynamicSlTpBlend,    setDynamicSlTpBlend]    = useState('0.50');
+  const [compareMode,         setCompareMode]         = useState(false);
 
   // ── Advanced settings drawer ─────────────────────────────────────────────────
   const [isDrawerOpen,  setIsDrawerOpen]  = useState(false);
@@ -847,8 +853,12 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     if (p.sweep_gate_enabled    !== undefined) setAdvSweepEnabled(!!p.sweep_gate_enabled);
     if (p.fvg_filter_enabled    !== undefined) setAdvFvgEnabled(!!p.fvg_filter_enabled);
     if (p.mtf_alignment_enabled !== undefined) setAdvMtfEnabled(!!p.mtf_alignment_enabled);
-    if (p.chronos_weight        !== undefined) setAdvChronosWeight(String(p.chronos_weight));
-    if (p.be_sl_enabled         !== undefined) setAdvBeSL(!!p.be_sl_enabled);
+    if (p.chronos_weight                !== undefined) setAdvChronosWeight(String(p.chronos_weight));
+    if (p.c2_uncertainty_gate_enabled   !== undefined) setC2UncertaintyGate(!!p.c2_uncertainty_gate_enabled);
+    if (p.c2_uncertainty_threshold      !== undefined) setC2UncertaintyThresh(String(p.c2_uncertainty_threshold));
+    if (p.dynamic_sl_tp_enabled         !== undefined) setDynamicSlTp(!!p.dynamic_sl_tp_enabled);
+    if (p.dynamic_sl_tp_blend           !== undefined) setDynamicSlTpBlend(String(p.dynamic_sl_tp_blend));
+    if (p.be_sl_enabled                 !== undefined) setAdvBeSL(!!p.be_sl_enabled);
     if (p.be_sl_activation      !== undefined) setAdvBeSLAct(String(p.be_sl_activation));
     if (p.max_hold_bars_enabled !== undefined) setAdvMaxHold(!!p.max_hold_bars_enabled);
     if (p.max_hold_bars         !== undefined) setAdvMaxHoldBars(String(p.max_hold_bars));
@@ -916,17 +926,22 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     lgbm_exit_min_hold_bars:  parseInt(lgbmMinHold),
     lgbm_exit_confirm_bars:   parseInt(lgbmConfirm),
     // Advanced signal controls (always active — drawer only)
-    chronos_enabled:          false,
-    chronos_weight:           parseFloat(advChronosWeight),
-    adx_gate_enabled:         advAdxEnabled,
-    sweep_gate_enabled:       advSweepEnabled,
-    fvg_filter_enabled:       advFvgEnabled,
-    mtf_alignment_enabled:    advMtfEnabled,
+    chronos_enabled:               false,
+    chronos_weight:                parseFloat(advChronosWeight),
+    adx_gate_enabled:              advAdxEnabled,
+    sweep_gate_enabled:            advSweepEnabled,
+    fvg_filter_enabled:            advFvgEnabled,
+    mtf_alignment_enabled:         advMtfEnabled,
+    // Chronos-2 adaptive features
+    c2_uncertainty_gate_enabled:   c2UncertaintyGate,
+    c2_uncertainty_threshold:      parseFloat(c2UncertaintyThresh),
+    dynamic_sl_tp_enabled:         dynamicSlTp,
+    dynamic_sl_tp_blend:           parseFloat(dynamicSlTpBlend),
     // Advanced position management
-    be_sl_enabled:            advBeSL,
-    be_sl_activation:         parseFloat(advBeSLAct),
-    max_hold_bars_enabled:    advMaxHold,
-    max_hold_bars:            parseInt(advMaxHoldBars),
+    be_sl_enabled:                 advBeSL,
+    be_sl_activation:              parseFloat(advBeSLAct),
+    max_hold_bars_enabled:         advMaxHold,
+    max_hold_bars:                 parseInt(advMaxHoldBars),
   });
 
   const runBacktest = async () => {
@@ -963,7 +978,8 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
 
   const advancedActive = trailingSL || partialTP;
   const drawerHasCustom = trailingSL || partialTP || lgbmExit || useChronos || advBeSL || advMaxHold
-    || !advAdxEnabled || !advSweepEnabled || !advFvgEnabled || !advMtfEnabled;
+    || !advAdxEnabled || !advSweepEnabled || !advFvgEnabled || !advMtfEnabled
+    || c2UncertaintyGate;
 
   return (
     <div className="space-y-5">
@@ -1040,25 +1056,91 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
             {/* Base params */}
             <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
               {([
-                { label: 'Dal', tip: 'Data di inizio del backtest. I dati storici OHLCV sono disponibili dal 2017.', type: 'date', val: fromDate, set: setFromDate, min: '2017-01-01', max: toDate },
-                { label: 'Al', tip: 'Data di fine del backtest. Usa una data recente per testare su dati aggiornati.', type: 'date', val: toDate, set: setToDate, min: fromDate, max: today },
-                { label: 'Capitale ($)', tip: 'Capitale iniziale simulato in USD. Tutti i calcoli di P&L sono basati su questo importo.', type: 'number', val: capital, set: setCapital, min: undefined, max: undefined },
-                { label: 'SL Mult', tip: 'Stop Loss Multiplier: distanza dello stop loss dal prezzo di entrata in multipli di ATR. Maggiore = SL più largo = meno stop colpiti ma perdite maggiori.', type: 'number', val: slMult, set: setSlMult, min: undefined, max: undefined },
-                { label: 'TP Mult', tip: 'Take Profit Multiplier: distanza del take profit in multipli di ATR. Combinato con SL mult determina il rapporto R:R (rischio/rendimento).', type: 'number', val: tpMult, set: setTpMult, min: undefined, max: undefined },
-                { label: 'Size (%)', tip: 'Percentuale del capitale rischiata per ogni trade. Con $10.000 e Size 1.5%, ogni trade rischia $150.', type: 'number', val: posSizePct, set: setPosSizePct, min: undefined, max: undefined },
+                { label: 'Dal',        tip: 'Data di inizio del backtest. I dati storici OHLCV sono disponibili dal 2017.', type: 'date',   val: fromDate,   set: setFromDate,   min: '2017-01-01', max: toDate,  dimWhenDynamic: false },
+                { label: 'Al',         tip: 'Data di fine del backtest. Usa una data recente per testare su dati aggiornati.',       type: 'date',   val: toDate,     set: setToDate,     min: fromDate,     max: today,  dimWhenDynamic: false },
+                { label: 'Capitale ($)',tip: 'Capitale iniziale simulato in USD. Tutti i calcoli di P&L sono basati su questo importo.', type: 'number', val: capital,    set: setCapital,    min: undefined,    max: undefined, dimWhenDynamic: false },
+                { label: 'SL Mult',    tip: 'Stop Loss Multiplier: distanza dello stop loss in multipli di ATR. Disabilitato in modalità Adaptive SL/TP.',    type: 'number', val: slMult,     set: setSlMult,     min: undefined,    max: undefined, dimWhenDynamic: true  },
+                { label: 'TP Mult',    tip: 'Take Profit Multiplier: distanza del TP in multipli di ATR. Disabilitato in modalità Adaptive SL/TP.',            type: 'number', val: tpMult,     set: setTpMult,     min: undefined,    max: undefined, dimWhenDynamic: true  },
+                { label: 'Size (%)',   tip: 'Percentuale del capitale rischiata per ogni trade. Con $10.000 e Size 1.5%, ogni trade rischia $150.',             type: 'number', val: posSizePct, set: setPosSizePct, min: undefined,    max: undefined, dimWhenDynamic: false },
               ] as const).map(f => (
-                <Tooltip key={f.label} text={f.tip} pos="bottom" width="wide">
-                  <label className="flex flex-col gap-1.5 w-full">
-                    <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest ml-1">{f.label}</span>
-                    <input
-                      type={f.type} value={f.val}
-                      min={f.min} max={f.max}
-                      onChange={e => f.set(e.target.value)}
-                      className={`bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 rounded-xl px-4 py-2.5 text-sm font-bold font-mono text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all outline-none shadow-sm${f.type === 'date' ? ' [color-scheme:light] dark:[color-scheme:dark]' : ''}`}
-                    />
+                <div key={f.label} className={`transition-all duration-200 ${f.dimWhenDynamic && dynamicSlTp ? 'opacity-35 pointer-events-none' : ''}`}>
+                  <Tooltip text={f.tip} pos="bottom" width="wide">
+                    <label className="flex flex-col gap-1.5 w-full">
+                      <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest ml-1">{f.label}</span>
+                      <input
+                        type={f.type} value={f.val}
+                        min={f.min} max={f.max}
+                        onChange={e => f.set(e.target.value)}
+                        className={`bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 rounded-xl px-4 py-2.5 text-sm font-bold font-mono text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all outline-none shadow-sm${f.type === 'date' ? ' [color-scheme:light] dark:[color-scheme:dark]' : ''}`}
+                      />
+                    </label>
+                  </Tooltip>
+                </div>
+              ))}
+            </div>
+
+            {/* ── Adaptive SL/TP toggle (inline, context-aware) ── */}
+            <div className={`flex flex-col gap-3 pt-4 border-t border-dashed transition-colors duration-200 ${dynamicSlTp ? 'border-violet-200 dark:border-violet-500/25' : 'border-slate-200 dark:border-white/8'}`}>
+              <div className="flex items-center justify-between flex-wrap gap-3">
+                <Tooltip text="Adatta SL e TP alle previsioni probabilistiche di Chronos-2. Quando attivo, SL e TP fissi vengono disabilitati: le distanze vengono calcolate blendando ATR con p10/p90 del forecast. Richiede Chronos attivo nel drawer." pos="bottom" width="wide">
+                  <label className="flex items-center gap-3 cursor-pointer group">
+                    <div className="relative">
+                      <input type="checkbox" className="sr-only" checked={dynamicSlTp} onChange={e => setDynamicSlTp(e.target.checked)} />
+                      <div className={`w-9 h-5 rounded-full transition-all duration-300 ${dynamicSlTp ? 'bg-violet-600' : 'bg-slate-200 dark:bg-white/10'}`} />
+                      <div className={`absolute top-1 left-1 w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${dynamicSlTp ? 'translate-x-4' : ''}`} />
+                    </div>
+                    <div>
+                      <p className={`text-sm font-bold transition-colors ${dynamicSlTp ? 'text-violet-600 dark:text-violet-400' : 'text-slate-700 dark:text-slate-300 group-hover:text-violet-600 dark:group-hover:text-violet-400'}`}>
+                        SL/TP Adattivi
+                        {dynamicSlTp && <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-violet-100 dark:bg-violet-500/20 text-violet-600 dark:text-violet-400 uppercase tracking-wider">AI-driven</span>}
+                      </p>
+                      <p className="text-[11px] font-medium text-slate-400 dark:text-slate-500 leading-tight">
+                        {dynamicSlTp ? 'SL Mult e TP Mult disabilitati — livelli calcolati da Chronos p10/p90' : 'Attiva per sostituire SL/TP fissi con livelli AI adattativi'}
+                      </p>
+                    </div>
                   </label>
                 </Tooltip>
-              ))}
+                {dynamicSlTp && (
+                  <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-violet-50 dark:bg-violet-500/10 border border-violet-100 dark:border-violet-500/20">
+                    <svg className="w-3.5 h-3.5 text-violet-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
+                    <span className="text-[10px] font-bold text-violet-600 dark:text-violet-400 uppercase tracking-wider">
+                      ATR {Math.round((1 - parseFloat(dynamicSlTpBlend || '0.5')) * 100)}% · C2 {Math.round(parseFloat(dynamicSlTpBlend || '0.5') * 100)}%
+                    </span>
+                  </div>
+                )}
+              </div>
+              {dynamicSlTp && (
+                <div className="flex items-center gap-4 pl-12">
+                  <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest whitespace-nowrap">Blend ATR ↔ C2</span>
+                  <div className="flex items-center gap-3 flex-1">
+                    <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 font-mono w-6 text-right">0</span>
+                    <input
+                      type="range" min="0" max="1" step="0.05"
+                      value={dynamicSlTpBlend}
+                      onChange={e => setDynamicSlTpBlend(e.target.value)}
+                      className="flex-1 h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/15 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3.5 [&::-webkit-slider-thumb]:h-3.5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-violet-500 [&::-webkit-slider-thumb]:shadow-sm [&::-webkit-slider-thumb]:cursor-pointer [&::-moz-range-thumb]:w-3.5 [&::-moz-range-thumb]:h-3.5 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-violet-500 [&::-moz-range-thumb]:border-0"
+                    />
+                    <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 font-mono w-6">1</span>
+                    <span className="text-[11px] font-bold font-mono text-violet-600 dark:text-violet-400 w-8 text-right">{parseFloat(dynamicSlTpBlend).toFixed(2)}</span>
+                  </div>
+                </div>
+              )}
+
+              {/* ── Warning: Chronos OFF con dynamic ON ── */}
+              {dynamicSlTp && !useChronos && (
+                <div className="flex items-start gap-3 bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/30 rounded-xl px-4 py-3 animate-in fade-in slide-in-from-top-1">
+                  <svg className="w-4 h-4 text-amber-500 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+                  </svg>
+                  <div>
+                    <p className="text-[11px] font-bold text-amber-700 dark:text-amber-400 uppercase tracking-wide">Chronos-2 non attivo</p>
+                    <p className="text-[11px] text-amber-600 dark:text-amber-500 leading-snug mt-0.5">
+                      SL/TP Adattivi richiede Chronos-2. Il backtest userà SL e TP fissi (ATR).
+                      Abilita <span className="font-bold">Chronos-2 Engine</span> nel drawer "Configurazione Avanzata" per usare i livelli AI.
+                    </p>
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Active strategy badges */}
@@ -1067,9 +1149,10 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                 {trailingSL   && <span className="px-3 py-1 rounded-lg text-[9px] font-bold uppercase tracking-wider bg-indigo-50 dark:bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border border-indigo-100 dark:border-indigo-500/20">Trailing SL</span>}
                 {partialTP    && <span className="px-3 py-1 rounded-lg text-[9px] font-bold uppercase tracking-wider bg-indigo-50 dark:bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border border-indigo-100 dark:border-indigo-500/20">Partial TP {partialPct}%</span>}
                 {lgbmExit     && <span className="px-3 py-1 rounded-lg text-[9px] font-bold uppercase tracking-wider bg-purple-50 dark:bg-purple-500/10 text-purple-600 dark:text-purple-400 border border-purple-100 dark:border-purple-500/20">LGBM Exit</span>}
-                {useChronos   && <span className="px-3 py-1 rounded-lg text-[9px] font-bold uppercase tracking-wider bg-cyan-50 dark:bg-cyan-500/10 text-cyan-600 dark:text-cyan-400 border border-cyan-100 dark:border-cyan-500/20">Chronos-2 {Math.round(parseFloat(advChronosWeight)*100)}%</span>}
-                {advBeSL      && <span className="px-3 py-1 rounded-lg text-[9px] font-bold uppercase tracking-wider bg-amber-50 dark:bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-100 dark:border-amber-500/20">BE SL</span>}
-                {advMaxHold   && <span className="px-3 py-1 rounded-lg text-[9px] font-bold uppercase tracking-wider bg-slate-50 dark:bg-white/10 text-slate-600 dark:text-slate-400 border border-slate-200 dark:border-white/20">Max {advMaxHoldBars}b</span>}
+                {useChronos          && <span className="px-3 py-1 rounded-lg text-[9px] font-bold uppercase tracking-wider bg-cyan-50 dark:bg-cyan-500/10 text-cyan-600 dark:text-cyan-400 border border-cyan-100 dark:border-cyan-500/20">Chronos-2 {Math.round(parseFloat(advChronosWeight)*100)}%</span>}
+                {c2UncertaintyGate   && <span className="px-3 py-1 rounded-lg text-[9px] font-bold uppercase tracking-wider bg-cyan-50 dark:bg-cyan-500/10 text-cyan-600 dark:text-cyan-400 border border-cyan-100 dark:border-cyan-500/20">C2 Gate &lt;{c2UncertaintyThresh}</span>}
+                {advBeSL             && <span className="px-3 py-1 rounded-lg text-[9px] font-bold uppercase tracking-wider bg-amber-50 dark:bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-100 dark:border-amber-500/20">BE SL</span>}
+                {advMaxHold          && <span className="px-3 py-1 rounded-lg text-[9px] font-bold uppercase tracking-wider bg-slate-50 dark:bg-white/10 text-slate-600 dark:text-slate-400 border border-slate-200 dark:border-white/20">Max {advMaxHoldBars}b</span>}
               </div>
             )}
 
@@ -1371,6 +1454,42 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                     />
                   </Tooltip>
                 </div>
+
+                {/* ── Uncertainty Gate ── */}
+                <div className="space-y-3 pt-5 border-t border-slate-100 dark:border-white/5">
+                  <Tooltip text="Blocca il trade quando la banda di incertezza di Chronos (p90-p10)/p50 supera la soglia. Un valore alto significa che i 200 scenari sono molto dispersi — il modello non ha una visione chiara." pos="top" width="wide">
+                    <Toggle
+                      label="Uncertainty Gate"
+                      desc="No-trade se la previsione C2 è troppo dispersa (banda p10–p90 ampia)"
+                      checked={c2UncertaintyGate}
+                      onChange={setC2UncertaintyGate}
+                    />
+                  </Tooltip>
+                  {c2UncertaintyGate && !useChronos && (
+                    <div className="flex items-start gap-2.5 bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/30 rounded-xl px-3.5 py-2.5">
+                      <svg className="w-3.5 h-3.5 text-amber-500 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+                      </svg>
+                      <p className="text-[10px] font-bold text-amber-600 dark:text-amber-400 leading-snug uppercase tracking-wide">
+                        Richiede Chronos-2 — il gate sarà ignorato senza Chronos attivo
+                      </p>
+                    </div>
+                  )}
+                  {c2UncertaintyGate && (
+                    <div className="pl-12">
+                      <Tooltip text="Soglia massima di incertezza tollerata. Tipicamente: <2% = mercato prevedibile, 2-4% = normale, >5% = alta dispersione. Default: 0.05 (5%)." pos="top" width="wide">
+                        <NumInput
+                          label="Max incertezza C2"
+                          value={c2UncertaintyThresh}
+                          onChange={setC2UncertaintyThresh}
+                          step="0.005" min="0.01" max="0.15"
+                          unit="(p90−p10)/p50"
+                        />
+                      </Tooltip>
+                    </div>
+                  )}
+                </div>
+
               </section>
 
             </div>

@@ -153,10 +153,10 @@ export const ForecastView: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                 color="indigo"
               />
             </Tooltip>
-            <Tooltip text="Probabilità di Volatilità: quanto è probabile che il mercato si muova di oltre l'1.5% nelle prossime 12 ore. Alta volatilità = maggior potenziale ma anche maggior rischio." width="wide" pos="bottom">
+            <Tooltip text="Probabilità di Volatilità: quanto è probabile che il mercato si muova di oltre il 3% nelle prossime 12 ore (≈$3.000 su BTC). Alta volatilità = maggior potenziale ma anche maggior rischio." width="wide" pos="bottom">
               <ProbCard
                 label="Volatility Prob"
-                description="P(range > 1.5% in 12h)"
+                description="P(range > 3% in 12h)"
                 value={data.c2_vol_prob}
                 threshold={0.50}
                 color="amber"
@@ -175,7 +175,7 @@ export const ForecastView: React.FC<{ apiBase: string }> = ({ apiBase }) => {
 
           {/* Uncertainty + p50 vs ATR */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <Tooltip text="Quanto il modello è incerto sulla previsione. Calcolata come (p90 − p10) / prezzo attuale. Sotto 2% = alta confidenza (verde), 2-4% = media (giallo), sopra 4% = bassa (rosso)." width="wide" pos="top">
+            <Tooltip text="Quanto il modello è incerto sulla previsione. Calcolata come (p90 − p10) / prezzo attuale. Sotto 4% = alta confidenza (verde), 4-8% = media (giallo), sopra 8% = bassa (rosso). Soglie calibrate per la volatilità tipica di BTC." width="wide" pos="top">
               <div className="elegant-card p-6 bg-white dark:bg-[#151E32] w-full h-full flex flex-col justify-between">
                 <div>
                   <div className="flex items-center gap-3 mb-4">
@@ -185,13 +185,13 @@ export const ForecastView: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                     <p className="text-sm font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider">Incertezza Modello</p>
                   </div>
                   <p className={`text-3xl font-bold font-mono tracking-tighter ${
-                    data.c2_uncertainty < 0.02 ? 'text-emerald-600 dark:text-emerald-400'
-                    : data.c2_uncertainty < 0.04 ? 'text-amber-600 dark:text-amber-400' : 'text-rose-600 dark:text-rose-400'
+                    data.c2_uncertainty < 0.04 ? 'text-emerald-600 dark:text-emerald-400'
+                    : data.c2_uncertainty < 0.08 ? 'text-amber-600 dark:text-amber-400' : 'text-rose-600 dark:text-rose-400'
                   }`}>
                     {(data.c2_uncertainty * 100).toFixed(2)}%
                   </p>
                 </div>
-                <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase mt-2">Confidenza: {data.c2_uncertainty < 0.02 ? 'Alta' : data.c2_uncertainty < 0.04 ? 'Media' : 'Bassa'}</p>
+                <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase mt-2">Confidenza: {data.c2_uncertainty < 0.04 ? 'Alta' : data.c2_uncertainty < 0.08 ? 'Media' : 'Bassa'}</p>
               </div>
             </Tooltip>
             <Tooltip text="Distanza tra il prezzo mediano previsto (p50) e il prezzo attuale, espressa in unità di ATR. Positivo = il modello prevede salita, negativo = prevede discesa. Vicino a 0 = nessuna direzione chiara." width="wide" pos="top">

@@ -148,6 +148,29 @@ class HyperliquidData:
 
     # ── Agent Wallet ──────────────────────────────────────────────────────────
 
+    async def get_open_position(self, wallet_address: str, symbol: str = "BTC") -> Optional[dict]:
+        """
+        Query HL clearinghouse for an open position on `symbol`.
+        Returns a dict with side/size_contracts/entry_price/unrealized_pnl, or None.
+        Used for reconciliation on startup and idempotency checks.
+        """
+        try:
+            data = await self._post({"type": "clearinghouseState", "user": wallet_address})
+            for ap in data.get("assetPositions", []):
+                pos = ap.get("position", {})
+                if pos.get("coin") == symbol:
+                    szi = float(pos.get("szi", 0))
+                    if abs(szi) > 1e-6:
+                        return {
+                            "side":            "long" if szi > 0 else "short",
+                            "size_contracts":  abs(szi),
+                            "entry_price":     float(pos.get("entryPx") or 0),
+                            "unrealized_pnl":  float(pos.get("unrealizedPnl") or 0),
+                        }
+        except Exception as exc:
+            log.warning("get_open_position failed: %s", exc)
+        return None
+
     async def close(self):
         await self._client.aclose()
 

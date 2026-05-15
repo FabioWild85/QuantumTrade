@@ -11,6 +11,11 @@ interface Config {
   confluence_gate: number;
   max_consecutive_losses: number;
   mode: 'paper' | 'live';
+  dynamic_sl_tp_enabled: boolean;
+  dynamic_sl_tp_blend: number;
+  c2_uncertainty_gate_enabled: boolean;
+  c2_uncertainty_threshold: number;
+  chronos_enabled: boolean;
 }
 
 const DEFAULTS: Config = {
@@ -23,6 +28,11 @@ const DEFAULTS: Config = {
   confluence_gate: 60.0,
   max_consecutive_losses: 4,
   mode: 'paper',
+  dynamic_sl_tp_enabled: false,
+  dynamic_sl_tp_blend: 0.5,
+  c2_uncertainty_gate_enabled: false,
+  c2_uncertainty_threshold: 0.05,
+  chronos_enabled: true,
 };
 
 export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
@@ -109,13 +119,75 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
 
       {/* Risk Management */}
       <Section title="Risk Management" description="Gestione dell'esposizione e dei livelli di uscita. Questi parametri determinano la conservatività del bot.">
+
+        {/* ── Dynamic SL/TP toggle ── */}
+        <div className={`flex flex-col gap-3 mb-6 pb-6 border-b transition-colors duration-200 ${config.dynamic_sl_tp_enabled ? 'border-violet-200 dark:border-violet-500/25' : 'border-slate-100 dark:border-white/5'}`}>
+          <Tooltip text="Quando attivo, SL e TP vengono calcolati blendando ATR con le previsioni probabilistiche p10/p90 di Chronos-2. I moltiplicatori fissi SL/TP vengono ignorati. Richiede Chronos-2 attivo nel bot." width="wide" pos="bottom">
+            <label className="flex items-center gap-3 cursor-pointer group">
+              <div className="relative">
+                <input type="checkbox" className="sr-only" checked={config.dynamic_sl_tp_enabled} onChange={e => setConfig(c => ({ ...c, dynamic_sl_tp_enabled: e.target.checked }))} />
+                <div className={`w-10 h-5 rounded-full transition-all duration-300 ${config.dynamic_sl_tp_enabled ? 'bg-violet-600' : 'bg-slate-200 dark:bg-white/10'}`} />
+                <div className={`absolute top-1 left-1 w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.dynamic_sl_tp_enabled ? 'translate-x-5' : ''}`} />
+              </div>
+              <div>
+                <p className={`text-sm font-bold transition-colors ${config.dynamic_sl_tp_enabled ? 'text-violet-600 dark:text-violet-400' : 'text-slate-800 dark:text-slate-200 group-hover:text-violet-600 dark:group-hover:text-violet-400'}`}>
+                  SL/TP Adattativi (AI-driven)
+                  {config.dynamic_sl_tp_enabled && (
+                    <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-violet-100 dark:bg-violet-500/20 text-violet-600 dark:text-violet-400 uppercase tracking-wider">Attivo</span>
+                  )}
+                </p>
+                <p className="text-[11px] font-medium text-slate-400 dark:text-slate-500 leading-tight">
+                  {config.dynamic_sl_tp_enabled
+                    ? 'Moltiplicatori SL/TP fissi disabilitati — livelli calcolati da Chronos p10/p90'
+                    : 'Attiva per sostituire i moltiplicatori fissi con livelli AI adattativi basati su Chronos-2'}
+                </p>
+              </div>
+            </label>
+          </Tooltip>
+          {config.dynamic_sl_tp_enabled && (
+            <div className="flex items-center gap-4 pl-12">
+              <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest whitespace-nowrap">Blend ATR ↔ C2</span>
+              <div className="flex items-center gap-3 flex-1">
+                <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 font-mono">ATR</span>
+                <input
+                  type="range" min="0" max="1" step="0.05"
+                  value={config.dynamic_sl_tp_blend}
+                  onChange={e => setConfig(c => ({ ...c, dynamic_sl_tp_blend: parseFloat(e.target.value) }))}
+                  className="flex-1 h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/15 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3.5 [&::-webkit-slider-thumb]:h-3.5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-violet-500 [&::-webkit-slider-thumb]:shadow-sm [&::-webkit-slider-thumb]:cursor-pointer [&::-moz-range-thumb]:w-3.5 [&::-moz-range-thumb]:h-3.5 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-violet-500 [&::-moz-range-thumb]:border-0"
+                />
+                <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 font-mono">C2</span>
+                <span className="text-[11px] font-bold font-mono text-violet-600 dark:text-violet-400 w-20 text-right">
+                  {Math.round((1 - config.dynamic_sl_tp_blend) * 100)}% ATR · {Math.round(config.dynamic_sl_tp_blend * 100)}% C2
+                </span>
+              </div>
+            </div>
+          )}
+          {config.dynamic_sl_tp_enabled && !config.chronos_enabled && (
+            <div className="flex items-start gap-3 bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/30 rounded-xl px-4 py-3">
+              <svg className="w-4 h-4 text-amber-500 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+              </svg>
+              <div>
+                <p className="text-[11px] font-bold text-amber-700 dark:text-amber-400 uppercase tracking-wide">Chronos-2 non attivo</p>
+                <p className="text-[11px] text-amber-600 dark:text-amber-500 leading-snug mt-0.5">
+                  SL/TP Adattativi richiede Chronos-2. Il bot userà SL e TP fissi (ATR) finché Chronos non viene abilitato nelle Impostazioni avanzate.
+                </p>
+              </div>
+            </div>
+          )}
+        </div>
+
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-6">
-          <Tooltip text="Distanza dello Stop Loss dal prezzo di entrata, espressa come multiplo dell'ATR." width="wide" pos="bottom">
-            <NumInput label="SL Multiplier (× ATR)" value={config.sl_atr_mult} min={0.5} max={5} step={0.1} onChange={upd('sl_atr_mult')} />
-          </Tooltip>
-          <Tooltip text="Distanza del Take Profit dal prezzo di entrata, in multipli di ATR." width="wide" pos="bottom">
-            <NumInput label="TP Multiplier (× ATR)" value={config.tp_atr_mult} min={1} max={10} step={0.1} onChange={upd('tp_atr_mult')} />
-          </Tooltip>
+          <div className={`transition-all duration-200 ${config.dynamic_sl_tp_enabled ? 'opacity-35 pointer-events-none' : ''}`}>
+            <Tooltip text={config.dynamic_sl_tp_enabled ? 'Disabilitato: in modalità AI-driven il valore viene calcolato da Chronos p10/p90.' : 'Distanza dello Stop Loss dal prezzo di entrata, espressa come multiplo dell\'ATR.'} width="wide" pos="bottom">
+              <NumInput label="SL Multiplier (× ATR)" value={config.sl_atr_mult} min={0.5} max={5} step={0.1} onChange={upd('sl_atr_mult')} />
+            </Tooltip>
+          </div>
+          <div className={`transition-all duration-200 ${config.dynamic_sl_tp_enabled ? 'opacity-35 pointer-events-none' : ''}`}>
+            <Tooltip text={config.dynamic_sl_tp_enabled ? 'Disabilitato: in modalità AI-driven il valore viene calcolato da Chronos p10/p90.' : 'Distanza del Take Profit dal prezzo di entrata, in multipli di ATR.'} width="wide" pos="bottom">
+              <NumInput label="TP Multiplier (× ATR)" value={config.tp_atr_mult} min={1} max={10} step={0.1} onChange={upd('tp_atr_mult')} />
+            </Tooltip>
+          </div>
           <Tooltip text="Percentuale del capitale totale rischiata per ogni singolo trade." width="wide" pos="bottom">
             <NumInput label="Position Size (%)" value={config.position_size_pct} min={0.1} max={5} step={0.1} onChange={upd('position_size_pct')} />
           </Tooltip>
@@ -127,16 +199,20 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
           </Tooltip>
         </div>
         <div className="mt-8 flex gap-12 border-t border-slate-100 dark:border-white/5 pt-6">
-          <Tooltip text="Rapporto Rischio/Rendimento: quanti dollari guadagni per ogni dollaro rischiato." pos="top">
+          <Tooltip text={config.dynamic_sl_tp_enabled ? 'R:R indicativo — in modalità AI-driven i livelli variano per ogni trade.' : 'Rapporto Rischio/Rendimento: quanti dollari guadagni per ogni dollaro rischiato.'} pos="top">
             <div className="flex flex-col gap-1">
                <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest">R:R Ratio</span>
-               <span className="text-lg font-bold font-mono text-indigo-600 dark:text-indigo-400">{rr}</span>
+               <span className={`text-lg font-bold font-mono ${config.dynamic_sl_tp_enabled ? 'text-violet-500 dark:text-violet-400' : 'text-indigo-600 dark:text-indigo-400'}`}>
+                 {config.dynamic_sl_tp_enabled ? '~' : ''}{rr}
+               </span>
             </div>
           </Tooltip>
           <Tooltip text="Win rate minimo per non perdere soldi con questo R:R." pos="top">
             <div className="flex flex-col gap-1">
                <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest">Break-even Win Rate</span>
-               <span className="text-lg font-bold font-mono text-indigo-600 dark:text-indigo-400">{be}%</span>
+               <span className={`text-lg font-bold font-mono ${config.dynamic_sl_tp_enabled ? 'text-violet-500 dark:text-violet-400' : 'text-indigo-600 dark:text-indigo-400'}`}>
+                 {config.dynamic_sl_tp_enabled ? '~' : ''}{be}%
+               </span>
             </div>
           </Tooltip>
         </div>
@@ -154,6 +230,58 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
           <Tooltip text="Punteggio minimo del sistema Quantum Trade (0–100) richiesto come conferma." width="wide" pos="bottom">
             <NumInput label="Confluence confirmation" value={config.confluence_gate} min={0} max={100} step={5} onChange={upd('confluence_gate')} />
           </Tooltip>
+        </div>
+
+        {/* ── C2 Uncertainty Gate ── */}
+        <div className={`flex flex-col gap-3 mt-6 pt-6 border-t transition-colors duration-200 ${config.c2_uncertainty_gate_enabled ? 'border-cyan-200 dark:border-cyan-500/25' : 'border-slate-100 dark:border-white/5'}`}>
+          <Tooltip text="Blocca il trade quando la banda di incertezza di Chronos-2 (p90−p10)/p50 supera la soglia. Un valore alto = i 200 scenari sono molto dispersi = modello senza visione chiara. Richiede Chronos-2 attivo." width="wide" pos="bottom">
+            <label className="flex items-center gap-3 cursor-pointer group">
+              <div className="relative">
+                <input type="checkbox" className="sr-only" checked={config.c2_uncertainty_gate_enabled} onChange={e => setConfig(c => ({ ...c, c2_uncertainty_gate_enabled: e.target.checked }))} />
+                <div className={`w-10 h-5 rounded-full transition-all duration-300 ${config.c2_uncertainty_gate_enabled ? 'bg-cyan-600' : 'bg-slate-200 dark:bg-white/10'}`} />
+                <div className={`absolute top-1 left-1 w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.c2_uncertainty_gate_enabled ? 'translate-x-5' : ''}`} />
+              </div>
+              <div>
+                <p className={`text-sm font-bold transition-colors ${config.c2_uncertainty_gate_enabled ? 'text-cyan-600 dark:text-cyan-400' : 'text-slate-800 dark:text-slate-200 group-hover:text-cyan-600 dark:group-hover:text-cyan-400'}`}>
+                  Uncertainty Gate (Chronos-2)
+                  {config.c2_uncertainty_gate_enabled && <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-cyan-100 dark:bg-cyan-500/20 text-cyan-600 dark:text-cyan-400 uppercase tracking-wider">Attivo</span>}
+                </p>
+                <p className="text-[11px] font-medium text-slate-400 dark:text-slate-500 leading-tight">
+                  No-trade se la previsione C2 è troppo dispersa (banda p10–p90 ampia)
+                </p>
+              </div>
+            </label>
+          </Tooltip>
+          {config.c2_uncertainty_gate_enabled && !config.chronos_enabled && (
+            <div className="flex items-start gap-3 bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/30 rounded-xl px-4 py-3">
+              <svg className="w-4 h-4 text-amber-500 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+              </svg>
+              <div>
+                <p className="text-[11px] font-bold text-amber-700 dark:text-amber-400 uppercase tracking-wide">Chronos-2 non attivo</p>
+                <p className="text-[11px] text-amber-600 dark:text-amber-500 leading-snug mt-0.5">
+                  L'Uncertainty Gate richiede Chronos-2. Il gate sarà ignorato finché Chronos non viene abilitato nelle Impostazioni avanzate.
+                </p>
+              </div>
+            </div>
+          )}
+          {config.c2_uncertainty_gate_enabled && (
+            <div className="flex items-center gap-4 pl-12">
+              <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest whitespace-nowrap">Max incertezza</span>
+              <div className="flex items-center gap-3 flex-1">
+                <input
+                  type="range" min="0.01" max="0.15" step="0.005"
+                  value={config.c2_uncertainty_threshold}
+                  onChange={e => setConfig(c => ({ ...c, c2_uncertainty_threshold: parseFloat(e.target.value) }))}
+                  className="flex-1 h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/15 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3.5 [&::-webkit-slider-thumb]:h-3.5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-cyan-500 [&::-webkit-slider-thumb]:shadow-sm [&::-webkit-slider-thumb]:cursor-pointer [&::-moz-range-thumb]:w-3.5 [&::-moz-range-thumb]:h-3.5 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-cyan-500 [&::-moz-range-thumb]:border-0"
+                />
+                <span className="text-[11px] font-bold font-mono text-cyan-600 dark:text-cyan-400 w-14 text-right">
+                  {(config.c2_uncertainty_threshold * 100).toFixed(1)}%
+                </span>
+                <span className="text-[10px] text-slate-400 dark:text-slate-500">(p90−p10)/p50</span>
+              </div>
+            </div>
+          )}
         </div>
       </Section>
 

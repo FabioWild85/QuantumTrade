@@ -25,6 +25,7 @@ class DecisionResult:
     forecast_p10: float
     forecast_p50: float
     forecast_p90: float
+    forecast_uncertainty: float = 0.0
 
 
 class DecisionEngine:
@@ -43,15 +44,19 @@ class DecisionEngine:
         fvg_filter_enabled: bool = True,
         mtf_alignment_enabled: bool = True,
         chronos_weight: float = 0.40,
+        c2_uncertainty_gate_enabled: bool = False,
+        c2_uncertainty_threshold: float = 0.05,
     ):
-        self.directional_threshold   = directional_threshold
-        self.adx_gate                = adx_gate
-        self.confluence_gate         = confluence_gate
-        self.adx_gate_enabled        = adx_gate_enabled
-        self.sweep_gate_enabled      = sweep_gate_enabled
-        self.fvg_filter_enabled      = fvg_filter_enabled
-        self.mtf_alignment_enabled   = mtf_alignment_enabled
-        self.chronos_weight          = chronos_weight
+        self.directional_threshold      = directional_threshold
+        self.adx_gate                   = adx_gate
+        self.confluence_gate            = confluence_gate
+        self.adx_gate_enabled           = adx_gate_enabled
+        self.sweep_gate_enabled         = sweep_gate_enabled
+        self.fvg_filter_enabled         = fvg_filter_enabled
+        self.mtf_alignment_enabled      = mtf_alignment_enabled
+        self.chronos_weight             = chronos_weight
+        self.c2_uncertainty_gate_enabled = c2_uncertainty_gate_enabled
+        self.c2_uncertainty_threshold   = c2_uncertainty_threshold
 
     def decide(
         self,
@@ -79,20 +84,30 @@ class DecisionEngine:
         fvg_bull = features.get("fvg_bull", 0.0)
         d_regime = features.get("d_regime", 0)
 
-        dir_prob = c2_output.get("c2_dir_prob", 0.5)
-        p10      = c2_output.get("c2_p10", current_price)
-        p50      = c2_output.get("c2_p50", current_price)
-        p90      = c2_output.get("c2_p90", current_price)
+        dir_prob      = c2_output.get("c2_dir_prob", 0.5)
+        p10           = c2_output.get("c2_p10", current_price)
+        p50           = c2_output.get("c2_p50", current_price)
+        p90           = c2_output.get("c2_p90", current_price)
+        c2_uncertainty = c2_output.get("c2_uncertainty", 0.0)
 
         # ── Gating Level 1: ADX / volatility regime ──────────────────────────
         if self.adx_gate_enabled and adx < self.adx_gate:
             reasoning.append(f"GATE: ADX {adx:.1f} < {self.adx_gate} — market compressing, no-trade")
-            return self._no_trade(reasoning, dir_prob, p10, p50, p90, features)
+            return self._no_trade(reasoning, dir_prob, p10, p50, p90, features, c2_uncertainty)
 
         # ── Gating Level 2: Liquidity sweep (potential reversal) ─────────────
         if self.sweep_gate_enabled and sweep == 1.0:
             reasoning.append("GATE: Liquidity sweep in last candle — waiting for direction confirmation")
-            return self._no_trade(reasoning, dir_prob, p10, p50, p90, features)
+            return self._no_trade(reasoning, dir_prob, p10, p50, p90, features, c2_uncertainty)
+
+        # ── Gating Level 3: Chronos-2 uncertainty gate ───────────────────────
+        if self.c2_uncertainty_gate_enabled and c2_uncertainty > 0:
+            if c2_uncertainty > self.c2_uncertainty_threshold:
+                reasoning.append(
+                    f"GATE: C2 uncertainty {c2_uncertainty:.3f} > {self.c2_uncertainty_threshold:.3f} "
+                    f"— forecast dispersion too wide, no-trade"
+                )
+                return self._no_trade(reasoning, dir_prob, p10, p50, p90, features, c2_uncertainty)
 
         # ── Ensemble probability (Chronos-2 + LightGBM blend) ────────────────
         lgbm_weight   = 1.0 - self.chronos_weight
@@ -115,18 +130,18 @@ class DecisionEngine:
         # ── Confluence gate ───────────────────────────────────────────────────
         if confluence_score is not None and confluence_score < self.confluence_gate:
             reasoning.append(f"GATE: Confluence {confluence_score:.0f} < {self.confluence_gate:.0f}")
-            return self._no_trade(reasoning, dir_prob, p10, p50, p90, features)
+            return self._no_trade(reasoning, dir_prob, p10, p50, p90, features, c2_uncertainty)
 
         # ── Long signal ───────────────────────────────────────────────────────
         if ensemble_prob > effective_threshold:
             # Anti-FVG filter: don't enter long into a bearish FVG zone overhead
             if self.fvg_filter_enabled and fvg_bear == 1.0:
                 reasoning.append("FILTER: Bearish FVG detected overhead — skipping long entry")
-                return self._no_trade(reasoning, dir_prob, p10, p50, p90, features)
+                return self._no_trade(reasoning, dir_prob, p10, p50, p90, features, c2_uncertainty)
             # C2 directional confirmation: median forecast must be bullish
             if p50 > 0 and p50 < current_price:
                 reasoning.append(f"FILTER: C2 median ({p50:.1f}) below entry — C2 bearish, skipping long")
-                return self._no_trade(reasoning, dir_prob, p10, p50, p90, features)
+                return self._no_trade(reasoning, dir_prob, p10, p50, p90, features, c2_uncertainty)
 
             reasoning.append(f"LONG: P(up)={ensemble_prob:.3f} > {effective_threshold:.2f}, C2_p50={p50:.1f}")
             return DecisionResult(
@@ -138,6 +153,7 @@ class DecisionEngine:
                 forecast_p10=p10,
                 forecast_p50=p50,
                 forecast_p90=p90,
+                forecast_uncertainty=c2_uncertainty,
             )
 
         # ── Short signal ──────────────────────────────────────────────────────
@@ -145,11 +161,11 @@ class DecisionEngine:
         if short_prob > effective_threshold:
             if self.fvg_filter_enabled and fvg_bull == 1.0:
                 reasoning.append("FILTER: Bullish FVG detected below — skipping short entry")
-                return self._no_trade(reasoning, dir_prob, p10, p50, p90, features)
+                return self._no_trade(reasoning, dir_prob, p10, p50, p90, features, c2_uncertainty)
             # C2 directional confirmation: median forecast must be bearish
             if p50 > 0 and p50 > current_price:
                 reasoning.append(f"FILTER: C2 median ({p50:.1f}) above entry — C2 bullish, skipping short")
-                return self._no_trade(reasoning, dir_prob, p10, p50, p90, features)
+                return self._no_trade(reasoning, dir_prob, p10, p50, p90, features, c2_uncertainty)
 
             reasoning.append(f"SHORT: P(down)={short_prob:.3f} > {effective_threshold:.2f}, C2_p50={p50:.1f}")
             return DecisionResult(
@@ -161,13 +177,14 @@ class DecisionEngine:
                 forecast_p10=p10,
                 forecast_p50=p50,
                 forecast_p90=p90,
+                forecast_uncertainty=c2_uncertainty,
             )
 
         # ── No signal ─────────────────────────────────────────────────────────
         reasoning.append(f"NO-TRADE: P(up)={ensemble_prob:.3f} in neutral zone [{1-effective_threshold:.2f}–{effective_threshold:.2f}]")
-        return self._no_trade(reasoning, dir_prob, p10, p50, p90, features)
+        return self._no_trade(reasoning, dir_prob, p10, p50, p90, features, c2_uncertainty)
 
-    def _no_trade(self, reasoning, dir_prob, p10, p50, p90, features) -> DecisionResult:
+    def _no_trade(self, reasoning, dir_prob, p10, p50, p90, features, uncertainty=0.0) -> DecisionResult:
         return DecisionResult(
             action="no_trade",
             confidence=0.0,
@@ -177,6 +194,7 @@ class DecisionEngine:
             forecast_p10=p10,
             forecast_p50=p50,
             forecast_p90=p90,
+            forecast_uncertainty=uncertainty,
         )
 
 

@@ -92,22 +92,33 @@ class ChronosForecaster:
         p90  = float(np.percentile(final_step, 90))
 
         dir_prob  = float(np.mean(final_step > last_price))
-        vol_prob  = float(np.mean(np.abs(final_step - last_price) / last_price > 0.015))
+        vol_prob  = float(np.mean(np.abs(final_step - last_price) / last_price > 0.030))
 
-        # Continuation: does the median path stay directionally consistent step by step?
-        median_path = np.median(samples_np, axis=0)
-        steps_aligned = (np.diff(median_path) > 0).sum() if dir_prob > 0.5 else (np.diff(median_path) < 0).sum()
-        cont_prob = float(steps_aligned / max(1, horizon - 1))
+        # Continuation: fraction of individual Monte Carlo paths that are directionally
+        # coherent (all steps up OR all steps down).
+        # Median-path approach fails because Chronos quantizes output into ~4096 discrete
+        # bins — the median snaps to the same bin at every step, giving diffs=[0,0,…].
+        # Per-sample analysis is immune to this because individual samples span different bins.
+        if horizon > 1:
+            sample_diffs = np.diff(samples_np, axis=1)          # (N_SAMPLES, horizon-1)
+            all_up   = (sample_diffs > 0).all(axis=1)           # each sample monotonically rising
+            all_down = (sample_diffs < 0).all(axis=1)           # each sample monotonically falling
+            cont_prob = float((all_up | all_down).mean())
+        else:
+            cont_prob = 0.0
 
         uncertainty = float((p90 - p10) / (last_price + 1e-9))
 
         p50_vs_atr = float((p50 - last_price) / atr) if atr and atr > 0 else 0.0
 
-        # Per-step fan data (for UI fan chart visualization)
+        # Per-step fan data (for UI fan chart visualization).
+        # p50 uses mean instead of median: Chronos quantizes output into ~4096 discrete bins,
+        # so the median snaps to the same bin at every step → flat line on the chart.
+        # The mean interpolates continuously between bins and gives a meaningful trend path.
         fan = {
             "p10": [float(np.percentile(samples_np[:, i], 10)) for i in range(horizon)],
             "p25": [float(np.percentile(samples_np[:, i], 25)) for i in range(horizon)],
-            "p50": [float(np.percentile(samples_np[:, i], 50)) for i in range(horizon)],
+            "p50": [float(np.mean(samples_np[:, i]))            for i in range(horizon)],
             "p75": [float(np.percentile(samples_np[:, i], 75)) for i in range(horizon)],
             "p90": [float(np.percentile(samples_np[:, i], 90)) for i in range(horizon)],
         }

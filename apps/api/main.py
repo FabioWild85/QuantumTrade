@@ -30,10 +30,35 @@ async def lifespan(app: FastAPI):
     global engine
     log.info("AI Trading Hub starting…")
     engine = ExecutionEngine()
+
+    # Restore last saved config from DB (survives restarts/deploys)
+    _auto_start_mode: Optional[str] = None
+    try:
+        db = get_supabase()
+        result = db.table("bot_configs").select("params,mode,running").eq("name", "default").execute()
+        if result.data:
+            row    = result.data[0]
+            params = {**(row.get("params") or {}), "mode": row.get("mode", "paper")}
+            engine.update_config(BotConfig(**params))
+            log.info("Restored bot config from DB (mode=%s)", params.get("mode"))
+            if row.get("running"):
+                _auto_start_mode = params.get("mode", "paper")
+        else:
+            log.info("No saved config found — using defaults")
+    except Exception as exc:
+        log.warning("Could not restore config from DB: %s", exc)
+
+    if _auto_start_mode:
+        log.info("Auto-resuming bot (mode=%s) after restart", _auto_start_mode)
+        asyncio.create_task(engine.start(_auto_start_mode))
+        _log_event("bot_auto_resumed", f"Bot riavviato automaticamente (mode={_auto_start_mode}) dopo restart VPS", "info", {"mode": _auto_start_mode})
+
     yield
     log.info("AI Trading Hub shutting down…")
+    _log_event("server_stopping", "Server in fase di spegnimento (deploy/restart)", "warning")
     if engine and engine.running:
         await engine.stop()
+    _persist_running_state(False)
 
 
 app = FastAPI(
@@ -140,6 +165,11 @@ class BotConfig(BaseModel):
     be_sl_activation: float = Field(1.0, ge=0.5, le=3.0)
     max_hold_bars_enabled: bool = Field(False)
     max_hold_bars: int = Field(48, ge=12, le=168)
+    # Chronos-2 adaptive features
+    c2_uncertainty_gate_enabled: bool = Field(False)
+    c2_uncertainty_threshold: float = Field(0.05, ge=0.01, le=0.15)
+    dynamic_sl_tp_enabled: bool = Field(False)
+    dynamic_sl_tp_blend: float = Field(0.50, ge=0.0, le=1.0)
 
 
 class StartBotRequest(BaseModel):
@@ -194,6 +224,18 @@ async def bot_update_backtest_config(cfg: BotConfig):
     return {"status": "updated", "config": cfg.model_dump()}
 
 
+def _persist_running_state(running: bool, mode: Optional[str] = None):
+    """Fire-and-forget: write running state to bot_configs so auto-resume works after restart."""
+    try:
+        db = get_supabase()
+        update: dict = {"running": running}
+        if mode:
+            update["mode"] = mode
+        db.table("bot_configs").update(update).eq("name", "default").execute()
+    except Exception as exc:
+        log.warning("Could not persist running state: %s", exc)
+
+
 @app.post("/bot/start")
 async def bot_start(req: StartBotRequest, background_tasks: BackgroundTasks):
     if not engine:
@@ -201,6 +243,8 @@ async def bot_start(req: StartBotRequest, background_tasks: BackgroundTasks):
     if engine.running:
         return {"status": "already_running", "mode": engine.mode}
     background_tasks.add_task(engine.start, req.mode)
+    background_tasks.add_task(_persist_running_state, True, req.mode)
+    background_tasks.add_task(_log_event, "bot_started", f"Bot avviato in modalità {req.mode}", "info", {"mode": req.mode})
     return {"status": "starting", "mode": req.mode}
 
 
@@ -209,6 +253,8 @@ async def bot_stop():
     if not engine:
         raise HTTPException(503, "Engine not initialized")
     await engine.stop()
+    _persist_running_state(False)
+    _log_event("bot_stopped", "Bot fermato dall'utente", "info")
     return {"status": "stopped"}
 
 
@@ -218,6 +264,7 @@ async def bot_kill():
     if not engine:
         raise HTTPException(503, "Engine not initialized")
     result = await engine.kill()
+    _persist_running_state(False)
     notifier = TelegramNotifier()
     await notifier.send_kill_alert(result)
     return {"status": "killed", "details": result}
@@ -453,3 +500,30 @@ async def backtest_history_delete(record_id: str):
     db = get_supabase()
     db.table("backtest_results").delete().eq("id", record_id).execute()
     return {"status": "deleted"}
+
+
+# ─── Server Events Log ───────────────────────────────────────────────────────
+
+@app.get("/events")
+async def get_events(limit: int = 100, since: Optional[str] = None):
+    """Return recent server events (bot start/stop, trades, errors, cycles)."""
+    db = get_supabase()
+    q = db.table("events").select("*").order("time", desc=True).limit(limit)
+    if since:
+        q = q.gt("time", since)
+    result = q.execute()
+    return result.data
+
+
+def _log_event(kind: str, message: str, severity: str = "info", payload: dict | None = None):
+    """Write a server event to the events table (sync, fire-and-forget)."""
+    try:
+        db = get_supabase()
+        db.table("events").insert({
+            "severity": severity,
+            "kind": kind,
+            "message": message,
+            "payload": payload or {},
+        }).execute()
+    except Exception as exc:
+        log.warning("Event log write failed: %s", exc)

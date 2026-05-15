@@ -5,8 +5,9 @@ import { BotConfig } from './BotConfig';
 import { TradeLog } from './TradeLog';
 import { HubSettings } from './HubSettings';
 import { BacktestPanel } from './BacktestPanel';
+import { ServerLogs } from './ServerLogs';
 
-type HubPage = 'monitor' | 'forecast' | 'config' | 'trades' | 'backtest' | 'settings';
+type HubPage = 'monitor' | 'forecast' | 'config' | 'trades' | 'backtest' | 'logs' | 'settings';
 
 const NAV: { id: HubPage; label: string }[] = [
   { id: 'monitor',  label: 'Monitor' },
@@ -14,6 +15,7 @@ const NAV: { id: HubPage; label: string }[] = [
   { id: 'config',   label: 'Bot Config' },
   { id: 'trades',   label: 'Trade Log' },
   { id: 'backtest', label: 'Backtest' },
+  { id: 'logs',     label: 'Server Log' },
   { id: 'settings', label: 'Settings' },
 ];
 
@@ -72,6 +74,7 @@ export const TradingHubTab: React.FC = () => {
         {page === 'config'   && <BotConfig     apiBase={API_BASE} />}
         {page === 'trades'   && <TradeLog      apiBase={API_BASE} />}
         {page === 'backtest' && <BacktestPanel apiBase={API_BASE} />}
+        {page === 'logs'     && <ServerLogs    apiBase={API_BASE} />}
         {page === 'settings' && <HubSettings   apiBase={API_BASE} />}
       </div>
     </div>

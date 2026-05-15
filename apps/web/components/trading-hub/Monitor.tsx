@@ -43,14 +43,29 @@ interface EquitySnap {
 }
 
 const INITIAL_EQUITY = 10_000;
+const LS_KEY = 'qt_bot_status_cache';
+
+function readStatusCache(): BotStatus | null {
+  try {
+    const raw = localStorage.getItem(LS_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch { return null; }
+}
+
+function writeStatusCache(s: BotStatus | null) {
+  try {
+    if (s) localStorage.setItem(LS_KEY, JSON.stringify(s));
+  } catch {}
+}
 
 export const Monitor: React.FC<{ apiBase: string }> = ({ apiBase }) => {
-  const [status,    setStatus]   = useState<BotStatus | null>(null);
-  const [logs,      setLogs]     = useState<InferenceLog[]>([]);
-  const [equity,    setEquity]   = useState<EquitySnap[]>([]);
-  const [error,     setError]    = useState<string | null>(null);
-  const [starting,  setStarting] = useState(false);
-  const [countdown, setCountdown] = useState(secsToNext4h());
+  const [status,        setStatus]       = useState<BotStatus | null>(readStatusCache);
+  const [logs,          setLogs]         = useState<InferenceLog[]>([]);
+  const [equity,        setEquity]       = useState<EquitySnap[]>([]);
+  const [error,         setError]        = useState<string | null>(null);
+  const [starting,      setStarting]     = useState(false);
+  const [countdown,     setCountdown]    = useState(secsToNext4h());
+  const [initialLoad,   setInitialLoad]  = useState(!readStatusCache()); // false if cache hit
   const esRef = useRef<EventSource | null>(null);
 
   useEffect(() => {
@@ -67,6 +82,7 @@ export const Monitor: React.FC<{ apiBase: string }> = ({ apiBase }) => {
         fetch(`${apiBase}/equity?limit=100`).then(r => r.ok ? r.json() : []),
       ]);
       setStatus(s);
+      writeStatusCache(s);
       setLogs(l ?? []);
       setEquity(prev => {
         if (!e?.length) return prev;
@@ -78,6 +94,8 @@ export const Monitor: React.FC<{ apiBase: string }> = ({ apiBase }) => {
       setError(null);
     } catch {
       setError('API non raggiungibile — assicurati che il backend sia avviato.');
+    } finally {
+      setInitialLoad(false);
     }
   };
 
@@ -193,16 +211,30 @@ export const Monitor: React.FC<{ apiBase: string }> = ({ apiBase }) => {
         <Tooltip text="Stato operativo del bot. 'Running' = analizza il mercato attivamente. 'Idle' = in pausa. Mostra anche se la connessione WebSocket a Hyperliquid è attiva.">
           <KpiCard
             label="Stato"
-            value={status?.running ? 'Running' : 'Idle'}
-            sub={status?.ws_connected ? '● WS connesso' : '○ WS disconnesso'}
-            color={status?.running ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-400 dark:text-slate-500'}
+            value={initialLoad ? '…' : status?.running ? 'Running' : 'Idle'}
+            sub={initialLoad ? 'Caricamento…' : status?.ws_connected ? '● WS connesso' : '○ WS disconnesso'}
+            color={initialLoad ? 'text-slate-400 dark:text-slate-500' : status?.running ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-400 dark:text-slate-500'}
           />
         </Tooltip>
       </div>
 
       {/* ── Controls ──────────────────────────────────────────────────────── */}
       <div className="flex gap-4 flex-wrap items-center">
-        {!status?.running ? (
+        {initialLoad ? (
+          /* ── Skeleton while first fetch is in flight ── */
+          <>
+            <div className="relative px-6 py-3 rounded-xl overflow-hidden bg-slate-100 dark:bg-white/5 border border-slate-200 dark:border-white/8">
+              <div className="w-36 h-4 rounded bg-slate-200 dark:bg-white/10 animate-pulse" />
+              <div className="absolute inset-0 flex items-center justify-center gap-2 text-[11px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest">
+                <svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"/>
+                </svg>
+                Verifica stato…
+              </div>
+            </div>
+          </>
+        ) : !status?.running ? (
           <>
             <button
               onClick={() => startBot('paper')}
