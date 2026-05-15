@@ -63,7 +63,12 @@ class RiskManager:
             stop_loss   = entry_price + sl_dist
             take_profit = entry_price - tp_dist
 
-        size_usd       = equity_usd * (self.position_size_pct / 100)
+        # Risk-based sizing: position_size_pct = % of equity AT RISK per trade.
+        # Notional is scaled so that hitting the SL exactly costs that % of equity.
+        sl_pct   = sl_dist / entry_price if entry_price > 0 else 0.02
+        risk_usd = equity_usd * (self.position_size_pct / 100)
+        size_usd = risk_usd / sl_pct if sl_pct > 1e-6 else risk_usd
+
         size_contracts = size_usd / entry_price
         rr_ratio       = tp_dist / sl_dist
 

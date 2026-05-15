@@ -138,10 +138,10 @@ export const Monitor: React.FC<{ apiBase: string }> = ({ apiBase }) => {
 
   if (error && !status) {
     return (
-      <div className="rounded-2xl bg-dark-card border border-dark-border p-8 text-center">
-        <p className="text-amber-400 text-sm font-mono mb-2">{error}</p>
-        <p className="text-slate-500 text-xs">
-          Avvia il backend: <code className="text-indigo-400">cd apps/api && uvicorn main:app --reload</code>
+      <div className="elegant-card p-8 text-center bg-white dark:bg-[#151E32]">
+        <p className="text-amber-500 font-mono mb-2 text-sm">{error}</p>
+        <p className="text-slate-500 dark:text-slate-400 text-xs">
+          Avvia il backend: <code className="text-indigo-600 dark:text-indigo-400">cd apps/api && uvicorn main:app --reload</code>
         </p>
       </div>
     );
@@ -172,7 +172,7 @@ export const Monitor: React.FC<{ apiBase: string }> = ({ apiBase }) => {
             label="Equity"
             value={`$${currentEquity.toLocaleString('en-US', { minimumFractionDigits: 2 })}`}
             sub={status?.mode?.toUpperCase() ?? 'PAPER'}
-            color={totalPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}
+            color={totalPnl >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}
           />
         </Tooltip>
         <Tooltip text="Profitto o perdita totale dall'avvio del bot. Calcolato come differenza tra equity attuale e capitale iniziale di $10.000.">
@@ -180,7 +180,7 @@ export const Monitor: React.FC<{ apiBase: string }> = ({ apiBase }) => {
             label="PnL Totale"
             value={`${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(2)}`}
             sub={`${totalPnlPct >= 0 ? '+' : ''}${totalPnlPct.toFixed(2)}%`}
-            color={totalPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}
+            color={totalPnl >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}
           />
         </Tooltip>
         <Tooltip text="Countdown alla prossima chiusura della candela da 4 ore. Il bot analizza il mercato e decide se aprire un trade ad ogni nuova candela. 'Cicli' = analisi completate. 'Retrain' = candele al prossimo riaddestramentodel modello LightGBM." width="wide">
@@ -195,37 +195,37 @@ export const Monitor: React.FC<{ apiBase: string }> = ({ apiBase }) => {
             label="Stato"
             value={status?.running ? 'Running' : 'Idle'}
             sub={status?.ws_connected ? '● WS connesso' : '○ WS disconnesso'}
-            color={status?.running ? 'text-emerald-400' : 'text-slate-400'}
+            color={status?.running ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-400 dark:text-slate-500'}
           />
         </Tooltip>
       </div>
 
       {/* ── Controls ──────────────────────────────────────────────────────── */}
-      <div className="flex gap-3 flex-wrap items-center">
+      <div className="flex gap-4 flex-wrap items-center">
         {!status?.running ? (
           <>
             <button
               onClick={() => startBot('paper')}
               disabled={starting}
-              className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-semibold rounded-xl transition-colors disabled:opacity-50"
+              className="px-6 py-3 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-bold rounded-xl transition-all shadow-lg shadow-indigo-500/20 active:scale-95 disabled:opacity-50"
             >
-              ▶ Avvia Paper Trading
+              Avvia Paper Trading
             </button>
             <button
               onClick={() => startBot('live')}
               disabled={starting}
-              className="px-5 py-2.5 bg-amber-600 hover:bg-amber-500 text-white text-sm font-semibold rounded-xl transition-colors disabled:opacity-50"
+              className="px-6 py-3 bg-slate-900 dark:bg-white text-white dark:text-slate-900 text-sm font-bold rounded-xl transition-all shadow-lg shadow-black/10 dark:shadow-white/10 active:scale-95 disabled:opacity-50"
             >
-              ⚡ Avvia Live
+              Avvia Live
             </button>
           </>
         ) : (
           <>
-            <button onClick={stopBot} className="px-5 py-2.5 bg-slate-700 hover:bg-slate-600 text-white text-sm font-semibold rounded-xl transition-colors">
-              ⏹ Stop
+            <button onClick={stopBot} className="px-6 py-3 bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-200 text-sm font-bold rounded-xl transition-all hover:bg-slate-300 dark:hover:bg-slate-700 active:scale-95">
+              Stop
             </button>
-            <button onClick={killBot} className="px-5 py-2.5 bg-red-700 hover:bg-red-600 text-white text-sm font-semibold rounded-xl transition-colors">
-              🔴 KILL
+            <button onClick={killBot} className="px-6 py-3 bg-rose-600 text-white text-sm font-bold rounded-xl transition-all hover:bg-rose-500 shadow-lg shadow-rose-500/20 active:scale-95">
+              KILL
             </button>
           </>
         )}
@@ -242,29 +242,29 @@ export const Monitor: React.FC<{ apiBase: string }> = ({ apiBase }) => {
 
       {/* ── Open position ─────────────────────────────────────────────────── */}
       {status?.position && (
-        <div className="rounded-2xl bg-amber-500/10 border border-amber-500/30 p-5">
-          <div className="flex items-center justify-between mb-3">
-            <h3 className="text-sm font-bold text-amber-400">📌 Posizione Aperta</h3>
-            <span className="text-xs text-amber-500/70 font-mono">
+        <div className="elegant-card p-6 bg-indigo-50/50 dark:bg-indigo-500/5 border-indigo-100 dark:border-indigo-500/20">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-sm font-bold text-indigo-600 dark:text-indigo-400 uppercase tracking-wider">Posizione Aperta</h3>
+            <span className="text-xs text-slate-500 dark:text-slate-400 font-mono">
               Aperta {positionDurationH.toFixed(1)}h fa
             </span>
           </div>
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-6">
             <Tooltip text="Direzione del trade. LONG = scommessa che il prezzo salga. SHORT = scommessa che il prezzo scenda." pos="bottom">
               <Stat label="Side" value={status.position.side.toUpperCase()}
-                color={status.position.side === 'long' ? 'text-emerald-400' : 'text-red-400'} />
+                color={status.position.side === 'long' ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'} />
             </Tooltip>
             <Tooltip text="Prezzo a cui la posizione è stata aperta." pos="bottom">
               <Stat label="Entry" value={`$${status.position.entry_price.toLocaleString('en-US', { maximumFractionDigits: 0 })}`} />
             </Tooltip>
             <Tooltip text="Livello di prezzo a cui la posizione viene chiusa automaticamente per limitare le perdite (Stop Loss)." pos="bottom">
-              <Stat label="Stop Loss" value={`$${status.position.stop_loss.toLocaleString('en-US', { maximumFractionDigits: 0 })}`} color="text-red-400" />
+              <Stat label="Stop Loss" value={`$${status.position.stop_loss.toLocaleString('en-US', { maximumFractionDigits: 0 })}`} color="text-rose-600 dark:text-rose-400" />
             </Tooltip>
             <Tooltip text="Livello di prezzo a cui la posizione viene chiusa per incassare il profitto (Take Profit)." pos="bottom">
-              <Stat label="Take Profit" value={`$${status.position.take_profit.toLocaleString('en-US', { maximumFractionDigits: 0 })}`} color="text-emerald-400" />
+              <Stat label="Take Profit" value={`$${status.position.take_profit.toLocaleString('en-US', { maximumFractionDigits: 0 })}`} color="text-emerald-600 dark:text-emerald-400" />
             </Tooltip>
           </div>
-          <div className="mt-3 pt-3 border-t border-amber-500/20 flex gap-6 text-xs font-mono text-amber-500/60">
+          <div className="mt-4 pt-4 border-t border-slate-200 dark:border-white/5 flex gap-8 text-xs font-mono text-slate-500 dark:text-slate-400">
             <span>Size: ${status.position.size_usd.toFixed(0)}</span>
             <span>Contracts: {status.position.size_contracts?.toFixed(4)}</span>
           </div>
@@ -272,21 +272,24 @@ export const Monitor: React.FC<{ apiBase: string }> = ({ apiBase }) => {
       )}
 
       {/* ── Equity curve ──────────────────────────────────────────────────── */}
-      <div className="rounded-2xl bg-dark-card border border-dark-border p-5">
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="text-sm font-bold text-slate-300">📈 Curva Equity</h3>
+      <div className="elegant-card p-6 bg-white dark:bg-[#151E32]">
+        <div className="flex items-center justify-between mb-6">
+          <div className="flex items-center gap-3">
+            <span className="w-1.5 h-6 bg-indigo-500 rounded-full"></span>
+            <h3 className="text-sm font-bold text-slate-900 dark:text-white uppercase tracking-wider">Equity Curve</h3>
+          </div>
           {equity.length > 0 && (
-            <span className={`text-xs font-mono ${totalPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+            <span className={`text-sm font-bold font-mono px-3 py-1 rounded-lg ${totalPnl >= 0 ? 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400' : 'bg-rose-50 dark:bg-rose-500/10 text-rose-600 dark:text-rose-400'}`}>
               {totalPnl >= 0 ? '+' : ''}${totalPnl.toFixed(2)} ({totalPnlPct.toFixed(2)}%)
             </span>
           )}
         </div>
         {equity.length < 2 ? (
-          <div className="h-28 flex items-center justify-center text-slate-600 text-xs">
+          <div className="h-32 flex items-center justify-center text-slate-400 dark:text-slate-500 text-xs italic">
             La curva apparirà dopo il primo trade chiuso
           </div>
         ) : (
-          <div style={{ height: 120 }}>
+          <div style={{ height: 140 }}>
             <EquityCurveChart data={equity} startCapital={INITIAL_EQUITY} />
           </div>
         )}
@@ -294,27 +297,33 @@ export const Monitor: React.FC<{ apiBase: string }> = ({ apiBase }) => {
 
       {/* ── Last inference logs ───────────────────────────────────────────── */}
       {logs.length > 0 && (
-        <div className="rounded-2xl bg-dark-card border border-dark-border p-5">
-          <h3 className="text-sm font-bold text-slate-300 mb-4">🧠 Ultime Decisioni AI</h3>
-          <div className="space-y-2">
+        <div className="elegant-card p-6 bg-white dark:bg-[#151E32]">
+          <div className="flex items-center gap-3 mb-6">
+            <span className="w-1.5 h-6 bg-purple-500 rounded-full"></span>
+            <h3 className="text-sm font-bold text-slate-900 dark:text-white uppercase tracking-wider">AI Intelligence Logs</h3>
+          </div>
+          <div className="space-y-3">
             {logs.map(log => (
-              <div key={log.id} className="rounded-xl bg-white/5 p-4 text-xs font-mono">
-                <div className="flex items-center justify-between mb-2">
-                  <span className={`font-bold px-2 py-0.5 rounded ${
-                    log.decision === 'long'  ? 'bg-emerald-500/20 text-emerald-400'
-                    : log.decision === 'short' ? 'bg-red-500/20 text-red-400'
-                    : 'bg-slate-500/20 text-slate-400'
+              <div key={log.id} className="rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-100 dark:border-white/5 p-4 text-xs font-mono transition-all hover:bg-white dark:hover:bg-slate-800 hover:shadow-md">
+                <div className="flex items-center justify-between mb-3">
+                  <span className={`font-bold px-2.5 py-1 rounded-lg text-[10px] uppercase tracking-widest ${
+                    log.decision === 'long'  ? 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-100 dark:border-emerald-500/20'
+                    : log.decision === 'short' ? 'bg-rose-50 dark:bg-rose-500/10 text-rose-600 dark:text-rose-400 border border-rose-100 dark:border-rose-500/20'
+                    : 'bg-slate-100 dark:bg-slate-700 text-slate-500 dark:text-slate-400 border border-slate-200 dark:border-slate-600'
                   }`}>
                     {log.decision?.toUpperCase()}
                   </span>
-                  <span className="text-slate-500">
+                  <span className="text-slate-400 dark:text-slate-500 font-medium">
                     {new Date(log.time).toLocaleTimeString('it-IT')}
                     {log.latency_ms && ` · ${log.latency_ms.toFixed(0)}ms`}
                   </span>
                 </div>
-                <div className="text-slate-400 space-y-0.5">
+                <div className="space-y-1.5">
                   {(log.reasoning ?? []).slice(0, 3).map((r, i) => (
-                    <div key={i} className="truncate text-slate-500">→ {r}</div>
+                    <div key={i} className="truncate text-slate-600 dark:text-slate-400 flex items-start gap-2">
+                      <span className="text-indigo-500 opacity-50">•</span>
+                      {r}
+                    </div>
                   ))}
                 </div>
               </div>
@@ -408,30 +417,32 @@ const EquityCurveChart: React.FC<{ data: EquitySnap[]; startCapital: number }> =
 // ── Micro-components ──────────────────────────────────────────────────────────
 
 const KpiCard: React.FC<{ label: string; value: string; sub?: string; color?: string }> = ({
-  label, value, sub, color = 'text-white',
+  label, value, sub, color = 'text-slate-900 dark:text-white',
 }) => (
-  <div className="rounded-2xl bg-dark-card border border-dark-border p-4">
-    <p className="text-xs text-slate-500 mb-1">{label}</p>
-    <p className={`text-xl font-bold font-mono ${color}`}>{value}</p>
-    {sub && <p className="text-xs text-slate-600 mt-0.5">{sub}</p>}
+  <div className="elegant-card p-5 bg-white dark:bg-[#151E32] w-full h-full flex flex-col justify-between">
+    <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-2">{label}</p>
+    <div>
+      <p className={`text-2xl font-bold font-mono tracking-tighter ${color}`}>{value}</p>
+      {sub && <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 mt-1">{sub}</p>}
+    </div>
   </div>
 );
 
 const Stat: React.FC<{ label: string; value: string; color?: string }> = ({
-  label, value, color = 'text-white',
+  label, value, color = 'text-slate-900 dark:text-white',
 }) => (
-  <div>
-    <p className="text-xs text-slate-500">{label}</p>
-    <p className={`font-mono font-semibold ${color}`}>{value}</p>
+  <div className="w-full">
+    <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-1">{label}</p>
+    <p className={`font-mono font-bold text-lg tracking-tight ${color}`}>{value}</p>
   </div>
 );
 
 const StatusBadge: React.FC<{ label: string; active: boolean }> = ({ label, active }) => (
-  <div className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold border ${
-    active ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400'
-           : 'border-slate-700 bg-slate-800 text-slate-500'
+  <div className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider border transition-all ${
+    active ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
+           : 'border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-white/5 text-slate-400 dark:text-slate-500'
   }`}>
-    <span className={`w-1.5 h-1.5 rounded-full ${active ? 'bg-emerald-400 animate-pulse' : 'bg-slate-600'}`} />
+    <span className={`w-1.5 h-1.5 rounded-full ${active ? 'bg-emerald-500 animate-pulse' : 'bg-slate-300 dark:bg-slate-700'}`} />
     {label}
   </div>
 );

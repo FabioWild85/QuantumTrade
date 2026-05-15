@@ -81,7 +81,7 @@ export const TradeLog: React.FC<{ apiBase: string }> = ({ apiBase }) => {
 
       {/* ── Stats strip (only when trades exist) ──────────────────────────── */}
       {closed.length > 0 && (
-        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-3">
+        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-4">
           <Tooltip text="Numero totale di trade completati (con entrata e uscita)." pos="bottom">
             <StatChip label="Trade chiusi" value={String(closed.length)} />
           </Tooltip>
@@ -89,28 +89,28 @@ export const TradeLog: React.FC<{ apiBase: string }> = ({ apiBase }) => {
             <StatChip
               label="Win Rate"
               value={`${winRate.toFixed(1)}%`}
-              color={winRate >= 55 ? 'text-emerald-400' : winRate >= 50 ? 'text-amber-400' : 'text-red-400'}
+              color={winRate >= 55 ? 'text-emerald-600 dark:text-emerald-400' : winRate >= 50 ? 'text-amber-600 dark:text-amber-400' : 'text-rose-600 dark:text-rose-400'}
             />
           </Tooltip>
           <Tooltip text="Somma di tutti i profitti e perdite realizzati su trade chiusi." pos="bottom">
             <StatChip
               label="PnL Totale"
               value={`${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(2)}`}
-              color={totalPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}
+              color={totalPnl >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}
             />
           </Tooltip>
           <Tooltip text="Guadagno medio percentuale dei trade in profitto. Indica quanto si guadagna in media quando il trade va bene." pos="bottom">
-            <StatChip label="Avg Win" value={`+${avgWin.toFixed(2)}%`} color="text-emerald-400" />
+            <StatChip label="Avg Win" value={`+${avgWin.toFixed(2)}%`} color="text-emerald-600 dark:text-emerald-400" />
           </Tooltip>
           <Tooltip text="Perdita media percentuale dei trade in negativo. Indica quanto si perde in media quando il trade va male." pos="bottom">
-            <StatChip label="Avg Loss" value={`${avgLoss.toFixed(2)}%`} color="text-red-400" />
+            <StatChip label="Avg Loss" value={`${avgLoss.toFixed(2)}%`} color="text-rose-600 dark:text-rose-400" />
           </Tooltip>
           {pf !== null && (
             <Tooltip text="Profitti totali diviso perdite totali. Sopra 1.5 è buono, sopra 2.0 è eccellente. Sotto 1.0 significa che le perdite superano i guadagni." pos="bottom">
               <StatChip
                 label="Profit Factor"
                 value={pf.toFixed(2)}
-                color={pf >= 1.5 ? 'text-emerald-400' : pf >= 1.0 ? 'text-amber-400' : 'text-red-400'}
+                color={pf >= 1.5 ? 'text-emerald-600 dark:text-emerald-400' : pf >= 1.0 ? 'text-amber-600 dark:text-amber-400' : 'text-rose-600 dark:text-rose-400'}
               />
             </Tooltip>
           )}
@@ -118,29 +118,29 @@ export const TradeLog: React.FC<{ apiBase: string }> = ({ apiBase }) => {
       )}
 
       {/* ── Tabs ──────────────────────────────────────────────────────────── */}
-      <div className="flex gap-2">
+      <div className="flex gap-4 p-1.5 bg-slate-100 dark:bg-white/5 rounded-2xl w-fit">
         <TabBtn active={tab === 'trades'}    onClick={() => setTab('trades')}>
-          Trade ({trades.length})
+          Trades Chiuse ({trades.length})
         </TabBtn>
         <TabBtn active={tab === 'inference'} onClick={() => setTab('inference')}>
-          Inference Log ({logs.length})
+          Inference Intelligence ({logs.length})
         </TabBtn>
       </div>
 
       {/* ── Trades table ──────────────────────────────────────────────────── */}
       {tab === 'trades' && (
-        <div className="rounded-2xl bg-dark-card border border-dark-border overflow-hidden">
+        <div className="elegant-card bg-white dark:bg-[#151E32] overflow-hidden">
           {loading ? (
-            <div className="p-8 text-center text-slate-500 text-sm">Caricamento…</div>
+            <div className="p-12 text-center text-slate-500 dark:text-slate-400 text-sm font-medium">Caricamento storico operazioni…</div>
           ) : trades.length === 0 ? (
-            <div className="p-8 text-center text-slate-500 text-sm">
-              Nessun trade ancora. Avvia il bot in Paper Trading.
+            <div className="p-12 text-center text-slate-500 dark:text-slate-400 text-sm italic">
+              Nessun trade registrato. Avvia il bot in modalità Paper Trading.
             </div>
           ) : (
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b border-dark-border text-xs text-slate-500 uppercase tracking-wide">
-                  <th className="px-4 py-3 text-left">Data apertura</th>
+                <tr className="border-b border-slate-100 dark:border-white/5 text-[10px] text-slate-400 dark:text-slate-500 font-bold uppercase tracking-widest bg-slate-50/50 dark:bg-white/[0.02]">
+                  <th className="px-6 py-4 text-left">Data apertura</th>
                   <th className="px-4 py-3 text-left">
                     <Tooltip text="Direzione del trade: LONG = scommessa che il prezzo salga, SHORT = scommessa che scenda." pos="bottom">
                       <span>Side</span>
@@ -169,38 +169,38 @@ export const TradeLog: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                   const pnlPct  = t.pnl_pct ?? 0;
                   const isOpen  = !t.closed_at;
                   return (
-                    <tr key={t.id} className="border-b border-dark-border/50 hover:bg-white/5 transition-colors">
-                      <td className="px-4 py-3 font-mono text-slate-400 text-xs">
+                    <tr key={t.id} className="border-b border-slate-50 dark:border-white/5 hover:bg-slate-50/50 dark:hover:bg-white/[0.02] transition-colors group">
+                      <td className="px-6 py-4 font-mono text-slate-500 dark:text-slate-400 text-xs">
                         {new Date(t.opened_at).toLocaleString('it-IT', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}
                       </td>
-                      <td className="px-4 py-3">
-                        <span className={`px-2 py-0.5 rounded text-xs font-bold ${
-                          t.side === 'long' ? 'bg-emerald-500/20 text-emerald-400'
-                                           : 'bg-red-500/20 text-red-400'
+                      <td className="px-6 py-4">
+                        <span className={`px-2 py-1 rounded-lg text-[10px] font-bold uppercase tracking-wider ${
+                          t.side === 'long' ? 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-100 dark:border-emerald-500/20'
+                                           : 'bg-rose-50 dark:bg-rose-500/10 text-rose-600 dark:text-rose-400 border border-rose-100 dark:border-rose-500/20'
                         }`}>
                           {t.side?.toUpperCase()}
                         </span>
                       </td>
-                      <td className={`px-4 py-3 text-right font-mono font-semibold text-xs ${
-                        isOpen ? 'text-amber-400' : pnl >= 0 ? 'text-emerald-400' : 'text-red-400'
+                      <td className={`px-6 py-4 text-right font-mono font-bold text-xs ${
+                        isOpen ? 'text-amber-500' : pnl >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'
                       }`}>
                         {isOpen ? (
-                          <span className="text-amber-500/60">Aperta…</span>
+                          <span className="opacity-60 italic">In corso…</span>
                         ) : (
                           <>
                             {pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}
-                            <span className="text-xs ml-1 opacity-60">
+                            <span className="text-[10px] ml-1.5 opacity-60">
                               ({pnlPct >= 0 ? '+' : ''}{pnlPct.toFixed(2)}%)
                             </span>
                           </>
                         )}
                       </td>
-                      <td className="px-4 py-3 text-slate-500 text-xs hidden sm:table-cell">
+                      <td className="px-6 py-4 text-slate-500 dark:text-slate-400 text-xs hidden sm:table-cell">
                         {t.reason_close
                           ? <ReasonBadge reason={t.reason_close} />
-                          : <span className="text-slate-600">—</span>}
+                          : <span className="text-slate-400 italic">—</span>}
                       </td>
-                      <td className="px-4 py-3 text-right font-mono text-slate-500 text-xs hidden sm:table-cell">
+                      <td className="px-6 py-4 text-right font-mono text-slate-400 dark:text-slate-500 text-xs hidden sm:table-cell">
                         {hms(t.holding_sec)}
                       </td>
                     </tr>
@@ -214,52 +214,56 @@ export const TradeLog: React.FC<{ apiBase: string }> = ({ apiBase }) => {
 
       {/* ── Inference log ─────────────────────────────────────────────────── */}
       {tab === 'inference' && (
-        <div className="space-y-2">
+        <div className="space-y-3">
           {loading ? (
-            <div className="p-8 text-center text-slate-500 text-sm">Caricamento…</div>
+            <div className="p-12 text-center text-slate-500 dark:text-slate-400 text-sm font-medium">Caricamento log decisioni AI…</div>
           ) : logs.length === 0 ? (
-            <div className="p-8 text-center text-slate-500 text-sm">Nessun inference log. Il bot deve aver completato almeno un ciclo.</div>
+            <div className="p-12 text-center text-slate-500 dark:text-slate-400 text-sm italic">Nessun log disponibile. Il bot deve completare almeno un ciclo di analisi.</div>
           ) : (
             logs.map(log => (
-              <div key={log.id} className="rounded-2xl bg-dark-card border border-dark-border overflow-hidden">
+              <div key={log.id} className="elegant-card bg-white dark:bg-[#151E32] overflow-hidden">
                 {/* Header row */}
                 <button
                   onClick={() => setExpanded(expanded === log.id ? null : log.id)}
-                  className="w-full px-5 py-4 flex items-center justify-between text-left hover:bg-white/5 transition-colors"
+                  className="w-full px-6 py-5 flex items-center justify-between text-left hover:bg-slate-50 dark:hover:bg-white/[0.02] transition-all"
                 >
-                  <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-4">
                     <DecisionBadge decision={log.decision} />
-                    <span className="text-xs font-mono text-slate-500">
+                    <span className="text-xs font-bold text-slate-500 dark:text-slate-400 font-mono">
                       {new Date(log.time).toLocaleString('it-IT')}
                     </span>
                     {log.forecast?.latency_ms && (
-                      <span className="text-xs text-slate-600 font-mono hidden sm:inline">
+                      <span className="text-xs text-slate-400 dark:text-slate-500 font-mono hidden sm:inline px-2 py-0.5 bg-slate-100 dark:bg-white/5 rounded">
                         {log.forecast.latency_ms.toFixed(0)}ms
                       </span>
                     )}
-                    <span className="text-xs text-slate-700 font-mono hidden md:inline">#{log.id}</span>
                   </div>
-                  <span className="text-slate-500 text-sm">{expanded === log.id ? '▲' : '▼'}</span>
+                  <span className="text-slate-400 group-hover:text-slate-600 transition-colors">
+                     <svg className={`w-5 h-5 transition-transform duration-300 ${expanded === log.id ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+                  </span>
                 </button>
 
                 {/* Expanded detail */}
                 {expanded === log.id && (
-                  <div className="px-5 pb-5 space-y-5 border-t border-dark-border">
+                  <div className="px-6 pb-6 space-y-8 border-t border-slate-100 dark:border-white/5 pt-6 bg-slate-50/30 dark:bg-black/5">
 
                     {/* Reasoning */}
                     <div>
-                      <p className="text-xs text-slate-500 uppercase tracking-wide mb-2 mt-4">Reasoning Pipeline</p>
-                      <div className="space-y-1">
+                      <h4 className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-4 flex items-center gap-2">
+                         <span className="w-1 h-3 bg-indigo-500 rounded-full"></span>
+                         Reasoning Intelligence Pipeline
+                      </h4>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                         {(log.reasoning ?? []).map((r, i) => (
-                          <div key={i} className={`text-xs font-mono px-3 py-1.5 rounded ${
-                            r.startsWith('GATE') ? 'bg-red-500/10 text-red-400'
-                            : r.startsWith('LONG') ? 'bg-emerald-500/10 text-emerald-400'
-                            : r.startsWith('SHORT') ? 'bg-red-500/10 text-red-400'
-                            : r.startsWith('MTF') ? 'bg-indigo-500/10 text-indigo-400'
-                            : r.startsWith('FILTER') ? 'bg-amber-500/10 text-amber-400'
-                            : 'bg-white/5 text-slate-400'
+                          <div key={i} className={`text-xs font-bold font-mono px-4 py-2.5 rounded-xl border transition-all ${
+                            r.startsWith('GATE') ? 'bg-rose-50 dark:bg-rose-500/10 text-rose-600 dark:text-rose-400 border-rose-100 dark:border-rose-500/20'
+                            : r.startsWith('LONG') ? 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-100 dark:border-emerald-500/20'
+                            : r.startsWith('SHORT') ? 'bg-rose-50 dark:bg-rose-500/10 text-rose-600 dark:text-rose-400 border-rose-100 dark:border-rose-500/20'
+                            : r.startsWith('MTF') ? 'bg-indigo-50 dark:bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border-indigo-100 dark:border-indigo-500/20'
+                            : r.startsWith('FILTER') ? 'bg-amber-50 dark:bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-100 dark:border-amber-500/20'
+                            : 'bg-white dark:bg-white/5 text-slate-600 dark:text-slate-400 border-slate-100 dark:border-white/5'
                           }`}>
-                            → {r}
+                            <span className="opacity-40 mr-2">→</span> {r}
                           </div>
                         ))}
                       </div>
@@ -268,8 +272,11 @@ export const TradeLog: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                     {/* Chronos-2 + LightGBM output */}
                     {log.forecast && (
                       <div>
-                        <p className="text-xs text-slate-500 uppercase tracking-wide mb-2">Ensemble Output</p>
-                        <div className="grid grid-cols-3 sm:grid-cols-6 gap-2 text-xs font-mono">
+                        <h4 className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-4 flex items-center gap-2">
+                           <span className="w-1 h-3 bg-purple-500 rounded-full"></span>
+                           Ensemble Model Output
+                        </h4>
+                        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 text-xs font-mono">
                           <Tooltip text="Probabilità Chronos-2 che il prezzo salga nel prossimo orizzonte di 12 ore." pos="bottom">
                             <FCell label="C2 P(up)" value={`${((log.forecast.c2_dir_prob ?? 0) * 100).toFixed(1)}%`} />
                           </Tooltip>
@@ -295,8 +302,11 @@ export const TradeLog: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                     {/* Key features */}
                     {log.features && (
                       <div>
-                        <p className="text-xs text-slate-500 uppercase tracking-wide mb-2">Feature Chiave (64 totali)</p>
-                        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                        <h4 className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-4 flex items-center gap-2">
+                           <span className="w-1 h-3 bg-slate-400 rounded-full"></span>
+                           Market Signal Features
+                        </h4>
+                        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
                           {KEY_FEATURES.map(({ key, label, desc }) => {
                             const val = log.features[key];
                             if (val === undefined) return null;
@@ -325,18 +335,18 @@ export const TradeLog: React.FC<{ apiBase: string }> = ({ apiBase }) => {
 
 // ── Sub-components ────────────────────────────────────────────────────────────
 
-const StatChip: React.FC<{ label: string; value: string; color?: string }> = ({ label, value, color = 'text-white' }) => (
-  <div className="rounded-xl bg-dark-card border border-dark-border px-4 py-3">
-    <p className="text-xs text-slate-500 mb-0.5">{label}</p>
-    <p className={`text-sm font-bold font-mono ${color}`}>{value}</p>
+const StatChip: React.FC<{ label: string; value: string; color?: string }> = ({ label, value, color = 'text-slate-900 dark:text-white' }) => (
+  <div className="elegant-card px-5 py-4 bg-white dark:bg-[#151E32]">
+    <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-1.5">{label}</p>
+    <p className={`text-lg font-bold font-mono tracking-tight ${color}`}>{value}</p>
   </div>
 );
 
 const TabBtn: React.FC<{ active: boolean; onClick: () => void; children: React.ReactNode }> = ({ active, onClick, children }) => (
   <button
     onClick={onClick}
-    className={`px-4 py-2 rounded-xl text-sm font-semibold transition-colors ${
-      active ? 'bg-indigo-600 text-white' : 'bg-white/5 text-slate-400 hover:bg-white/10'
+    className={`px-6 py-2.5 rounded-xl text-xs font-bold uppercase tracking-widest transition-all ${
+      active ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-500/20' : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
     }`}
   >
     {children}
@@ -344,10 +354,10 @@ const TabBtn: React.FC<{ active: boolean; onClick: () => void; children: React.R
 );
 
 const DecisionBadge: React.FC<{ decision: string }> = ({ decision }) => (
-  <span className={`px-2 py-0.5 rounded text-xs font-bold ${
-    decision === 'long'  ? 'bg-emerald-500/20 text-emerald-400'
-    : decision === 'short' ? 'bg-red-500/20 text-red-400'
-    : 'bg-slate-500/20 text-slate-400'
+  <span className={`px-2.5 py-1 rounded-lg text-[10px] font-bold uppercase tracking-widest border ${
+    decision === 'long'  ? 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-100 dark:border-emerald-500/20'
+    : decision === 'short' ? 'bg-rose-50 dark:bg-rose-500/10 text-rose-600 dark:text-rose-400 border-rose-100 dark:border-rose-500/20'
+    : 'bg-slate-100 dark:bg-white/5 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-white/10'
   }`}>
     {decision?.toUpperCase()}
   </span>
@@ -355,22 +365,22 @@ const DecisionBadge: React.FC<{ decision: string }> = ({ decision }) => (
 
 const ReasonBadge: React.FC<{ reason: string }> = ({ reason }) => {
   const map: Record<string, string> = {
-    stop_loss:   'bg-red-500/20 text-red-400',
-    take_profit: 'bg-emerald-500/20 text-emerald-400',
-    kill:        'bg-orange-500/20 text-orange-400',
-    manual:      'bg-slate-500/20 text-slate-400',
+    stop_loss:   'bg-rose-50 dark:bg-rose-500/10 text-rose-600 dark:text-rose-400 border border-rose-100 dark:border-rose-500/20',
+    take_profit: 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-100 dark:border-emerald-500/20',
+    kill:        'bg-amber-50 dark:bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-100 dark:border-amber-500/20',
+    manual:      'bg-slate-50 dark:bg-white/5 text-slate-500 dark:text-slate-400 border border-slate-200 dark:border-white/10',
   };
   return (
-    <span className={`px-2 py-0.5 rounded text-xs ${map[reason] ?? 'bg-slate-500/20 text-slate-400'}`}>
-      {reason}
+    <span className={`px-2 py-0.5 rounded-lg text-[10px] font-bold uppercase tracking-wider ${map[reason] ?? 'bg-slate-50 dark:bg-white/5 text-slate-500 dark:text-slate-400 border border-slate-200 dark:border-white/10'}`}>
+      {reason.replace('_', ' ')}
     </span>
   );
 };
 
 const FCell: React.FC<{ label: string; value: string; highlight?: boolean }> = ({ label, value, highlight }) => (
-  <div className={`rounded px-2 py-1.5 ${highlight ? 'bg-indigo-500/15 border border-indigo-500/20' : 'bg-white/5'}`}>
-    <p className="text-slate-600 text-xs">{label}</p>
-    <p className={`${highlight ? 'text-indigo-300' : 'text-slate-300'} font-mono`}>{value}</p>
+  <div className={`rounded-xl px-3 py-2 border transition-all ${highlight ? 'bg-indigo-50 dark:bg-indigo-500/10 border-indigo-100 dark:border-indigo-500/20' : 'bg-white dark:bg-white/5 border-slate-100 dark:border-white/5'}`}>
+    <p className="text-slate-400 dark:text-slate-500 text-[10px] font-bold uppercase tracking-widest mb-1">{label}</p>
+    <p className={`text-sm font-bold font-mono ${highlight ? 'text-indigo-600 dark:text-indigo-400' : 'text-slate-700 dark:text-slate-300'}`}>{value}</p>
   </div>
 );
 
@@ -380,10 +390,10 @@ const FeatureCell: React.FC<{ label: string; value: number; desc: string }> = ({
   const isPositive = value > 0;
 
   return (
-    <div className="bg-white/5 rounded px-2.5 py-2 group relative" title={desc}>
-      <p className="text-xs text-slate-600 mb-0.5">{label}</p>
-      <p className={`text-xs font-mono font-semibold ${
-        isPositive ? 'text-emerald-400/80' : value < 0 ? 'text-red-400/80' : 'text-slate-400'
+    <div className="bg-white dark:bg-white/5 border border-slate-100 dark:border-white/5 rounded-xl px-4 py-3 group relative transition-all hover:border-slate-300 dark:hover:border-white/10" title={desc}>
+      <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-1.5">{label}</p>
+      <p className={`text-sm font-bold font-mono ${
+        isPositive ? 'text-emerald-600 dark:text-emerald-400' : value < 0 ? 'text-rose-600 dark:text-rose-400' : 'text-slate-500 dark:text-slate-400'
       }`}>
         {value > 0 ? '+' : ''}{formatted}
       </p>

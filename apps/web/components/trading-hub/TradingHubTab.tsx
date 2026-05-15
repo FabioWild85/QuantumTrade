@@ -8,13 +8,13 @@ import { BacktestPanel } from './BacktestPanel';
 
 type HubPage = 'monitor' | 'forecast' | 'config' | 'trades' | 'backtest' | 'settings';
 
-const NAV: { id: HubPage; label: string; icon: string }[] = [
-  { id: 'monitor',  label: 'Monitor',    icon: '📡' },
-  { id: 'forecast', label: 'Forecast',   icon: '🔮' },
-  { id: 'config',   label: 'Bot Config', icon: '⚙️' },
-  { id: 'trades',   label: 'Trade Log',  icon: '📋' },
-  { id: 'backtest', label: 'Backtest',   icon: '⏱' },
-  { id: 'settings', label: 'Settings',   icon: '🔑' },
+const NAV: { id: HubPage; label: string }[] = [
+  { id: 'monitor',  label: 'Monitor' },
+  { id: 'forecast', label: 'Forecast' },
+  { id: 'config',   label: 'Bot Config' },
+  { id: 'trades',   label: 'Trade Log' },
+  { id: 'backtest', label: 'Backtest' },
+  { id: 'settings', label: 'Settings' },
 ];
 
 const API_BASE = import.meta.env.VITE_API_URL ?? (
@@ -23,43 +23,50 @@ const API_BASE = import.meta.env.VITE_API_URL ?? (
 
 export const TradingHubTab: React.FC = () => {
   const [page, setPage] = useState<HubPage>('monitor');
-  const [isDark] = useState(true);
 
   return (
-    <div className="min-h-screen bg-dark-bg text-slate-100 font-sans">
+    <div className="min-h-screen bg-slate-50 dark:bg-[#0f172a] text-slate-900 dark:text-slate-100 font-sans transition-colors duration-300">
       {/* Header */}
-      <div className="border-b border-dark-border bg-dark-card/80 backdrop-blur sticky top-0 z-10">
-        <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-lg bg-indigo-600 flex items-center justify-center text-sm">🤖</div>
+      <div className="border-b border-slate-200 dark:border-white/5 bg-white/80 dark:bg-[#151E32]/80 backdrop-blur sticky top-0 z-10">
+        <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            <div className="w-10 h-10 rounded-xl bg-indigo-600 flex items-center justify-center">
+              <svg className="w-5 h-5 text-white" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="1,14 6,8 10,11 14,5 19,9" />
+                <polyline points="14,5 19,5 19,9" />
+              </svg>
+            </div>
             <div>
-              <h1 className="text-sm font-bold text-white">AI Trading Hub</h1>
-              <p className="text-xs text-slate-500">BTC-PERP · Chronos-2 + LightGBM · 4h</p>
+              <h1 className="text-base font-bold text-slate-900 dark:text-white tracking-tight">AI Trading Hub</h1>
+              <p className="text-xs font-medium text-slate-500 dark:text-slate-400">BTC-PERP · Chronos-2 + LightGBM · 4h</p>
             </div>
           </div>
           <StatusBadge apiBase={API_BASE} />
         </div>
 
         {/* Tab nav */}
-        <div className="max-w-7xl mx-auto px-4 flex gap-1 pb-0 overflow-x-auto">
+        <div className="max-w-7xl mx-auto px-6 flex gap-8 pb-0 overflow-x-auto no-scrollbar">
           {NAV.map(n => (
             <button
               key={n.id}
               onClick={() => setPage(n.id)}
-              className={`px-4 py-2.5 text-sm font-medium rounded-t-lg transition-colors whitespace-nowrap border-b-2 ${
+              className={`pb-4 text-sm font-semibold transition-all relative whitespace-nowrap ${
                 page === n.id
-                  ? 'text-indigo-400 border-indigo-500 bg-indigo-500/10'
-                  : 'text-slate-500 border-transparent hover:text-slate-300 hover:border-slate-600'
+                  ? 'text-indigo-600 dark:text-indigo-400'
+                  : 'text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300'
               }`}
             >
-              <span className="mr-1.5">{n.icon}</span>{n.label}
+              {n.label}
+              {page === n.id && (
+                <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-indigo-600 dark:bg-indigo-400 rounded-full" />
+              )}
             </button>
           ))}
         </div>
       </div>
 
       {/* Page content */}
-      <div className="max-w-7xl mx-auto px-4 py-6">
+      <div className="max-w-7xl mx-auto px-6 py-8">
         {page === 'monitor'  && <Monitor       apiBase={API_BASE} />}
         {page === 'forecast' && <ForecastView  apiBase={API_BASE} />}
         {page === 'config'   && <BotConfig     apiBase={API_BASE} />}

@@ -14,7 +14,7 @@ import pandas as pd
 
 from services.hyperliquid_data import HyperliquidData
 from services.smc import build_all_features
-from services.decision import DecisionEngine
+from services.decision import DecisionEngine, compute_qt_score
 from services.risk import RiskManager
 from services.trainer import load_model
 
@@ -125,7 +125,7 @@ async def run_backtest(req) -> dict:
         sweep_gate_enabled=sweep_gate_enabled,
         fvg_filter_enabled=fvg_filter_enabled,
         mtf_alignment_enabled=mtf_alignment_enabled,
-        chronos_weight=chronos_weight,
+        chronos_weight=chronos_weight if use_chronos else 0.0,
     )
     risk = RiskManager(
         sl_atr_mult=sl_atr_mult,
@@ -164,34 +164,38 @@ async def run_backtest(req) -> dict:
         # ── Manage existing position ──────────────────────────────────────────
         if position:
             close_price = float(row["close"])
+            curr_high   = float(row.get("high", close_price))
+            curr_low    = float(row.get("low",  close_price))
             side        = position["side"]
             entry       = position["entry"]
             entry_atr   = position["entry_atr"]
 
             # ── Trailing SL: dynamic trail once activated (high water mark) ──
+            # Use current ATR (adaptive, matches live engine) and high/low for tracking.
             if trailing_sl_enabled:
-                trail_dist = trailing_sl_activation * entry_atr
+                trail_dist = trailing_sl_activation * atr  # current ATR, not entry_atr
                 if not position.get("sl_trailing_active"):
-                    moved_enough = (side == "long"  and close_price >= entry + trail_dist) or \
-                                   (side == "short" and close_price <= entry - trail_dist)
+                    moved_enough = (side == "long"  and curr_high >= entry + trail_dist) or \
+                                   (side == "short" and curr_low  <= entry - trail_dist)
                     if moved_enough:
                         position["sl_trailing_active"] = True
-                        position["high_water"] = close_price
+                        position["high_water"] = curr_high if side == "long" else curr_low
                 if position.get("sl_trailing_active"):
                     if side == "long":
-                        position["high_water"] = max(position["high_water"], close_price)
+                        position["high_water"] = max(position["high_water"], curr_high)
                         new_sl = position["high_water"] - trail_dist
                         position["sl"] = max(position["sl"], new_sl)
                     else:
-                        position["high_water"] = min(position["high_water"], close_price)
+                        position["high_water"] = min(position["high_water"], curr_low)
                         new_sl = position["high_water"] + trail_dist
                         position["sl"] = min(position["sl"], new_sl)
 
             # ── Break-even SL: move SL to entry price after activation ────────
+            # Use current ATR (matches live engine behavior).
             if be_sl_enabled and not position.get("be_sl_applied"):
-                be_dist = be_sl_activation * entry_atr
-                moved_enough = (side == "long"  and close_price >= entry + be_dist) or \
-                               (side == "short" and close_price <= entry - be_dist)
+                be_dist = be_sl_activation * atr  # current ATR, not entry_atr
+                moved_enough = (side == "long"  and curr_high >= entry + be_dist) or \
+                               (side == "short" and curr_low  <= entry - be_dist)
                 if moved_enough:
                     if side == "long":
                         position["sl"] = max(position["sl"], entry)
@@ -200,23 +204,25 @@ async def run_backtest(req) -> dict:
                     position["be_sl_applied"] = True
 
             # ── Partial TP: close partial_tp_pct% at partial_tp_atr_mult×ATR ──
+            # Use high/low for detection; exit at the target price, not close.
             if partial_tp_enabled and not position.get("partial_done"):
                 partial_target = entry + partial_tp_atr_mult * entry_atr if side == "long" \
                                  else entry - partial_tp_atr_mult * entry_atr
-                hit_partial = (side == "long"  and close_price >= partial_target) or \
-                              (side == "short" and close_price <= partial_target)
+                hit_partial = (side == "long"  and curr_high >= partial_target) or \
+                              (side == "short" and curr_low  <= partial_target)
                 if hit_partial:
+                    partial_exit_price = partial_target
                     partial_frac = partial_tp_pct / 100.0
                     partial_size = position["size_usd"] * partial_frac
-                    pnl_pct_p = (close_price - entry) / entry * 100 if side == "long" \
-                                else (entry - close_price) / entry * 100
+                    pnl_pct_p = (partial_exit_price - entry) / entry * 100 if side == "long" \
+                                else (entry - partial_exit_price) / entry * 100
                     pnl_usd_p = partial_size * pnl_pct_p / 100
                     fee_p     = partial_size * HL_TAKER_FEE
                     equity   += pnl_usd_p - fee_p
                     position["size_usd"]   *= (1.0 - partial_frac)
                     position["partial_done"] = True
                     trades.append({
-                        "side": side, "entry": entry, "exit": close_price,
+                        "side": side, "entry": entry, "exit": partial_exit_price,
                         "pnl_pct": round(pnl_pct_p, 4),
                         "pnl_usd": round(pnl_usd_p - fee_p, 2),
                         "reason": "partial_tp", "holding_bars": i - position["bar_idx"], "bar": i,
@@ -273,25 +279,31 @@ async def run_backtest(req) -> dict:
                 position       = None
                 already_closed = True
 
-            # ── Full SL/TP check ──────────────────────────────────────────────
+            # ── Full SL/TP check using intrabar high/low ──────────────────────
+            # Exit at the actual SL/TP price, not at close. When both SL and TP
+            # are touched in the same candle (SL wick and TP wick), apply SL
+            # (conservative worst-case — we cannot resolve order without tick data).
             if not already_closed:
-                hit_sl = (side == "long" and close_price <= position["sl"]) or \
-                         (side == "short" and close_price >= position["sl"])
-                hit_tp = (side == "long" and close_price >= position["tp"]) or \
-                         (side == "short" and close_price <= position["tp"])
+                hit_sl = (side == "long"  and curr_low  <= position["sl"]) or \
+                         (side == "short" and curr_high >= position["sl"])
+                hit_tp = (side == "long"  and curr_high >= position["tp"]) or \
+                         (side == "short" and curr_low  <= position["tp"])
+                if hit_sl and hit_tp:
+                    hit_tp = False  # conservative: SL wins when ambiguous
             else:
                 hit_sl = hit_tp = False
 
             if hit_sl or hit_tp:
-                reason   = "stop_loss" if hit_sl else "take_profit"
-                pnl_pct  = (close_price - entry) / entry * 100 if side == "long" \
-                           else (entry - close_price) / entry * 100
-                pnl_usd  = position["size_usd"] * pnl_pct / 100
-                fee_exit = position["size_usd"] * HL_TAKER_FEE
+                reason     = "stop_loss" if hit_sl else "take_profit"
+                exit_price = position["sl"] if hit_sl else position["tp"]
+                pnl_pct    = (exit_price - entry) / entry * 100 if side == "long" \
+                             else (entry - exit_price) / entry * 100
+                pnl_usd    = position["size_usd"] * pnl_pct / 100
+                fee_exit   = position["size_usd"] * HL_TAKER_FEE
 
                 equity += pnl_usd - fee_exit
                 trades.append({
-                    "side": side, "entry": entry, "exit": close_price,
+                    "side": side, "entry": entry, "exit": exit_price,
                     "pnl_pct":    round(pnl_pct, 4),
                     "pnl_usd":    round(pnl_usd - fee_exit, 2),
                     "reason":     reason,
@@ -317,11 +329,14 @@ async def run_backtest(req) -> dict:
             else:
                 c2_out = {"c2_dir_prob": 0.5, "c2_p10": cur_px, "c2_p50": cur_px, "c2_p90": cur_px}
 
+            # Compute QT confluence score so confluence_gate is active in backtest
+            qt_score = compute_qt_score(features) if confluence_gate > 0 else None
+
             result = decision_engine.decide(
                 features=features,
                 c2_output=c2_out,
                 lgbm_prob=lgbm_p,
-                confluence_score=None,
+                confluence_score=qt_score,
                 current_price=cur_px,
             )
 

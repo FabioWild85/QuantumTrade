@@ -58,6 +58,7 @@ interface HistoryItem {
     sharpe: number;
   };
   result?: BacktestResult;
+  config?: Record<string, any>;
 }
 
 // ── Equity curve SVG ──────────────────────────────────────────────────────────
@@ -77,28 +78,38 @@ const EquityChart: React.FC<{ data: EquityPoint[]; initialCapital: number; color
   const fillPoly = `${PAD.l},${PAD.t + cH} ${poly} ${PAD.l + cW},${PAD.t + cH}`;
   const capY = py(initialCapital);
   const isProfit = vals[vals.length - 1] >= initialCapital;
-  const stroke = color ?? (isProfit ? '#34d399' : '#f87171');
-  const fill   = isProfit ? 'rgba(52,211,153,0.10)' : 'rgba(248,113,113,0.10)';
+  const stroke = color ?? (isProfit ? '#10b981' : '#f43f5e');
+  const fill   = isProfit ? 'url(#profitGradient)' : 'url(#lossGradient)';
   const ticks  = 3;
   const yLabels = Array.from({ length: ticks + 1 }, (_, i) => minV + (range * i) / ticks);
   return (
     <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ height: 140 }}>
+      <defs>
+        <linearGradient id="profitGradient" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="#10b981" stopOpacity="0.2" />
+          <stop offset="100%" stopColor="#10b981" stopOpacity="0" />
+        </linearGradient>
+        <linearGradient id="lossGradient" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="#f43f5e" stopOpacity="0.2" />
+          <stop offset="100%" stopColor="#f43f5e" stopOpacity="0" />
+        </linearGradient>
+      </defs>
       {yLabels.map((v, i) => {
         const y = py(v);
         return (
           <g key={i}>
-            <line x1={PAD.l} y1={y} x2={W - PAD.r} y2={y} stroke="#1e2433" strokeWidth="1" />
-            <text x={PAD.l - 4} y={y + 4} textAnchor="end" fill="#64748b" fontSize={9}>
+            <line x1={PAD.l} y1={y} x2={W - PAD.r} y2={y} className="stroke-slate-100 dark:stroke-white/5" strokeWidth="1" />
+            <text x={PAD.l - 8} y={y + 3} textAnchor="end" className="fill-slate-400 dark:fill-slate-500 font-mono" fontSize={9}>
               ${Math.round(v).toLocaleString()}
             </text>
           </g>
         );
       })}
-      <line x1={PAD.l} y1={capY} x2={W - PAD.r} y2={capY} stroke="#475569" strokeWidth="1" strokeDasharray="4 3" />
+      <line x1={PAD.l} y1={capY} x2={W - PAD.r} y2={capY} className="stroke-slate-300 dark:stroke-slate-600" strokeWidth="1" strokeDasharray="4 3" />
       <polygon points={fillPoly} fill={fill} />
-      <polyline points={poly} fill="none" stroke={stroke} strokeWidth="1.5" strokeLinejoin="round" />
+      <polyline points={poly} fill="none" stroke={stroke} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />
       {[0, Math.floor(data.length / 2), data.length - 1].map((idx) => (
-        <text key={idx} x={px(idx)} y={H - 4} textAnchor="middle" fill="#64748b" fontSize={9}>
+        <text key={idx} x={px(idx)} y={H - 4} textAnchor="middle" className="fill-slate-400 dark:fill-slate-500 font-mono" fontSize={9}>
           {data[idx]?.bar ?? idx}
         </text>
       ))}
@@ -108,19 +119,19 @@ const EquityChart: React.FC<{ data: EquityPoint[]; initialCapital: number; color
 
 // ── Stat card ──────────────────────────────────────────────────────────────────
 const Stat: React.FC<{ label: string; value: string; sub?: string; color?: string; delta?: number }> = ({
-  label, value, sub, color = 'text-white', delta,
+  label, value, sub, color = 'text-slate-900 dark:text-white', delta,
 }) => (
-  <div className="bg-dark-bg rounded-lg p-3 flex flex-col gap-0.5">
-    <span className="text-xs text-slate-500 uppercase tracking-wide">{label}</span>
-    <div className="flex items-baseline gap-2">
-      <span className={`text-base font-bold font-mono ${color}`}>{value}</span>
+  <div className="bg-slate-50 dark:bg-white/5 rounded-xl p-3 flex flex-col justify-between gap-1 border border-slate-100 dark:border-white/5 w-full h-full">
+    <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest">{label}</span>
+    <div className="flex items-center justify-between">
+      <span className={`text-sm font-bold font-mono ${color}`}>{value}</span>
       {delta !== undefined && delta !== 0 && (
-        <span className={`text-xs font-mono ${delta > 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+        <span className={`text-[10px] font-bold font-mono px-1.5 py-0.5 rounded ${delta > 0 ? 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400' : 'bg-rose-50 dark:bg-rose-500/10 text-rose-600 dark:text-rose-400'}`}>
           {delta > 0 ? '+' : ''}{delta.toFixed(2)}
         </span>
       )}
     </div>
-    {sub && <span className="text-xs text-slate-600">{sub}</span>}
+    {sub && <span className="text-[10px] text-slate-400 dark:text-slate-600 font-medium">{sub}</span>}
   </div>
 );
 
@@ -129,14 +140,14 @@ const Toggle: React.FC<{ label: string; desc: string; checked: boolean; onChange
   label, desc, checked, onChange,
 }) => (
   <label className="flex items-start gap-3 cursor-pointer group">
-    <div className="relative mt-0.5">
+    <div className="relative mt-1">
       <input type="checkbox" className="sr-only" checked={checked} onChange={e => onChange(e.target.checked)} />
-      <div className={`w-10 h-5 rounded-full transition-colors ${checked ? 'bg-indigo-600' : 'bg-slate-700'}`} />
-      <div className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${checked ? 'translate-x-5' : ''}`} />
+      <div className={`w-9 h-5 rounded-full transition-all duration-300 ${checked ? 'bg-indigo-600' : 'bg-slate-200 dark:bg-white/10'}`} />
+      <div className={`absolute top-1 left-1 w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${checked ? 'translate-x-4' : ''}`} />
     </div>
     <div>
-      <p className="text-sm font-medium text-slate-300 group-hover:text-white transition-colors">{label}</p>
-      <p className="text-xs text-slate-600">{desc}</p>
+      <p className="text-sm font-bold text-slate-800 dark:text-slate-200 group-hover:text-indigo-600 dark:group-hover:text-indigo-400 transition-colors">{label}</p>
+      <p className="text-[11px] font-medium text-slate-400 dark:text-slate-500 leading-tight">{desc}</p>
     </div>
   </label>
 );
@@ -158,7 +169,7 @@ const STAT_TOOLTIPS: Record<string, string> = {
 };
 
 const StatsGrid: React.FC<{ stats: BacktestStats; compare?: BacktestStats; label?: string }> = ({ stats: s, compare: c, label }) => {
-  const pnlColor = (v: number) => v > 0 ? 'text-emerald-400' : v < 0 ? 'text-red-400' : 'text-slate-400';
+  const pnlColor = (v: number) => v > 0 ? 'text-emerald-600 dark:text-emerald-400' : v < 0 ? 'text-rose-600 dark:text-rose-400' : 'text-slate-400 dark:text-slate-500';
   const delta = (a: number, b?: number) => b !== undefined ? a - b : undefined;
   const tipStat = (lbl: string, node: React.ReactNode) => (
     <Tooltip key={lbl} text={STAT_TOOLTIPS[lbl] ?? lbl} pos="top" width="wide">
@@ -167,72 +178,74 @@ const StatsGrid: React.FC<{ stats: BacktestStats; compare?: BacktestStats; label
   );
   return (
     <div>
-      {label && <h4 className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">{label}</h4>}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
+      {label && <h4 className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-3 flex items-center gap-2">
+        <span className="w-1 h-3 bg-indigo-500 rounded-full"></span>
+        {label}
+      </h4>}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
         {tipStat('Trades',        <Stat label="Trades"       value={String(s.total_trades)} delta={delta(s.total_trades, c?.total_trades)} />)}
-        {tipStat('Win Rate',      <Stat label="Win Rate"     value={`${s.win_rate}%`} color={s.win_rate >= 50 ? 'text-emerald-400' : 'text-red-400'} delta={delta(s.win_rate, c?.win_rate)} />)}
+        {tipStat('Win Rate',      <Stat label="Win Rate"     value={`${s.win_rate}%`} color={s.win_rate >= 50 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'} delta={delta(s.win_rate, c?.win_rate)} />)}
         {tipStat('PnL %',         <Stat label="PnL %"        value={`${s.total_pnl_pct > 0 ? '+' : ''}${s.total_pnl_pct}%`} color={pnlColor(s.total_pnl_pct)} delta={delta(s.total_pnl_pct, c?.total_pnl_pct)} />)}
-        {tipStat('Profit Factor', <Stat label="Profit Factor" value={s.profit_factor >= 99 ? '∞' : s.profit_factor.toFixed(2)} color={s.profit_factor >= 1.5 ? 'text-emerald-400' : s.profit_factor >= 1 ? 'text-amber-400' : 'text-red-400'} delta={delta(s.profit_factor, c?.profit_factor)} />)}
-        {tipStat('Sharpe',        <Stat label="Sharpe"       value={s.sharpe.toFixed(3)} color={s.sharpe >= 0.7 ? 'text-emerald-400' : s.sharpe >= 0 ? 'text-amber-400' : 'text-red-400'} delta={delta(s.sharpe, c?.sharpe)} />)}
-        {tipStat('Sortino',       <Stat label="Sortino"      value={s.sortino.toFixed(3)} color={s.sortino >= 1 ? 'text-emerald-400' : s.sortino >= 0 ? 'text-amber-400' : 'text-red-400'} delta={delta(s.sortino, c?.sortino)} />)}
-        {tipStat('Calmar',        <Stat label="Calmar"       value={s.calmar.toFixed(3)} color={s.calmar >= 0.5 ? 'text-emerald-400' : s.calmar >= 0 ? 'text-amber-400' : 'text-red-400'} delta={delta(s.calmar, c?.calmar)} />)}
-        {tipStat('Max DD',        <Stat label="Max DD"       value={`-${s.max_drawdown_pct}%`} color="text-red-400" delta={c ? -(s.max_drawdown_pct - c.max_drawdown_pct) : undefined} />)}
-        {tipStat('Avg Win',       <Stat label="Avg Win"      value={`+${s.avg_win_pct}%`} color="text-emerald-400" delta={delta(s.avg_win_pct, c?.avg_win_pct)} />)}
-        {tipStat('Avg Loss',      <Stat label="Avg Loss"     value={`${s.avg_loss_pct}%`} color="text-red-400" delta={delta(s.avg_loss_pct, c?.avg_loss_pct)} />)}
-        {tipStat('Best',          <Stat label="Best"         value={`+${s.best_trade_pct}%`} color="text-emerald-400" />)}
-        {tipStat('Avg Hold',      <Stat label="Avg Hold"     value={`${s.avg_holding_h}h`} />)}
+        {tipStat('Profit Factor', <Stat label="Profit Factor" value={s.profit_factor >= 99 ? '∞' : s.profit_factor.toFixed(2)} color={s.profit_factor >= 1.5 ? 'text-emerald-600 dark:text-emerald-400' : s.profit_factor >= 1 ? 'text-amber-500' : 'text-rose-600 dark:text-rose-400'} delta={delta(s.profit_factor, c?.profit_factor)} />)}
+        {tipStat('Sharpe',        <Stat label="Sharpe"       value={s.sharpe.toFixed(3)} color={s.sharpe >= 0.7 ? 'text-emerald-600 dark:text-emerald-400' : s.sharpe >= 0 ? 'text-amber-500' : 'text-rose-600 dark:text-rose-400'} delta={delta(s.sharpe, c?.sharpe)} />)}
+        {tipStat('Sortino',       <Stat label="Sortino"      value={s.sortino.toFixed(3)} color={s.sortino >= 1 ? 'text-emerald-600 dark:text-emerald-400' : s.sortino >= 0 ? 'text-amber-500' : 'text-rose-600 dark:text-rose-400'} delta={delta(s.sortino, c?.sortino)} />)}
+        {tipStat('Calmar',        <Stat label="Calmar"       value={s.calmar.toFixed(3)} color={s.calmar >= 0.5 ? 'text-emerald-600 dark:text-emerald-400' : s.calmar >= 0 ? 'text-amber-500' : 'text-rose-600 dark:text-rose-400'} delta={delta(s.calmar, c?.calmar)} />)}
+        {tipStat('Max DD',        <Stat label="Max DD"       value={`-${s.max_drawdown_pct}%`} color="text-rose-600 dark:text-rose-400" delta={c ? -(s.max_drawdown_pct - c.max_drawdown_pct) : undefined} />)}
+        {tipStat('Avg Win',       <Stat label="Avg Win"      value={`+${s.avg_win_pct}%`} color="text-emerald-600 dark:text-emerald-400" delta={delta(s.avg_win_pct, c?.avg_win_pct)} />)}
+        {tipStat('Avg Loss',      <Stat label="Avg Loss"     value={`${s.avg_loss_pct}%`} color="text-rose-600 dark:text-rose-400" delta={delta(s.avg_loss_pct, c?.avg_loss_pct)} />)}
+        {tipStat('Best',          <Stat label="Best"         value={`+${s.best_trade_pct}%`} color="text-emerald-600 dark:text-emerald-400" delta={delta(s.best_trade_pct, c?.best_trade_pct)} />)}
+        {tipStat('Avg Hold',       <Stat label="Avg Hold"     value={`${s.avg_holding_h.toFixed(1)}h`} delta={delta(s.avg_holding_h, c?.avg_holding_h)} />)}
       </div>
     </div>
   );
 };
 
-// ── Trade table ────────────────────────────────────────────────────────────────
 const TradeTable: React.FC<{ trades: BacktestTrade[] }> = ({ trades }) => {
-  const numColor = (v: number) => v > 0 ? 'text-emerald-400' : 'text-red-400';
+  const numColor = (v: number) => v > 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400';
   const reasonStyle: Record<string, string> = {
-    take_profit: 'bg-emerald-900/50 text-emerald-400',
-    partial_tp:  'bg-teal-900/50 text-teal-400',
-    stop_loss:   'bg-red-900/50 text-red-400',
-    end_of_period: 'bg-slate-800 text-slate-400',
+    take_profit: 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-100 dark:border-emerald-500/20',
+    partial_tp:  'bg-teal-50 dark:bg-teal-500/10 text-teal-600 dark:text-teal-400 border-teal-100 dark:border-teal-500/20',
+    stop_loss:   'bg-rose-50 dark:bg-rose-500/10 text-rose-600 dark:text-rose-400 border-rose-100 dark:border-rose-500/20',
+    end_of_period: 'bg-slate-50 dark:bg-white/5 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-white/10',
   };
   return (
     <div className="overflow-x-auto">
-      <table className="w-full text-xs">
+      <table className="w-full text-[11px]">
         <thead>
-          <tr className="border-b border-dark-border text-slate-500 uppercase tracking-wide">
-            <th className="px-3 py-2 text-left">Bar</th>
-            <th className="px-3 py-2 text-left">Side</th>
-            <th className="px-3 py-2 text-right">Entry</th>
-            <th className="px-3 py-2 text-right">Exit</th>
-            <th className="px-3 py-2 text-right">PnL %</th>
-            <th className="px-3 py-2 text-right">PnL $</th>
-            <th className="px-3 py-2 text-left">Reason</th>
-            <th className="px-3 py-2 text-right">Hold</th>
+          <tr className="border-b border-slate-100 dark:border-white/5 text-[10px] text-slate-400 dark:text-slate-500 font-bold uppercase tracking-widest bg-slate-50/50 dark:bg-white/[0.02]">
+            <th className="px-4 py-3 text-left">Bar</th>
+            <th className="px-4 py-3 text-left">Side</th>
+            <th className="px-4 py-3 text-right">Entry</th>
+            <th className="px-4 py-3 text-right">Exit</th>
+            <th className="px-4 py-3 text-right">PnL %</th>
+            <th className="px-4 py-3 text-right">PnL $</th>
+            <th className="px-4 py-3 text-left">Reason</th>
+            <th className="px-4 py-3 text-right">Hold</th>
           </tr>
         </thead>
-        <tbody className="divide-y divide-dark-border">
+        <tbody className="divide-y divide-slate-50 dark:divide-white/5">
           {[...trades].reverse().map((t, i) => (
-            <tr key={i} className="hover:bg-dark-bg/50 transition-colors">
-              <td className="px-3 py-1.5 text-slate-500 font-mono">{t.bar}</td>
-              <td className="px-3 py-1.5">
-                <span className={`px-1.5 py-0.5 rounded text-xs font-bold ${t.side === 'long' ? 'bg-emerald-900/60 text-emerald-300' : 'bg-red-900/60 text-red-300'}`}>
+            <tr key={i} className="hover:bg-slate-50/50 dark:hover:bg-white/[0.02] transition-colors group">
+              <td className="px-4 py-2 text-slate-400 font-mono">{t.bar}</td>
+              <td className="px-4 py-2">
+                <span className={`px-2 py-0.5 rounded text-[10px] font-bold tracking-wider ${t.side === 'long' ? 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-100 dark:border-emerald-500/20' : 'bg-rose-50 dark:bg-rose-500/10 text-rose-600 dark:text-rose-400 border border-rose-100 dark:border-rose-500/20'}`}>
                   {t.side.toUpperCase()}
                 </span>
               </td>
-              <td className="px-3 py-1.5 text-right font-mono text-slate-300">${t.entry.toLocaleString(undefined, { maximumFractionDigits: 0 })}</td>
-              <td className="px-3 py-1.5 text-right font-mono text-slate-300">${t.exit.toLocaleString(undefined, { maximumFractionDigits: 0 })}</td>
-              <td className={`px-3 py-1.5 text-right font-mono font-bold ${numColor(t.pnl_pct)}`}>
+              <td className="px-4 py-2 text-right font-mono text-slate-600 dark:text-slate-300 font-bold">${t.entry.toLocaleString(undefined, { maximumFractionDigits: 0 })}</td>
+              <td className="px-4 py-2 text-right font-mono text-slate-600 dark:text-slate-300 font-bold">${t.exit.toLocaleString(undefined, { maximumFractionDigits: 0 })}</td>
+              <td className={`px-4 py-2 text-right font-mono font-bold ${numColor(t.pnl_pct)}`}>
                 {t.pnl_pct > 0 ? '+' : ''}{t.pnl_pct}%
               </td>
-              <td className={`px-3 py-1.5 text-right font-mono ${numColor(t.pnl_usd)}`}>
+              <td className={`px-4 py-2 text-right font-mono font-medium ${numColor(t.pnl_usd)}`}>
                 {t.pnl_usd > 0 ? '+' : ''}${t.pnl_usd.toFixed(0)}
               </td>
-              <td className="px-3 py-1.5">
-                <span className={`px-1.5 py-0.5 rounded text-xs ${reasonStyle[t.reason] ?? 'bg-slate-800 text-slate-400'}`}>
+              <td className="px-4 py-2">
+                <span className={`px-2 py-0.5 rounded-lg text-[9px] font-bold uppercase tracking-wider border ${reasonStyle[t.reason] ?? 'bg-slate-50 dark:bg-white/5 text-slate-500 border-slate-200 dark:border-white/10'}`}>
                   {t.reason.replace(/_/g, ' ')}
                 </span>
               </td>
-              <td className="px-3 py-1.5 text-right text-slate-500">{t.holding_bars * 4}h</td>
+              <td className="px-4 py-2 text-right text-slate-400 dark:text-slate-500 font-mono">{t.holding_bars * 4}h</td>
             </tr>
           ))}
         </tbody>
@@ -240,6 +253,7 @@ const TradeTable: React.FC<{ trades: BacktestTrade[] }> = ({ trades }) => {
     </div>
   );
 };
+
 
 // ── Leverage simulation (pure frontend — no re-run needed) ────────────────────
 const LEVERAGE_OPTIONS = [1, 5, 10, 20, 30, 40, 50] as const;
@@ -339,32 +353,32 @@ const LeverageSelector: React.FC<{
   const liqRisk  = liqThreshold !== null && worstAbs >= Math.abs(liqThreshold);
 
   return (
-    <div className="flex flex-wrap items-center gap-3">
+    <div className="flex flex-wrap items-center gap-4">
       <Tooltip text="Simulatore di leva: ricalcola i risultati come se avessi tradato con leva finanziaria. 1× = senza leva (risultato reale). Attenzione: la leva amplifica sia i guadagni che le perdite, e può portare alla liquidazione." width="wide" pos="top">
-        <span className="text-xs text-slate-500 font-medium uppercase tracking-wide whitespace-nowrap cursor-help">Sim. Leva</span>
+        <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest whitespace-nowrap cursor-help">Simulazione Leva</span>
       </Tooltip>
-      <div className="flex gap-1 flex-wrap">
+      <div className="flex gap-1.5 flex-wrap">
         {LEVERAGE_OPTIONS.map(opt => (
           <button
             key={opt}
             onClick={() => onChange(opt)}
-            className={`px-2.5 py-1 rounded-lg text-xs font-bold font-mono transition-colors ${
+            className={`px-3 py-1.5 rounded-lg text-xs font-bold font-mono transition-all ${
               value === opt
-                ? 'bg-indigo-600 text-white'
-                : 'bg-white/5 border border-dark-border text-slate-400 hover:text-white hover:bg-white/10'
+                ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-500/20 scale-[1.05]'
+                : 'bg-slate-50 dark:bg-white/5 border border-slate-100 dark:border-white/10 text-slate-400 dark:text-slate-500 hover:text-slate-900 dark:hover:text-white'
             }`}
           >
-            {opt === 1 ? '1× (reale)' : `${opt}×`}
+            {opt === 1 ? '1×' : `${opt}×`}
           </button>
         ))}
       </div>
       {liqThreshold !== null && (
-        <span className={`text-xs px-2 py-1 rounded-full border font-mono ${
+        <span className={`text-[10px] px-3 py-1.5 rounded-xl border font-bold tracking-tight ${
           liqRisk
-            ? 'bg-red-600/20 border-red-500/40 text-red-400'
-            : 'bg-amber-600/10 border-amber-500/30 text-amber-400'
+            ? 'bg-rose-50 dark:bg-rose-500/10 border-rose-200 dark:border-rose-500/30 text-rose-600 dark:text-rose-400'
+            : 'bg-amber-50 dark:bg-amber-500/10 border-amber-200 dark:border-amber-500/30 text-amber-600 dark:text-amber-400'
         }`}>
-          {liqRisk ? '⚠ RISCHIO LIQUIDAZIONE' : `Liquidazione se trade > ${Math.abs(liqThreshold).toFixed(1)}% loss`}
+          {liqRisk ? 'RISCHIO LIQUIDAZIONE ELEVATO' : `Liquidazione se trade > ${Math.abs(liqThreshold).toFixed(1)}% loss`}
         </span>
       )}
     </div>
@@ -391,54 +405,108 @@ async function runJob(apiBase: string, body: object): Promise<BacktestResult> {
   });
 }
 
+// ── Config summary ────────────────────────────────────────────────────────────
+const ConfigSummary: React.FC<{ config: Record<string, any> }> = ({ config: c }) => {
+  const param = (label: string, value: any, unit = '') => (
+    <div key={label} className="flex flex-col gap-0.5">
+      <span className="text-[9px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest">{label}</span>
+      <span className="text-xs font-bold font-mono text-slate-800 dark:text-slate-200">{value}{unit && <span className="text-[9px] text-slate-400 dark:text-slate-500 ml-0.5">{unit}</span>}</span>
+    </div>
+  );
+
+  const badge = (label: string, color: string) => (
+    <span key={label} className={`px-2.5 py-1 rounded-lg text-[9px] font-bold uppercase tracking-wider border ${color}`}>{label}</span>
+  );
+
+  const activeBadges: React.ReactNode[] = [];
+  if (c.trailing_sl_enabled)  activeBadges.push(badge(`Trailing SL ×${c.trailing_sl_activation}`, 'bg-indigo-50 dark:bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border-indigo-100 dark:border-indigo-500/20'));
+  if (c.partial_tp_enabled)   activeBadges.push(badge(`Partial TP ${c.partial_tp_pct}% @${c.partial_tp_atr_mult}ATR`, 'bg-indigo-50 dark:bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border-indigo-100 dark:border-indigo-500/20'));
+  if (c.lgbm_exit_enabled)    activeBadges.push(badge(`LGBM Exit p<${c.lgbm_exit_threshold}`, 'bg-purple-50 dark:bg-purple-500/10 text-purple-600 dark:text-purple-400 border-purple-100 dark:border-purple-500/20'));
+  if (c.be_sl_enabled)        activeBadges.push(badge(`BE SL @${c.be_sl_activation}ATR`, 'bg-amber-50 dark:bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-100 dark:border-amber-500/20'));
+  if (c.max_hold_bars_enabled) activeBadges.push(badge(`Max ${c.max_hold_bars} barre`, 'bg-slate-50 dark:bg-white/10 text-slate-600 dark:text-slate-400 border-slate-200 dark:border-white/20'));
+  if (c.chronos_enabled)      activeBadges.push(badge(`Chronos ${Math.round((c.chronos_weight ?? 0.4) * 100)}%`, 'bg-cyan-50 dark:bg-cyan-500/10 text-cyan-600 dark:text-cyan-400 border-cyan-100 dark:border-cyan-500/20'));
+
+  const disabledFilters: string[] = [];
+  if (c.adx_gate_enabled      === false) disabledFilters.push('ADX OFF');
+  if (c.sweep_gate_enabled    === false) disabledFilters.push('Sweep OFF');
+  if (c.fvg_filter_enabled    === false) disabledFilters.push('FVG OFF');
+  if (c.mtf_alignment_enabled === false) disabledFilters.push('MTF OFF');
+
+  return (
+    <div className="bg-slate-50/50 dark:bg-white/[0.02] rounded-2xl p-5 border border-slate-100 dark:border-white/5 space-y-4">
+      <h4 className="text-[9px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest flex items-center gap-2">
+        <span className="w-1 h-3 bg-indigo-500 rounded-full" />
+        Parametri Utilizzati in questo Backtest
+      </h4>
+      <div className="grid grid-cols-3 sm:grid-cols-6 gap-x-6 gap-y-3">
+        {param('SL Mult', c.sl_atr_mult, '× ATR')}
+        {param('TP Mult', c.tp_atr_mult, '× ATR')}
+        {param('Size', c.position_size_pct, '%')}
+        {param('Dir. Thresh', c.directional_threshold)}
+        {param('ADX Gate', c.adx_gate)}
+        {param('Confluence', c.confluence_gate)}
+      </div>
+      {(activeBadges.length > 0 || disabledFilters.length > 0) && (
+        <div className="flex flex-wrap gap-2 pt-1">
+          {activeBadges}
+          {disabledFilters.map(f => badge(f, 'bg-rose-50 dark:bg-rose-500/10 text-rose-500 dark:text-rose-400 border-rose-100 dark:border-rose-500/20'))}
+        </div>
+      )}
+    </div>
+  );
+};
+
 // ── History result card ────────────────────────────────────────────────────────
-const HistoryResultCard: React.FC<{ result: BacktestResult }> = ({ result }) => {
+const HistoryResultCard: React.FC<{ result: BacktestResult; config?: Record<string, any> }> = ({ result, config }) => {
   const [lev, setLev] = useState<LeverageOption>(1);
   const disp = applyLeverage(result, lev);
 
   return (
-    <div className="mt-4 space-y-4">
+    <div className="mt-6 space-y-6">
+      {/* Config summary */}
+      {config && <ConfigSummary config={config} />}
       {/* Leverage selector */}
-      <div className="bg-dark-bg rounded-lg px-4 py-3 border border-dark-border">
+      <div className="bg-slate-50/50 dark:bg-white/[0.02] rounded-2xl px-6 py-4 border border-slate-100 dark:border-white/5">
         <LeverageSelector value={lev} onChange={setLev} worstTradePct={result.stats.worst_trade_pct} />
       </div>
       {/* Header summary */}
-      <div className="bg-dark-bg rounded-lg p-3 flex flex-wrap gap-6 text-sm border border-dark-border">
-        <div>
-          <span className="text-slate-500 text-xs">Periodo</span>
-          <p className="text-white font-medium">{result.from_date} → {result.to_date}</p>
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <div className="bg-white dark:bg-[#151E32] rounded-2xl p-5 border border-slate-100 dark:border-white/5 shadow-sm">
+          <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest block mb-2">Periodo Analizzato</span>
+          <p className="text-slate-900 dark:text-white font-bold text-sm tracking-tight">{result.from_date} <span className="text-slate-300 dark:text-slate-600 px-1">→</span> {result.to_date}</p>
         </div>
-        <div>
-          <span className="text-slate-500 text-xs">Capitale iniziale → finale</span>
-          <p className={`font-bold ${disp.final_equity >= result.initial_capital ? 'text-emerald-400' : 'text-red-400'}`}>
-            ${result.initial_capital.toLocaleString()} → ${disp.final_equity.toLocaleString()}
-            {lev > 1 && <span className="ml-1.5 text-xs font-normal text-indigo-400">{lev}× sim</span>}
+        <div className="bg-white dark:bg-[#151E32] rounded-2xl p-5 border border-slate-100 dark:border-white/5 shadow-sm">
+          <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest block mb-2">Equity Dynamics</span>
+          <p className={`font-bold text-sm tracking-tight ${disp.final_equity >= result.initial_capital ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>
+            ${result.initial_capital.toLocaleString()} <span className="text-slate-300 dark:text-slate-600 px-1">→</span> ${disp.final_equity.toLocaleString()}
+            {lev > 1 && <span className="ml-2 text-[10px] font-bold text-indigo-500 uppercase">{lev}× sim</span>}
           </p>
         </div>
-        <div>
-          <span className="text-slate-500 text-xs">PnL totale</span>
-          <p className={`font-bold text-base ${disp.stats.total_pnl_usd >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-            {disp.stats.total_pnl_usd >= 0 ? '+' : ''}${disp.stats.total_pnl_usd.toFixed(2)} ({disp.stats.total_pnl_pct > 0 ? '+' : ''}{disp.stats.total_pnl_pct}%)
+        <div className="bg-white dark:bg-[#151E32] rounded-2xl p-5 border border-slate-100 dark:border-white/5 shadow-sm">
+          <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest block mb-2">PnL Netto</span>
+          <p className={`font-bold text-lg tracking-tighter ${disp.stats.total_pnl_usd >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>
+            {disp.stats.total_pnl_usd >= 0 ? '+' : ''}${disp.stats.total_pnl_usd.toFixed(2)} <span className="text-[10px] font-bold ml-1">({disp.stats.total_pnl_pct > 0 ? '+' : ''}{disp.stats.total_pnl_pct}%)</span>
           </p>
         </div>
       </div>
       {/* Equity curve */}
-      <div className="bg-dark-bg rounded-lg p-3 border border-dark-border">
-        <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">
-          Curva Equity{lev > 1 ? ` — simulazione ${lev}×` : ''}
+      <div className="elegant-card p-6 bg-white dark:bg-[#151E32]">
+        <h3 className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-6 flex items-center gap-2">
+           <span className="w-1 h-3 bg-indigo-500 rounded-full"></span>
+           Andamento Portafoglio {lev > 1 ? ` — Simulazione ${lev}×` : ''}
         </h3>
         <EquityChart data={disp.equity_curve} initialCapital={result.initial_capital} />
       </div>
       {/* Stats grid */}
-      <div className="bg-dark-bg rounded-lg p-3 border border-dark-border">
-        <StatsGrid stats={disp.stats} compare={lev > 1 ? result.stats : undefined} label={lev > 1 ? `${lev}× leva (δ = differenza vs 1×)` : undefined} />
+      <div className="elegant-card p-6 bg-white dark:bg-[#151E32]">
+        <StatsGrid stats={disp.stats} compare={lev > 1 ? result.stats : undefined} label={lev > 1 ? `Performance ${lev}× (Variazione vs 1×)` : 'Metriche di Performance'} />
       </div>
       {/* Trade table */}
       {disp.trades.length > 0 && (
-        <div className="bg-dark-bg rounded-lg border border-dark-border overflow-hidden">
-          <div className="px-4 py-3 border-b border-dark-border">
-            <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wide">
-              Ultimi {disp.trades.length} trade{lev > 1 ? ` — ${lev}× leva` : ''}
+        <div className="elegant-card bg-white dark:bg-[#151E32] overflow-hidden">
+          <div className="px-6 py-4 border-b border-slate-100 dark:border-white/5 bg-slate-50/50 dark:bg-white/[0.02]">
+            <h3 className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest">
+              Dettaglio Operazioni ({disp.trades.length}){lev > 1 ? ` — Leva ${lev}×` : ''}
             </h3>
           </div>
           <TradeTable trades={disp.trades} />
@@ -485,10 +553,11 @@ const HistoryTab: React.FC<{ apiBase: string }> = ({ apiBase }) => {
       try {
         const res  = await fetch(`${apiBase}/backtest-history/${itemId}`);
         const data = await res.json();
-        // API returns { ..., results: BacktestResult }
+        // API returns { ..., results: BacktestResult, config: Record<string,any> }
         const fullResult: BacktestResult | undefined = data.results ?? data.result;
+        const cfg: Record<string, any> | undefined = data.config ?? undefined;
         if (fullResult) {
-          setItems(prev => prev.map(i => i.id === itemId ? { ...i, result: fullResult } : i));
+          setItems(prev => prev.map(i => i.id === itemId ? { ...i, result: fullResult, config: cfg } : i));
         }
       } catch { /* silent — will show fallback */ }
       finally { setLoadingDetailId(null); }
@@ -538,11 +607,9 @@ const HistoryTab: React.FC<{ apiBase: string }> = ({ apiBase }) => {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center py-16 text-slate-400">
-        <svg className="w-5 h-5 animate-spin mr-2" viewBox="0 0 24 24" fill="none">
-          <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="40 20" />
-        </svg>
-        Caricamento storico…
+      <div className="flex flex-col items-center justify-center py-24 text-slate-400 gap-4">
+        <div className="w-10 h-10 border-4 border-slate-100 dark:border-white/5 border-t-indigo-500 rounded-full animate-spin"></div>
+        <span className="text-xs font-bold uppercase tracking-widest animate-pulse">Caricamento Storico Analisi…</span>
       </div>
     );
   }
@@ -550,25 +617,25 @@ const HistoryTab: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   return (
     <div className="space-y-3">
       {/* Toolbar */}
-      <div className="flex items-center justify-between">
-        <span className="text-xs text-slate-500">{items.length} backtest salvat{items.length === 1 ? 'o' : 'i'}</span>
+      <div className="flex items-center justify-between mb-4">
+        <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest">{items.length} Report Disponibili</span>
         <button
           onClick={fetchHistory}
-          className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-white/5 hover:bg-white/10 border border-dark-border rounded-lg text-slate-400 hover:text-white transition-colors"
+          className="flex items-center gap-2 px-4 py-2 text-[10px] font-bold uppercase tracking-widest bg-white dark:bg-white/5 hover:bg-slate-50 dark:hover:bg-white/10 border border-slate-100 dark:border-white/10 rounded-xl text-slate-500 dark:text-slate-400 transition-all shadow-sm active:scale-95"
         >
-          <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+          <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
             <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
           </svg>
-          Aggiorna
+          Sincronizza
         </button>
       </div>
 
       {items.length === 0 ? (
-        <div className="bg-dark-card rounded-xl p-10 border border-dark-border text-center text-slate-500 text-sm">
-          Nessun backtest salvato
+        <div className="elegant-card p-12 bg-white dark:bg-[#151E32] text-center">
+          <p className="text-sm font-medium text-slate-400 dark:text-slate-500 italic">Nessun report di analisi presente in archivio.</p>
         </div>
       ) : (
-        <div className="space-y-2">
+        <div className="space-y-3">
           {items.map(item => {
             const pnlPositive    = item.summary.total_pnl_pct > 0;
             const pnlNeutral     = item.summary.total_pnl_pct === 0;
@@ -579,17 +646,17 @@ const HistoryTab: React.FC<{ apiBase: string }> = ({ apiBase }) => {
             return (
               <div
                 key={item.id}
-                className="bg-dark-card rounded-xl border border-dark-border overflow-hidden"
+                className="elegant-card bg-white dark:bg-[#151E32] overflow-hidden"
               >
                 {/* Card header row */}
                 <div
-                  className="px-4 py-3 flex items-center gap-3 cursor-pointer hover:bg-white/5 transition-colors select-none"
+                  className="px-6 py-4 flex items-center gap-4 cursor-pointer hover:bg-slate-50 dark:hover:bg-white/[0.02] transition-all select-none group"
                   onClick={() => handleExpand(item.id)}
                 >
                   {/* Expand chevron */}
                   <svg
-                    className={`w-4 h-4 text-slate-500 flex-shrink-0 transition-transform ${isExpanded ? 'rotate-90' : ''}`}
-                    viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+                    className={`w-4 h-4 text-slate-300 group-hover:text-indigo-500 transition-all duration-300 ${isExpanded ? 'rotate-90 text-indigo-500' : ''}`}
+                    viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"
                   >
                     <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
                   </svg>
@@ -607,41 +674,37 @@ const HistoryTab: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                           if (e.key === 'Enter') handleRenameCommit(item.id);
                           if (e.key === 'Escape') setEditingId(null);
                         }}
-                        className="bg-dark-bg border border-indigo-500 rounded px-2 py-0.5 text-sm text-white focus:outline-none w-full max-w-xs"
+                        className="bg-slate-50 dark:bg-white/5 border border-indigo-500 rounded-xl px-3 py-1.5 text-sm text-slate-900 dark:text-white focus:outline-none w-full max-w-xs shadow-inner"
                       />
                     ) : (
                       <span
-                        className="text-sm font-medium text-white truncate cursor-text hover:text-indigo-300 transition-colors"
+                        className="text-sm font-bold text-slate-800 dark:text-slate-200 truncate cursor-text hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors"
                         title="Clicca per rinominare"
                         onClick={() => handleRenameStart(item)}
                       >
                         {item.name || `${item.symbol} · ${item.from_date} → ${item.to_date}`}
                       </span>
                     )}
-                    <p className="text-xs text-slate-500 mt-0.5">{formatDate(item.created_at)}</p>
+                    <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 mt-1 uppercase tracking-widest">{formatDate(item.created_at)}</p>
                   </div>
 
                   {/* Quick stats */}
-                  <div className="hidden sm:flex items-center gap-4 text-xs font-mono flex-shrink-0">
-                    <span className="text-slate-400">
-                      <span className="text-slate-600 text-[10px] uppercase mr-1">Trades</span>
-                      {item.summary.total_trades}
-                    </span>
-                    <span className="text-slate-400">
-                      <span className="text-slate-600 text-[10px] uppercase mr-1">WR</span>
-                      {item.summary.win_rate}%
-                    </span>
-                    <span className="text-slate-400">
-                      <span className="text-slate-600 text-[10px] uppercase mr-1">Sharpe</span>
-                      {item.summary.sharpe?.toFixed(2) ?? '—'}
-                    </span>
+                  <div className="hidden md:flex items-center gap-6 text-[10px] font-bold uppercase tracking-widest flex-shrink-0">
+                    <div className="flex flex-col items-end">
+                      <span className="text-slate-300 dark:text-slate-600">Trades</span>
+                      <span className="text-slate-600 dark:text-slate-400 font-mono">{item.summary.total_trades}</span>
+                    </div>
+                    <div className="flex flex-col items-end">
+                      <span className="text-slate-300 dark:text-slate-600">WR</span>
+                      <span className="text-slate-600 dark:text-slate-400 font-mono">{item.summary.win_rate}%</span>
+                    </div>
                   </div>
 
                   {/* PnL badge */}
-                  <span className={`flex-shrink-0 px-2.5 py-1 rounded-full text-xs font-bold font-mono ${
-                    pnlNeutral  ? 'bg-slate-700 text-slate-300' :
-                    pnlPositive ? 'bg-emerald-600/20 text-emerald-400 border border-emerald-600/30' :
-                                  'bg-red-600/20 text-red-400 border border-red-600/30'
+                  <span className={`flex-shrink-0 px-3 py-1.5 rounded-xl text-[10px] font-bold font-mono border tracking-tight ${
+                    pnlNeutral  ? 'bg-slate-50 dark:bg-white/5 text-slate-500 border-slate-200 dark:border-white/10' :
+                    pnlPositive ? 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-100 dark:border-emerald-500/20' :
+                                  'bg-rose-50 dark:bg-rose-500/10 text-rose-600 dark:text-rose-400 border-rose-100 dark:border-rose-500/20'
                   }`}>
                     {item.summary.total_pnl_pct > 0 ? '+' : ''}{item.summary.total_pnl_pct}%
                   </span>
@@ -650,35 +713,31 @@ const HistoryTab: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                   <button
                     onClick={e => { e.stopPropagation(); handleDelete(item.id); }}
                     disabled={isDeleting}
-                    className="flex-shrink-0 p-1.5 rounded-lg text-slate-600 hover:text-red-400 hover:bg-red-400/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                    className="flex-shrink-0 p-2 rounded-xl text-slate-300 dark:text-slate-600 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-500/10 transition-all active:scale-90 disabled:opacity-40"
                     title="Elimina"
                   >
                     {isDeleting ? (
-                      <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none">
-                        <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="40 20" />
-                      </svg>
+                      <div className="w-4 h-4 border-2 border-slate-300 dark:border-slate-600 border-t-rose-500 rounded-full animate-spin"></div>
                     ) : (
-                      <span className="text-base leading-none">🗑</span>
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
                     )}
                   </button>
                 </div>
 
                 {/* Expanded results */}
                 {isExpanded && (
-                  <div className="px-4 pb-4 border-t border-dark-border">
+                  <div className="px-6 pb-6 border-t border-slate-50 dark:border-white/5 bg-slate-50/20 dark:bg-black/[0.02]">
                     {isLoadingDetail ? (
-                      <div className="flex items-center justify-center py-10 text-slate-400 gap-2">
-                        <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none">
-                          <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="40 20" />
-                        </svg>
-                        <span className="text-xs">Caricamento report…</span>
+                      <div className="flex flex-col items-center justify-center py-12 text-slate-400 gap-3">
+                        <div className="w-6 h-6 border-2 border-slate-100 dark:border-white/5 border-t-indigo-500 rounded-full animate-spin"></div>
+                        <span className="text-[10px] font-bold uppercase tracking-widest animate-pulse">Generazione Report Analitico…</span>
                       </div>
                     ) : item.result ? (
-                      <HistoryResultCard result={item.result} />
+                      <HistoryResultCard result={item.result} config={item.config} />
                     ) : (
-                      <p className="text-xs text-slate-500 py-4 text-center">
-                        Risultato completo non disponibile per questo backtest.
-                      </p>
+                      <div className="py-8 text-center">
+                        <p className="text-xs font-medium text-slate-400 dark:text-slate-500 italic">Report di dettaglio non disponibile per questo snapshot.</p>
+                      </div>
                     )}
                   </div>
                 )}
@@ -696,15 +755,15 @@ const NumInput: React.FC<{
   label: string; value: string; onChange: (v: string) => void;
   step?: string; min?: string; max?: string; unit?: string;
 }> = ({ label, value, onChange, step = '0.01', min, max, unit }) => (
-  <label className="flex flex-col gap-1">
-    <span className="text-xs text-slate-500">{label}</span>
-    <div className="flex items-center gap-1.5">
+  <label className="flex flex-col gap-1.5">
+    <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest ml-1">{label}</span>
+    <div className="flex items-center gap-2">
       <input
         type="number" value={value} onChange={e => onChange(e.target.value)}
         step={step} min={min} max={max}
-        className="w-full bg-[#0d1117] border border-[#1e2433] rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500"
+        className="w-full bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 rounded-xl px-4 py-2.5 text-sm font-bold font-mono text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all outline-none shadow-sm"
       />
-      {unit && <span className="text-xs text-slate-600 whitespace-nowrap">{unit}</span>}
+      {unit && <span className="text-[10px] font-bold text-slate-400 dark:text-slate-600 whitespace-nowrap">{unit}</span>}
     </div>
   </label>
 );
@@ -758,11 +817,13 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   const [advMaxHoldBars, setAdvMaxHoldBars] = useState('48');
 
   // ── Results ───────────────────────────────────────────────────────────────────
-  const [status,   setStatus]   = useState<'idle' | 'running' | 'done' | 'error'>('idle');
-  const [result,   setResult]   = useState<BacktestResult | null>(null);
-  const [baseline, setBaseline] = useState<BacktestResult | null>(null);
-  const [errorMsg, setErrorMsg] = useState('');
-  const [leverage, setLeverage] = useState<LeverageOption>(1);
+  const [status,         setStatus]         = useState<'idle' | 'running' | 'done' | 'error'>('idle');
+  const [result,         setResult]         = useState<BacktestResult | null>(null);
+  const [baseline,       setBaseline]       = useState<BacktestResult | null>(null);
+  const [errorMsg,       setErrorMsg]       = useState('');
+  const [leverage,       setLeverage]       = useState<LeverageOption>(1);
+  const [lastRunConfig,  setLastRunConfig]  = useState<Record<string, any> | null>(null);
+  const [toast,          setToast]          = useState<{ type: 'success' | 'error'; msg: string } | null>(null);
 
   // ── Load backtest config from API on mount ────────────────────────────────────
   const applyConfig = useCallback((p: Record<string, any>) => {
@@ -811,14 +872,24 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     }
   };
 
+  const showToast = (type: 'success' | 'error', msg: string) => {
+    setToast({ type, msg });
+    setTimeout(() => setToast(null), 3500);
+  };
+
   const saveAsDefault = async () => {
     setDrawerSaving(true);
     try {
-      await fetch(`${apiBase}/bot/backtest`, {
+      const r = await fetch(`${apiBase}/bot/backtest`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(buildConfig(true)),
       });
+      setIsDrawerOpen(false);
+      showToast(r.ok ? 'success' : 'error', r.ok ? 'Configurazione salvata come default.' : 'Errore durante il salvataggio.');
+    } catch {
+      setIsDrawerOpen(false);
+      showToast('error', 'Impossibile raggiungere il server.');
     } finally {
       setDrawerSaving(false);
     }
@@ -864,6 +935,8 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     setBaseline(null);
     setErrorMsg('');
     setLeverage(1);
+    const cfg = buildConfig(true);
+    setLastRunConfig(cfg);
     try {
       const body = {
         symbol: 'BTC',
@@ -871,7 +944,7 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
         to_date: toDate,
         initial_capital: parseFloat(capital) || 10000,
         use_chronos: useChronos,
-        config: buildConfig(true),
+        config: cfg,
       };
       if (compareMode && (trailingSL || partialTP)) {
         const bodyBase = { ...body, config: buildConfig(false) };
@@ -894,19 +967,35 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
 
   return (
     <div className="space-y-5">
+      {/* ── Toast notification ─────────────────────────────────────────────── */}
+      {toast && (
+        <div className={`fixed bottom-6 left-1/2 -translate-x-1/2 z-[100] flex items-center gap-3 px-5 py-3.5 rounded-2xl shadow-2xl border text-sm font-bold transition-all animate-in fade-in slide-in-from-bottom-3 ${
+          toast.type === 'success'
+            ? 'bg-emerald-600 text-white border-emerald-500 shadow-emerald-500/30'
+            : 'bg-rose-600 text-white border-rose-500 shadow-rose-500/30'
+        }`}>
+          {toast.type === 'success' ? (
+            <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" /></svg>
+          ) : (
+            <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" /></svg>
+          )}
+          {toast.msg}
+        </div>
+      )}
+
       {/* ── Sub-tab navigation ───────────────────────────────────────────────── */}
-      <div className="flex gap-1 bg-dark-card border border-dark-border rounded-xl p-1 w-fit">
+      <div className="flex gap-4 p-1.5 bg-slate-100 dark:bg-white/5 rounded-2xl w-fit">
         {(['nuovo', 'storico'] as const).map(tab => (
           <button
             key={tab}
             onClick={() => setActiveTab(tab)}
-            className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+            className={`px-8 py-2.5 rounded-xl text-xs font-bold uppercase tracking-widest transition-all ${
               activeTab === tab
-                ? 'bg-indigo-600 text-white'
-                : 'bg-white/5 text-slate-400 hover:text-white'
+                ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-500/20'
+                : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
             }`}
           >
-            {tab === 'nuovo' ? 'Nuovo' : 'Storico'}
+            {tab === 'nuovo' ? 'Nuova Analisi' : 'Archivio Report'}
           </button>
         ))}
       </div>
@@ -918,51 +1007,54 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
       {activeTab === 'nuovo' && (
         <>
           {/* ── Config card ──────────────────────────────────────────────────── */}
-          <div className="bg-dark-card rounded-xl p-5 border border-dark-border space-y-5">
-            {/* Header with ⚙ button */}
-            <div className="flex items-center justify-between">
-              <h2 className="text-sm font-semibold text-slate-300 flex items-center gap-2">
-                <span className="text-indigo-400">◈</span> Configurazione Backtest
-              </h2>
+          <div className="elegant-card p-6 bg-white dark:bg-[#151E32] space-y-6 relative">
+            {/* Advanced config button moved to top-right absolute */}
+            <div className="absolute top-6 right-6 z-10">
               <Tooltip text="Apre il pannello delle impostazioni avanzate: filtri segnale, strategie di uscita (Trailing SL, Partial TP, LGBM Exit, Break-even SL), e configurazione Chronos-2. Indipendente dalle impostazioni del bot live." width="wide" pos="bottom">
-              <button
-                onClick={() => setIsDrawerOpen(true)}
-                title="Impostazioni avanzate segnale"
-                className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
-                  drawerHasCustom
-                    ? 'bg-indigo-600/20 border-indigo-500/40 text-indigo-300 hover:bg-indigo-600/30'
-                    : 'bg-white/5 border-dark-border text-slate-400 hover:text-white hover:bg-white/10'
-                }`}
-              >
-                <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                </svg>
-                Avanzate
-                {drawerHasCustom && <span className="w-1.5 h-1.5 rounded-full bg-indigo-400" />}
-              </button>
+                <button
+                  onClick={() => setIsDrawerOpen(true)}
+                  className={`flex items-center gap-2 px-4 py-2 rounded-xl text-[10px] font-bold uppercase tracking-widest border transition-all ${
+                    drawerHasCustom
+                      ? 'bg-indigo-50 dark:bg-indigo-500/10 border-indigo-200 dark:border-indigo-500/30 text-indigo-600 dark:text-indigo-400'
+                      : 'bg-slate-50 dark:bg-white/5 border-slate-100 dark:border-white/10 text-slate-400 dark:text-slate-500 hover:text-slate-900 dark:hover:text-white'
+                  }`}
+                >
+                  <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                  </svg>
+                  Configurazione Avanzata
+                  {drawerHasCustom && <span className="w-1.5 h-1.5 rounded-full bg-indigo-500 animate-pulse" />}
+                </button>
               </Tooltip>
             </div>
 
+            {/* Header */}
+            <div className="flex items-center justify-between">
+              <h2 className="text-sm font-bold text-slate-900 dark:text-white uppercase tracking-wider flex items-center gap-2">
+                 <span className="w-1.5 h-4 bg-indigo-500 rounded-full"></span>
+                 Parametri di Simulazione
+              </h2>
+            </div>
+
             {/* Base params */}
-            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
               {([
-                { label: 'Da (min: 2017-01-01)', tip: 'Data di inizio del backtest. I dati storici OHLCV sono disponibili dal 2017.', type: 'date', val: fromDate, set: setFromDate, min: '2017-01-01', max: toDate },
-                { label: 'A (max: oggi)', tip: 'Data di fine del backtest. Usa una data recente per testare su dati aggiornati.', type: 'date', val: toDate, set: setToDate, min: fromDate, max: today },
+                { label: 'Dal', tip: 'Data di inizio del backtest. I dati storici OHLCV sono disponibili dal 2017.', type: 'date', val: fromDate, set: setFromDate, min: '2017-01-01', max: toDate },
+                { label: 'Al', tip: 'Data di fine del backtest. Usa una data recente per testare su dati aggiornati.', type: 'date', val: toDate, set: setToDate, min: fromDate, max: today },
                 { label: 'Capitale ($)', tip: 'Capitale iniziale simulato in USD. Tutti i calcoli di P&L sono basati su questo importo.', type: 'number', val: capital, set: setCapital, min: undefined, max: undefined },
-                { label: 'SL mult', tip: 'Stop Loss Multiplier: distanza dello stop loss dal prezzo di entrata in multipli di ATR. Maggiore = SL più largo = meno stop colpiti ma perdite maggiori.', type: 'number', val: slMult, set: setSlMult, min: undefined, max: undefined },
-                { label: 'TP mult', tip: 'Take Profit Multiplier: distanza del take profit in multipli di ATR. Combinato con SL mult determina il rapporto R:R (rischio/rendimento).', type: 'number', val: tpMult, set: setTpMult, min: undefined, max: undefined },
+                { label: 'SL Mult', tip: 'Stop Loss Multiplier: distanza dello stop loss dal prezzo di entrata in multipli di ATR. Maggiore = SL più largo = meno stop colpiti ma perdite maggiori.', type: 'number', val: slMult, set: setSlMult, min: undefined, max: undefined },
+                { label: 'TP Mult', tip: 'Take Profit Multiplier: distanza del take profit in multipli di ATR. Combinato con SL mult determina il rapporto R:R (rischio/rendimento).', type: 'number', val: tpMult, set: setTpMult, min: undefined, max: undefined },
                 { label: 'Size (%)', tip: 'Percentuale del capitale rischiata per ogni trade. Con $10.000 e Size 1.5%, ogni trade rischia $150.', type: 'number', val: posSizePct, set: setPosSizePct, min: undefined, max: undefined },
               ] as const).map(f => (
                 <Tooltip key={f.label} text={f.tip} pos="bottom" width="wide">
-                  <label className="flex flex-col gap-1 w-full">
-                    <span className="text-xs text-slate-500">{f.label}</span>
+                  <label className="flex flex-col gap-1.5 w-full">
+                    <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest ml-1">{f.label}</span>
                     <input
                       type={f.type} value={f.val}
                       min={f.min} max={f.max}
                       onChange={e => f.set(e.target.value)}
-                      style={f.type === 'date' ? { colorScheme: 'dark' } : undefined}
-                      className="bg-dark-bg border border-dark-border rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500"
+                      className={`bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 rounded-xl px-4 py-2.5 text-sm font-bold font-mono text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all outline-none shadow-sm${f.type === 'date' ? ' [color-scheme:light] dark:[color-scheme:dark]' : ''}`}
                     />
                   </label>
                 </Tooltip>
@@ -971,34 +1063,40 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
 
             {/* Active strategy badges */}
             {drawerHasCustom && (
-              <div className="flex flex-wrap gap-1.5">
-                {trailingSL   && <span className="px-2 py-0.5 rounded-full text-xs bg-indigo-600/20 text-indigo-300 border border-indigo-600/30">Trailing SL</span>}
-                {partialTP    && <span className="px-2 py-0.5 rounded-full text-xs bg-indigo-600/20 text-indigo-300 border border-indigo-600/30">Partial TP {partialPct}%</span>}
-                {lgbmExit     && <span className="px-2 py-0.5 rounded-full text-xs bg-violet-600/20 text-violet-300 border border-violet-600/30">LGBM Exit</span>}
-                {useChronos   && <span className="px-2 py-0.5 rounded-full text-xs bg-cyan-600/20 text-cyan-300 border border-cyan-600/30">Chronos-2 {Math.round(parseFloat(advChronosWeight)*100)}%</span>}
-                {advBeSL      && <span className="px-2 py-0.5 rounded-full text-xs bg-amber-600/20 text-amber-300 border border-amber-600/30">BE SL</span>}
-                {advMaxHold   && <span className="px-2 py-0.5 rounded-full text-xs bg-amber-600/20 text-amber-300 border border-amber-600/30">Max {advMaxHoldBars}b</span>}
-                {!advAdxEnabled   && <span className="px-2 py-0.5 rounded-full text-xs bg-slate-700 text-slate-400">ADX off</span>}
-                {!advSweepEnabled && <span className="px-2 py-0.5 rounded-full text-xs bg-slate-700 text-slate-400">Sweep off</span>}
-                {!advFvgEnabled   && <span className="px-2 py-0.5 rounded-full text-xs bg-slate-700 text-slate-400">FVG off</span>}
-                {!advMtfEnabled   && <span className="px-2 py-0.5 rounded-full text-xs bg-slate-700 text-slate-400">MTF off</span>}
+              <div className="flex flex-wrap gap-2 pt-2">
+                {trailingSL   && <span className="px-3 py-1 rounded-lg text-[9px] font-bold uppercase tracking-wider bg-indigo-50 dark:bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border border-indigo-100 dark:border-indigo-500/20">Trailing SL</span>}
+                {partialTP    && <span className="px-3 py-1 rounded-lg text-[9px] font-bold uppercase tracking-wider bg-indigo-50 dark:bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border border-indigo-100 dark:border-indigo-500/20">Partial TP {partialPct}%</span>}
+                {lgbmExit     && <span className="px-3 py-1 rounded-lg text-[9px] font-bold uppercase tracking-wider bg-purple-50 dark:bg-purple-500/10 text-purple-600 dark:text-purple-400 border border-purple-100 dark:border-purple-500/20">LGBM Exit</span>}
+                {useChronos   && <span className="px-3 py-1 rounded-lg text-[9px] font-bold uppercase tracking-wider bg-cyan-50 dark:bg-cyan-500/10 text-cyan-600 dark:text-cyan-400 border border-cyan-100 dark:border-cyan-500/20">Chronos-2 {Math.round(parseFloat(advChronosWeight)*100)}%</span>}
+                {advBeSL      && <span className="px-3 py-1 rounded-lg text-[9px] font-bold uppercase tracking-wider bg-amber-50 dark:bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-100 dark:border-amber-500/20">BE SL</span>}
+                {advMaxHold   && <span className="px-3 py-1 rounded-lg text-[9px] font-bold uppercase tracking-wider bg-slate-50 dark:bg-white/10 text-slate-600 dark:text-slate-400 border border-slate-200 dark:border-white/20">Max {advMaxHoldBars}b</span>}
               </div>
             )}
 
             {/* Run button */}
-            <div className="flex items-center gap-4">
+            <div className="flex flex-col sm:flex-row items-center gap-4 pt-4 border-t border-slate-100 dark:border-white/5">
               <button onClick={runBacktest} disabled={status === 'running'}
-                className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:bg-indigo-800 disabled:cursor-not-allowed text-white text-sm font-semibold rounded-lg transition-colors flex items-center gap-2">
+                className="w-full sm:w-auto px-8 py-3.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-sm font-bold uppercase tracking-widest rounded-xl transition-all shadow-lg shadow-indigo-500/25 active:scale-95 flex items-center justify-center gap-3">
                 {status === 'running' ? (
                   <>
-                    <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none">
-                      <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="40 20" />
-                    </svg>
-                    {compareMode && advancedActive ? 'Eseguendo 2 backtest…' : 'Eseguendo…'}
+                    <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
+                    {compareMode && advancedActive ? 'Elaborazione Doppia…' : 'Simulazione in corso…'}
                   </>
-                ) : 'Avvia Backtest'}
+                ) : (
+                  <>
+                    <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                      <path d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.348a1.125 1.125 0 010 1.971l-11.54 6.347a1.125 1.125 0 01-1.667-.985V5.653z" />
+                    </svg>
+                    Esegui Analisi
+                  </>
+                )}
               </button>
-              {status === 'error' && <span className="text-xs text-red-400">{errorMsg}</span>}
+              {status === 'error' && (
+                <div className="flex items-center gap-2 text-rose-600 dark:text-rose-400 bg-rose-50 dark:bg-rose-500/10 px-4 py-2 rounded-xl border border-rose-100 dark:border-rose-500/20 text-xs font-bold">
+                   <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                   {errorMsg}
+                </div>
+              )}
             </div>
           </div>
 
@@ -1008,81 +1106,84 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
             const dispBase = baseline ? applyLeverage(baseline, leverage) : null;
             return (
               <>
+                {/* Config summary for current run */}
+                {lastRunConfig && <ConfigSummary config={lastRunConfig} />}
                 {/* Leverage selector */}
-                <div className="bg-dark-card rounded-xl px-5 py-3 border border-dark-border">
+                <div className="bg-slate-50/50 dark:bg-white/[0.02] rounded-2xl px-6 py-4 border border-slate-100 dark:border-white/5">
                   <LeverageSelector value={leverage} onChange={setLeverage} worstTradePct={result.stats.worst_trade_pct} />
                 </div>
 
                 {/* Summary header */}
-                <div className="bg-dark-card rounded-xl p-4 border border-dark-border flex flex-wrap gap-6 text-sm">
+                <div className="elegant-card p-6 bg-white dark:bg-[#151E32] grid grid-cols-1 sm:grid-cols-4 gap-6 items-center">
                   <div>
-                    <span className="text-slate-500 text-xs">Periodo</span>
-                    <p className="text-white font-medium">{result.from_date} → {result.to_date}</p>
+                    <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest block mb-1.5">Periodo</span>
+                    <p className="text-slate-900 dark:text-white font-bold text-sm tracking-tight">{result.from_date} <span className="text-slate-300 px-1">→</span> {result.to_date}</p>
                   </div>
                   <div>
-                    <span className="text-slate-500 text-xs">Capitale iniziale → finale</span>
-                    <p className={`font-bold ${disp.final_equity >= result.initial_capital ? 'text-emerald-400' : 'text-red-400'}`}>
-                      ${result.initial_capital.toLocaleString()} → ${disp.final_equity.toLocaleString()}
-                      {leverage > 1 && <span className="ml-1.5 text-xs font-normal text-indigo-400">{leverage}× sim</span>}
+                    <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest block mb-1.5">Equity Dynamics</span>
+                    <p className={`font-bold text-sm tracking-tight ${disp.final_equity >= result.initial_capital ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>
+                      ${result.initial_capital.toLocaleString()} <span className="text-slate-300 px-1">→</span> ${disp.final_equity.toLocaleString()}
+                      {leverage > 1 && <span className="ml-2 text-[10px] font-bold text-indigo-500 uppercase tracking-widest">{leverage}× sim</span>}
                     </p>
                   </div>
                   <div>
-                    <span className="text-slate-500 text-xs">PnL totale</span>
-                    <p className={`font-bold text-base ${disp.stats.total_pnl_usd >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                      {disp.stats.total_pnl_usd >= 0 ? '+' : ''}${disp.stats.total_pnl_usd.toFixed(2)} ({disp.stats.total_pnl_pct > 0 ? '+' : ''}{disp.stats.total_pnl_pct}%)
+                    <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest block mb-1.5">PnL Totale</span>
+                    <p className={`font-bold text-xl tracking-tighter ${disp.stats.total_pnl_usd >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>
+                      {disp.stats.total_pnl_usd >= 0 ? '+' : ''}${disp.stats.total_pnl_usd.toFixed(2)} <span className="text-[10px] font-bold ml-1 opacity-70">({disp.stats.total_pnl_pct > 0 ? '+' : ''}{disp.stats.total_pnl_pct}%)</span>
                     </p>
                   </div>
                   {advancedActive && (
-                    <div className="ml-auto flex items-center gap-2">
-                      <span className="text-xs px-2 py-1 rounded-full bg-indigo-600/20 text-indigo-400 border border-indigo-600/30">
-                        {[trailingSL && 'Trailing SL', partialTP && `Partial TP ${partialPct}%`].filter(Boolean).join(' + ')}
-                      </span>
+                    <div className="flex flex-wrap gap-2 justify-end">
+                      {trailingSL && <span className="px-3 py-1 rounded-xl text-[9px] font-bold uppercase tracking-widest bg-indigo-50 dark:bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border border-indigo-100 dark:border-indigo-500/20">Trailing SL</span>}
+                      {partialTP && <span className="px-3 py-1 rounded-xl text-[9px] font-bold uppercase tracking-widest bg-indigo-50 dark:bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border border-indigo-100 dark:border-indigo-500/20">Partial TP {partialPct}%</span>}
                     </div>
                   )}
                 </div>
 
                 {/* Equity curves */}
-                <div className={`grid gap-4 ${dispBase ? 'grid-cols-1 lg:grid-cols-2' : 'grid-cols-1'}`}>
-                  <div className="bg-dark-card rounded-xl p-4 border border-dark-border">
-                    <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">
-                      {dispBase ? '✦ Con strategie avanzate' : `Curva Equity${leverage > 1 ? ` — ${leverage}× sim` : ''}`}
+                <div className={`grid gap-6 ${dispBase ? 'grid-cols-1 lg:grid-cols-2' : 'grid-cols-1'}`}>
+                  <div className="elegant-card p-6 bg-white dark:bg-[#151E32]">
+                    <h3 className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-6 flex items-center gap-2">
+                       <span className="w-1 h-3 bg-indigo-500 rounded-full"></span>
+                       {dispBase ? 'Configurazione Ottimizzata' : `Curva Equity Portafoglio${leverage > 1 ? ` — ${leverage}× sim` : ''}`}
                     </h3>
-                    <EquityChart data={disp.equity_curve} initialCapital={result.initial_capital} color={dispBase ? '#818cf8' : undefined} />
+                    <EquityChart data={disp.equity_curve} initialCapital={result.initial_capital} color={dispBase ? '#6366f1' : undefined} />
                   </div>
                   {dispBase && (
-                    <div className="bg-dark-card rounded-xl p-4 border border-dark-border">
-                      <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">
-                        ○ Baseline (solo SL/TP fisso){leverage > 1 ? ` — ${leverage}×` : ''}
+                    <div className="elegant-card p-6 bg-white dark:bg-[#151E32]">
+                      <h3 className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-6 flex items-center gap-2">
+                         <span className="w-1 h-3 bg-slate-300 dark:bg-slate-600 rounded-full"></span>
+                         Baseline (SL/TP Fisso){leverage > 1 ? ` — ${leverage}×` : ''}
                       </h3>
-                      <EquityChart data={dispBase.equity_curve} initialCapital={result.initial_capital} color="#64748b" />
+                      <EquityChart data={dispBase.equity_curve} initialCapital={result.initial_capital} color="#94a3b8" />
                     </div>
                   )}
                 </div>
 
                 {/* Stats */}
-                <div className="bg-dark-card rounded-xl p-4 border border-dark-border">
+                <div className="elegant-card p-6 bg-white dark:bg-[#151E32]">
                   {dispBase ? (
-                    <div className="space-y-4">
-                      <StatsGrid stats={disp.stats} compare={dispBase.stats} label={`✦ Con strategie avanzate${leverage > 1 ? ` (${leverage}×)` : ''} (δ = diff vs baseline)`} />
-                      <div className="border-t border-dark-border pt-4">
-                        <StatsGrid stats={dispBase.stats} label={`○ Baseline${leverage > 1 ? ` (${leverage}×)` : ''}`} />
+                    <div className="space-y-8">
+                      <StatsGrid stats={disp.stats} compare={dispBase.stats} label={`Report Ottimizzato${leverage > 1 ? ` (${leverage}×)` : ''} — Variazione vs Baseline`} />
+                      <div className="border-t border-slate-100 dark:border-white/5 pt-8">
+                        <StatsGrid stats={dispBase.stats} label={`Analisi Baseline${leverage > 1 ? ` (${leverage}×)` : ''}`} />
                       </div>
                     </div>
                   ) : (
                     <StatsGrid
                       stats={disp.stats}
                       compare={leverage > 1 ? result.stats : undefined}
-                      label={leverage > 1 ? `${leverage}× leva simulata (δ = differenza vs 1×)` : undefined}
+                      label={leverage > 1 ? `Metriche Avanzate ${leverage}× (Delta vs Reale)` : 'Metriche di Performance'}
                     />
                   )}
                 </div>
 
                 {/* Trade table */}
                 {disp.trades.length > 0 && (
-                  <div className="bg-dark-card rounded-xl border border-dark-border overflow-hidden">
-                    <div className="px-4 py-3 border-b border-dark-border">
-                      <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wide">
-                        Ultimi {disp.trades.length} trade{leverage > 1 ? ` — ${leverage}× leva` : ''}
+                  <div className="elegant-card bg-white dark:bg-[#151E32] overflow-hidden">
+                    <div className="px-6 py-4 border-b border-slate-100 dark:border-white/5 bg-slate-50/50 dark:bg-white/[0.02]">
+                      <h3 className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest">
+                        Cronologia Operazioni ({disp.trades.length}){leverage > 1 ? ` — Leva ${leverage}×` : ''}
                       </h3>
                     </div>
                     <TradeTable trades={disp.trades} />
@@ -1103,167 +1204,170 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
             onClick={() => setIsDrawerOpen(false)}
           />
           {/* Panel */}
-          <div className="fixed top-0 right-0 h-full w-full max-w-md bg-[#0a0e1a] border-l border-dark-border z-50 flex flex-col shadow-2xl overflow-hidden">
+          <div className="fixed top-0 right-0 h-full w-full max-w-md bg-white dark:bg-[#0a0e1a] border-l border-slate-100 dark:border-white/5 z-50 flex flex-col shadow-2xl overflow-hidden transition-all">
             {/* Drawer header */}
-            <div className="flex items-center justify-between px-5 py-4 border-b border-dark-border flex-shrink-0">
+            <div className="flex items-center justify-between px-6 py-5 border-b border-slate-100 dark:border-white/5 flex-shrink-0 bg-slate-50/50 dark:bg-black/20">
               <div>
-                <h3 className="text-sm font-semibold text-white">Impostazioni Avanzate Backtest</h3>
-                <p className="text-xs text-slate-500 mt-0.5">Indipendenti dal bot live</p>
+                <h3 className="text-sm font-bold text-slate-900 dark:text-white uppercase tracking-wider">Intelligence Sandbox</h3>
+                <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mt-1">Impostazioni Avanzate Backtest</p>
               </div>
               <button
                 onClick={() => setIsDrawerOpen(false)}
-                className="p-1.5 rounded-lg text-slate-500 hover:text-white hover:bg-white/10 transition-colors"
+                className="p-2 rounded-xl text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/10 transition-all active:scale-90"
               >
-                <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                   <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
                 </svg>
               </button>
             </div>
 
             {/* Drawer body */}
-            <div className="flex-1 overflow-y-auto px-5 py-4 space-y-6">
+            <div className="flex-1 overflow-y-auto px-6 py-8 space-y-10 custom-scrollbar">
 
               {/* ── Motore Decisionale ──────────────────────────────────────────── */}
-              <section className="space-y-3">
-                <h4 className="text-xs font-semibold text-slate-400 uppercase tracking-wide flex items-center gap-2">
-                  <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 inline-block" />
+              <section className="space-y-5">
+                <h4 className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest flex items-center gap-2">
+                  <span className="w-1.5 h-1.5 rounded-full bg-indigo-500" />
                   Motore Decisionale
                 </h4>
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-2 gap-4">
                   <Tooltip text="Probabilità minima (0–1) che il modello deve avere per aprire un trade. 0.62 = il bot è almeno 62% sicuro della direzione." pos="bottom" width="wide">
-                    <NumInput label="Soglia direzionale" value={advDirThresh} onChange={setAdvDirThresh} step="0.01" min="0.50" max="0.90" />
+                    <NumInput label="Soglia segnale" value={advDirThresh} onChange={setAdvDirThresh} step="0.01" min="0.50" max="0.90" />
                   </Tooltip>
                   <Tooltip text="Average Directional Index: misura la forza del trend. Sotto questo valore il mercato è considerato laterale e il bot non opera." pos="bottom" width="wide">
-                    <NumInput label="ADX Gate" value={advAdxGate} onChange={setAdvAdxGate} step="1" min="10" max="40" />
+                    <NumInput label="ADX Power Gate" value={advAdxGate} onChange={setAdvAdxGate} step="1" min="10" max="40" />
                   </Tooltip>
                 </div>
                 <Tooltip text="Punteggio minimo del sistema Quantum Trade (0–100) come conferma aggiuntiva. Combina RSI, EMA, divergenze CVD e altri indicatori. 0 = disabilitato." pos="bottom" width="wide">
-                  <NumInput label="Confluence Gate" value={advConfGate} onChange={setAdvConfGate} step="1" min="0" max="100" unit="(0 = disabilitato)" />
+                  <NumInput label="Confluence confirmation" value={advConfGate} onChange={setAdvConfGate} step="1" min="0" max="100" unit="(QT SCORE)" />
                 </Tooltip>
               </section>
 
               {/* ── Filtri Segnale ──────────────────────────────────────────────── */}
-              <section className="space-y-3">
-                <h4 className="text-xs font-semibold text-slate-400 uppercase tracking-wide flex items-center gap-2">
-                  <span className="w-1.5 h-1.5 rounded-full bg-violet-400 inline-block" />
-                  Filtri Segnale
+              <section className="space-y-5">
+                <h4 className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest flex items-center gap-2">
+                  <span className="w-1.5 h-1.5 rounded-full bg-purple-500" />
+                  Filtri di Precisione
                 </h4>
-                <div className="space-y-3">
-                  <Toggle label="ADX Gate" desc="Filtra segnali quando l'ADX è sotto la soglia: mercato senza trend direzionale, spesso laterale o in compressione." checked={advAdxEnabled} onChange={setAdvAdxEnabled} />
-                  <Toggle label="Sweep Gate" desc="Liquidity Sweep: rileva quando i market maker cacciano gli stop prima di invertire. Attivo = il bot salta il segnale dopo uno sweep, evitando falsi breakout." checked={advSweepEnabled} onChange={setAdvSweepEnabled} />
-                  <Toggle label="FVG Filter" desc="Fair Value Gap (SMC): zona di prezzo non coperta da volumi. Attivo = non aprire long se c'è un FVG ribassista sopra, e viceversa. Evita di comprare in zone di resistenza." checked={advFvgEnabled} onChange={setAdvFvgEnabled} />
-                  <Toggle label="MTF Alignment" desc="Multi-TimeFrame Alignment: verifica che il regime daily (trend a lungo termine) sia allineato con il segnale 4h. Se allineato, abbassa la soglia di 0.02 favorendo il trade." checked={advMtfEnabled} onChange={setAdvMtfEnabled} />
+                <div className="space-y-4 bg-slate-50 dark:bg-white/[0.02] p-4 rounded-2xl border border-slate-100 dark:border-white/5">
+                  <Toggle label="Trend Strength Filter" desc="Usa l'ADX per evitare mercati laterali" checked={advAdxEnabled} onChange={setAdvAdxEnabled} />
+                  <Toggle label="Liquidity Sweep Filter" desc="Evita ingressi su falsi breakout di liquidità" checked={advSweepEnabled} onChange={setAdvSweepEnabled} />
+                  <Toggle label="Fair Value Gap (SMC)" desc="Filtra ingressi contro zone di inefficienza" checked={advFvgEnabled} onChange={setAdvFvgEnabled} />
+                  <Toggle label="MTF Daily Alignment" desc="Verifica allineamento con trend primario daily" checked={advMtfEnabled} onChange={setAdvMtfEnabled} />
                 </div>
               </section>
 
               {/* ── Strategie di Uscita ─────────────────────────────────────────── */}
-              <section className="space-y-4">
-                <h4 className="text-xs font-semibold text-slate-400 uppercase tracking-wide flex items-center gap-2">
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 inline-block" />
-                  Strategie di Uscita
+              <section className="space-y-6">
+                <h4 className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest flex items-center gap-2">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                  Position Management
                 </h4>
 
-                {/* Trailing SL */}
-                <div className="space-y-2">
-                  <Toggle label="Trailing Stop Loss" desc="Segue dinamicamente il prezzo: lo SL si aggiorna ad ogni candela (high water mark − N×ATR). Cattura profitto crescente se il trend continua." checked={trailingSL} onChange={setTrailingSL} />
-                  {trailingSL && (
-                    <div className="pl-13">
-                      <NumInput label="Attivazione dopo" value={trailAct} onChange={setTrailAct} step="0.1" min="0.5" max="3" unit="× ATR" />
-                    </div>
-                  )}
-                </div>
+                <div className="space-y-6">
+                  {/* Trailing SL */}
+                  <div className="space-y-3">
+                    <Toggle label="Trailing Stop Loss" desc="Insegue il profitto aggiornando lo stop dinamico" checked={trailingSL} onChange={setTrailingSL} />
+                    {trailingSL && (
+                      <div className="pl-12">
+                        <NumInput label="Attivazione dinamica" value={trailAct} onChange={setTrailAct} step="0.1" min="0.5" max="3" unit="ATR DIST" />
+                      </div>
+                    )}
+                  </div>
 
-                {/* Partial TP */}
-                <div className="space-y-2">
-                  <Toggle label="Partial Take Profit" desc="Chiudi una quota della posizione al primo target, lascia correre il resto" checked={partialTP} onChange={setPartialTP} />
-                  {partialTP && (
-                    <div className="pl-13 grid grid-cols-2 gap-3">
-                      <NumInput label="Target" value={partialMult} onChange={setPartialMult} step="0.1" min="0.5" max="5" unit="× ATR" />
-                      <NumInput label="Quota" value={partialPct} onChange={setPartialPct} step="5" min="10" max="90" unit="%" />
-                    </div>
-                  )}
-                </div>
+                  {/* Partial TP */}
+                  <div className="space-y-3">
+                    <Toggle label="Partial Take Profit" desc="Monetizza una parte della posizione a target intermedio" checked={partialTP} onChange={setPartialTP} />
+                    {partialTP && (
+                      <div className="pl-12 grid grid-cols-2 gap-4">
+                        <NumInput label="Target TP1" value={partialMult} onChange={setPartialMult} step="0.1" min="0.5" max="5" unit="ATR" />
+                        <NumInput label="Volume" value={partialPct} onChange={setPartialPct} step="5" min="10" max="90" unit="%" />
+                      </div>
+                    )}
+                  </div>
 
-                {/* Break-even SL */}
-                <div className="space-y-2">
-                  <Toggle label="Break-even Stop Loss" desc="Sposta lo SL al prezzo di entrata UNA VOLTA SOLA quando il trade raggiunge N×ATR di profitto. Azzera il rischio senza seguire il prezzo." checked={advBeSL} onChange={setAdvBeSL} />
-                  {advBeSL && (
-                    <div className="pl-13">
-                      <NumInput label="Attivazione BE" value={advBeSLAct} onChange={setAdvBeSLAct} step="0.1" min="0.5" max="3.0" unit="× ATR" />
-                    </div>
-                  )}
-                </div>
+                  {/* Break-even SL */}
+                  <div className="space-y-3">
+                    <Toggle label="Risk-Free Break Even" desc="Proteggi il capitale spostando lo stop a prezzo d'entrata" checked={advBeSL} onChange={setAdvBeSL} />
+                    {advBeSL && (
+                      <div className="pl-12">
+                        <NumInput label="Soglia protezione" value={advBeSLAct} onChange={setAdvBeSLAct} step="0.1" min="0.5" max="3.0" unit="ATR" />
+                      </div>
+                    )}
+                  </div>
 
-                {/* Max Hold Bars */}
-                <div className="space-y-2">
-                  <Toggle label="Max Hold Bars" desc="Chiude forzatamente la posizione dopo N candele indipendentemente da SL/TP" checked={advMaxHold} onChange={setAdvMaxHold} />
-                  {advMaxHold && (
-                    <div className="pl-13">
-                      <NumInput label="Numero candele max" value={advMaxHoldBars} onChange={setAdvMaxHoldBars} step="1" min="12" max="168" unit={`≈ ${Math.round(parseInt(advMaxHoldBars || '48') * 4 / 24)}d`} />
-                    </div>
-                  )}
+                  {/* Max Hold Bars */}
+                  <div className="space-y-3">
+                    <Toggle label="Time-Based Exit" desc="Uscita forzata dopo un periodo di tempo predefinito" checked={advMaxHold} onChange={setAdvMaxHold} />
+                    {advMaxHold && (
+                      <div className="pl-12">
+                        <NumInput label="Durata massima" value={advMaxHoldBars} onChange={setAdvMaxHoldBars} step="1" min="12" max="168" unit={`CANDLE (~${Math.round(parseInt(advMaxHoldBars || '48') * 4 / 24)}d)`} />
+                      </div>
+                    )}
+                  </div>
                 </div>
 
                 {/* Confronto A/B */}
                 {advancedActive && (
-                  <div className="border-t border-dark-border pt-3">
-                    <Toggle label="Confronto A/B" desc="Esegue anche il backtest senza le strategie avanzate per mostrare le differenze" checked={compareMode} onChange={setCompareMode} />
+                  <div className="pt-6 border-t border-slate-100 dark:border-white/5">
+                    <Toggle label="Modalità Confronto A/B" desc="Simula baseline vs ottimizzato per vedere il valore aggiunto" checked={compareMode} onChange={setCompareMode} />
                   </div>
                 )}
               </section>
 
               {/* ── LightGBM Mid-Trade Exit ─────────────────────────────────────── */}
-              <section className="space-y-3">
-                <h4 className="text-xs font-semibold text-slate-400 uppercase tracking-wide flex items-center gap-2">
-                  <span className="w-1.5 h-1.5 rounded-full bg-rose-400 inline-block" />
-                  LightGBM Mid-Trade Exit
+              <section className="space-y-5">
+                <h4 className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest flex items-center gap-2">
+                  <span className="w-1.5 h-1.5 rounded-full bg-rose-500" />
+                  Mid-Trade Intelligence
                 </h4>
                 <Toggle
-                  label="Abilita LGBM Exit"
-                  desc="Ad ogni candela mentre il trade è aperto, il modello LightGBM rivaluta la probabilità direzionale. Se scende sotto la soglia per N barre consecutive, chiude anticipatamente il trade (utile per uscire da trend che si indeboliscono)."
+                  label="Dynamic LGBM Signal Exit"
+                  desc="Uscita intelligente basata sul decadimento del momentum rilevato dal modello LightGBM"
                   checked={lgbmExit}
                   onChange={setLgbmExit}
                 />
                 {lgbmExit && (
-                  <div className="pl-13 grid grid-cols-3 gap-3">
+                  <div className="pl-12 grid grid-cols-1 gap-4">
                     <Tooltip text="Se la probabilità LightGBM scende sotto questo valore per N barre consecutive, il trade viene chiuso anticipatamente." pos="top" width="wide">
-                      <NumInput label="Soglia p <" value={lgbmThresh} onChange={setLgbmThresh} step="0.01" min="0.20" max="0.50" />
+                      <NumInput label="Soglia criticità p <" value={lgbmThresh} onChange={setLgbmThresh} step="0.01" min="0.20" max="0.50" />
                     </Tooltip>
-                    <Tooltip text="Numero minimo di barre (candele 4h) prima che l'uscita anticipata possa scattare. Evita uscite troppo precoci." pos="top" width="wide">
+                    <div className="grid grid-cols-2 gap-4">
                       <NumInput label="Hold min (barre)" value={lgbmMinHold} onChange={setLgbmMinHold} step="1" min="1" max="48" />
-                    </Tooltip>
-                    <Tooltip text="Numero di barre consecutive in cui la probabilità deve essere sotto la soglia prima di uscire. Più alto = meno falsi segnali di uscita." pos="top" width="wide">
-                      <NumInput label="Conferma consec." value={lgbmConfirm} onChange={setLgbmConfirm} step="1" min="1" max="6" />
-                    </Tooltip>
+                      <NumInput label="Conferma barre" value={lgbmConfirm} onChange={setLgbmConfirm} step="1" min="1" max="6" />
+                    </div>
                   </div>
                 )}
               </section>
 
               {/* ── Chronos-2 ──────────────────────────────────────────────────── */}
-              <section className="space-y-3">
-                <h4 className="text-xs font-semibold text-slate-400 uppercase tracking-wide flex items-center gap-2">
-                  <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 inline-block" />
-                  Chronos-2
+              <section className="space-y-5">
+                <h4 className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest flex items-center gap-2">
+                  <span className="w-1.5 h-1.5 rounded-full bg-cyan-500" />
+                  Chronos-2 Engine
                 </h4>
                 <Toggle
-                  label="Inferenza Chronos-2 attiva"
-                  desc="Abilita il modello transformer Chronos-2 (800MB) per generare previsioni probabilistiche su ogni candela del backtest. Più accurato ma molto lento (~3 secondi per candela). Disabilitato = usa un prior neutro veloce."
+                  label="Transformer Inference"
+                  desc="Usa il modello Chronos-2 per previsioni temporali ad alta precisione"
                   checked={useChronos}
                   onChange={setUseChronos}
                 />
                 {useChronos && (
-                  <p className="pl-13 text-xs text-amber-400/80 font-mono">
-                    ⚠ 1 mese ≈ 10 min · 1 anno ≈ 2h — usa periodi brevi
-                  </p>
+                  <div className="pl-12 flex items-start gap-3 bg-amber-50 dark:bg-amber-500/10 p-3 rounded-xl border border-amber-100 dark:border-amber-500/20">
+                    <svg className="w-4 h-4 text-amber-600 dark:text-amber-500 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                    <p className="text-[10px] font-bold text-amber-600 dark:text-amber-400 leading-tight uppercase">
+                      L'elaborazione Chronos richiede risorse GPU elevate (~3s/candela). Si consigliano periodi brevi per l'analisi.
+                    </p>
+                  </div>
                 )}
-                <div className="pl-13">
+                <div className="pl-12">
                   <Tooltip text="Quanto peso dare a Chronos-2 nella decisione finale. Il peso rimanente va a LightGBM. Esempio: 0.4 Chronos = 60% LightGBM + 40% Chronos." pos="top" width="wide">
                     <NumInput
-                      label="Peso Chronos-2 nell'ensemble"
+                      label="Blending Weight Ensemble"
                       value={advChronosWeight}
                       onChange={setAdvChronosWeight}
                       step="0.05" min="0.0" max="0.9"
-                      unit={`LightGBM ${Math.round((1 - parseFloat(advChronosWeight || '0.4')) * 100)}%`}
+                      unit={`LGBM ${Math.round((1 - parseFloat(advChronosWeight || '0.4')) * 100)}%`}
                     />
                   </Tooltip>
                 </div>
@@ -1272,38 +1376,34 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
             </div>
 
             {/* Drawer footer */}
-            <div className="flex items-center gap-3 px-5 py-4 border-t border-dark-border flex-shrink-0">
+            <div className="flex items-center gap-4 px-6 pt-5 pb-8 border-t border-slate-100 dark:border-white/5 flex-shrink-0 bg-slate-50/50 dark:bg-black/20">
               <button
                 onClick={loadFromLive}
                 disabled={drawerLoading}
-                className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 text-xs font-medium bg-white/5 hover:bg-white/10 border border-dark-border rounded-lg text-slate-400 hover:text-white transition-colors disabled:opacity-50"
+                className="flex-1 flex items-center justify-center gap-2 px-4 py-3 text-[10px] font-bold uppercase tracking-widest bg-white dark:bg-white/5 hover:bg-slate-50 dark:hover:bg-white/10 border border-slate-100 dark:border-white/10 rounded-xl text-slate-500 dark:text-slate-400 transition-all active:scale-95 disabled:opacity-50"
               >
                 {drawerLoading ? (
-                  <svg className="w-3.5 h-3.5 animate-spin" viewBox="0 0 24 24" fill="none">
-                    <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="40 20" />
-                  </svg>
+                  <div className="w-3 h-3 border-2 border-slate-300 dark:border-slate-600 border-t-indigo-500 rounded-full animate-spin"></div>
                 ) : (
-                  <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                     <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
                   </svg>
                 )}
-                Carica da Live
+                Importa Live
               </button>
               <button
                 onClick={saveAsDefault}
                 disabled={drawerSaving}
-                className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 text-xs font-semibold bg-indigo-600 hover:bg-indigo-500 disabled:bg-indigo-800 rounded-lg text-white transition-colors disabled:opacity-50"
+                className="flex-1 flex items-center justify-center gap-2 px-4 py-3 text-[10px] font-bold uppercase tracking-widest bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 rounded-xl text-white transition-all shadow-lg shadow-indigo-500/20 active:scale-95"
               >
                 {drawerSaving ? (
-                  <svg className="w-3.5 h-3.5 animate-spin" viewBox="0 0 24 24" fill="none">
-                    <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="40 20" />
-                  </svg>
+                  <div className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
                 ) : (
-                  <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                     <path strokeLinecap="round" strokeLinejoin="round" d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4" />
                   </svg>
                 )}
-                Salva come Default
+                Salva Default
               </button>
             </div>
           </div>

@@ -52,21 +52,21 @@ export const ForecastView: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between mb-2">
         <div>
-          <h2 className="text-lg font-bold text-white">Forecast Probabilistico</h2>
-          <p className="text-xs text-slate-500 mt-0.5">
+          <h2 className="text-xl font-bold text-slate-900 dark:text-white tracking-tight uppercase">Forecast Probabilistico</h2>
+          <p className="text-xs font-medium text-slate-500 dark:text-slate-400 mt-1">
             Chronos-2 Base · Orizzonte 12h (3×4h) · 200 campioni Monte Carlo
           </p>
         </div>
         <button
           onClick={fetchForecast}
           disabled={loading}
-          className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-semibold rounded-xl transition-colors disabled:opacity-50 flex items-center gap-2"
+          className="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-bold rounded-xl transition-all shadow-lg shadow-indigo-500/20 active:scale-95 disabled:opacity-50 flex items-center gap-2"
         >
           {loading
-            ? <><span className="inline-block w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin" />Inference…</>
-            : '↻ Aggiorna'}
+            ? <><span className="inline-block w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />Inference…</>
+            : '↻ Aggiorna Analisi'}
         </button>
       </div>
 
@@ -78,40 +78,49 @@ export const ForecastView: React.FC<{ apiBase: string }> = ({ apiBase }) => {
       )}
 
       {loading && !data && (
-        <div className="rounded-2xl bg-dark-card border border-dark-border p-12 text-center">
-          <div className="inline-block w-8 h-8 border-2 border-indigo-500/30 border-t-indigo-500 rounded-full animate-spin mb-4" />
-          <p className="text-slate-500 text-sm">Caricamento Chronos-2 (~800MB, prima esecuzione può richiedere 30s)…</p>
+        <div className="elegant-card p-16 text-center bg-white dark:bg-[#151E32]">
+          <div className="inline-block w-10 h-10 border-2 border-indigo-500/30 border-t-indigo-500 rounded-full animate-spin mb-6" />
+          <p className="text-slate-500 dark:text-slate-400 text-sm font-medium">Caricamento Chronos-2 Intelligence (~800MB)…</p>
+          <p className="text-[10px] text-slate-400 dark:text-slate-500 mt-2">La prima esecuzione può richiedere fino a 30s per il caricamento in memoria</p>
         </div>
       )}
 
       {data && (
         <>
           {/* Price header */}
-          <div className="rounded-2xl bg-dark-card border border-dark-border p-6">
-            <div className="flex items-start justify-between mb-5">
-              <div>
-                <p className="text-xs text-slate-500">BTC · Prezzo attuale</p>
-                <p className="text-3xl font-bold font-mono text-white mt-1">
-                  ${data.current_price.toLocaleString('en-US', { minimumFractionDigits: 2 })}
-                </p>
-                <p className="text-xs text-slate-500 mt-1">
-                  Ultima candela 4h: {new Date(data.last_candle_time).toLocaleString('it-IT')}
-                </p>
+          <div className="elegant-card p-6 bg-white dark:bg-[#151E32]">
+            <div className="flex items-start justify-between mb-8">
+              <div className="flex items-center gap-4">
+                 <div className="p-3 bg-indigo-50 dark:bg-indigo-500/10 rounded-xl">
+                    <svg className="w-6 h-6 text-indigo-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" /></svg>
+                 </div>
+                 <div>
+                    <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest">BTC Market Price</p>
+                    <p className="text-4xl font-bold font-mono text-slate-900 dark:text-white tracking-tighter mt-0.5">
+                      ${data.current_price.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                    </p>
+                    <p className="text-xs font-medium text-slate-500 dark:text-slate-400 mt-1">
+                      Ultima candela 4h: {new Date(data.last_candle_time).toLocaleString('it-IT')}
+                    </p>
+                 </div>
               </div>
-              <div className="text-right space-y-1">
-                <p className="text-xs text-slate-500">Inferenza</p>
-                <p className="text-sm font-mono text-slate-300">{data.latency_ms.toFixed(0)}ms</p>
+              <div className="text-right">
+                <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-1">Inferenza AI</p>
+                <div className="flex items-center justify-end gap-2">
+                   <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse"></span>
+                   <p className="text-sm font-bold font-mono text-slate-700 dark:text-slate-300">{data.latency_ms.toFixed(0)}ms</p>
+                </div>
                 {data.atr && (
-                  <>
-                    <p className="text-xs text-slate-500 mt-1">ATR(14)</p>
-                    <p className="text-sm font-mono text-slate-400">${data.atr.toFixed(0)}</p>
-                  </>
+                  <div className="mt-4">
+                    <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-1">ATR (14)</p>
+                    <p className="text-sm font-bold font-mono text-slate-600 dark:text-slate-400">${data.atr.toFixed(0)}</p>
+                  </div>
                 )}
               </div>
             </div>
 
             {/* SVG Fan Chart */}
-            <div className="rounded-xl bg-black/30 p-3 mb-6" style={{ height: 200 }}>
+            <div className="rounded-2xl bg-slate-50 dark:bg-black/20 border border-slate-100 dark:border-white/5 p-4 mb-8" style={{ height: 220 }}>
               <FanChartSVG
                 currentPrice={data.current_price}
                 fan={data.fan}
@@ -120,7 +129,7 @@ export const ForecastView: React.FC<{ apiBase: string }> = ({ apiBase }) => {
             </div>
 
             {/* Quantile strip */}
-            <div className="grid grid-cols-3 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
               <Tooltip text="Scenario pessimistico: il 90% delle simulazioni prevede un prezzo finale sopra questo livello. Solo il 10% va peggio." pos="bottom">
                 <QuantileCard label="p10 — Pessimista" value={data.c2_p10} current={data.current_price} />
               </Tooltip>
@@ -165,29 +174,43 @@ export const ForecastView: React.FC<{ apiBase: string }> = ({ apiBase }) => {
           </div>
 
           {/* Uncertainty + p50 vs ATR */}
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <Tooltip text="Quanto il modello è incerto sulla previsione. Calcolata come (p90 − p10) / prezzo attuale. Sotto 2% = alta confidenza (verde), 2-4% = media (giallo), sopra 4% = bassa (rosso)." width="wide" pos="top">
-              <div className="rounded-2xl bg-dark-card border border-dark-border p-5">
-                <p className="text-sm font-semibold text-slate-300">Incertezza Modello</p>
-                <p className="text-xs text-slate-500 mt-0.5 mb-3">(p90 − p10) / prezzo — più bassa = più confidenza</p>
-                <p className={`text-2xl font-bold font-mono ${
-                  data.c2_uncertainty < 0.02 ? 'text-emerald-400'
-                  : data.c2_uncertainty < 0.04 ? 'text-amber-400' : 'text-red-400'
-                }`}>
-                  {(data.c2_uncertainty * 100).toFixed(2)}%
-                </p>
+              <div className="elegant-card p-6 bg-white dark:bg-[#151E32] w-full h-full flex flex-col justify-between">
+                <div>
+                  <div className="flex items-center gap-3 mb-4">
+                    <div className="p-2 bg-slate-50 dark:bg-white/5 rounded-lg">
+                        <svg className="w-4 h-4 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" /></svg>
+                    </div>
+                    <p className="text-sm font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider">Incertezza Modello</p>
+                  </div>
+                  <p className={`text-3xl font-bold font-mono tracking-tighter ${
+                    data.c2_uncertainty < 0.02 ? 'text-emerald-600 dark:text-emerald-400'
+                    : data.c2_uncertainty < 0.04 ? 'text-amber-600 dark:text-amber-400' : 'text-rose-600 dark:text-rose-400'
+                  }`}>
+                    {(data.c2_uncertainty * 100).toFixed(2)}%
+                  </p>
+                </div>
+                <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase mt-2">Confidenza: {data.c2_uncertainty < 0.02 ? 'Alta' : data.c2_uncertainty < 0.04 ? 'Media' : 'Bassa'}</p>
               </div>
             </Tooltip>
             <Tooltip text="Distanza tra il prezzo mediano previsto (p50) e il prezzo attuale, espressa in unità di ATR. Positivo = il modello prevede salita, negativo = prevede discesa. Vicino a 0 = nessuna direzione chiara." width="wide" pos="top">
-              <div className="rounded-2xl bg-dark-card border border-dark-border p-5">
-                <p className="text-sm font-semibold text-slate-300">p50 vs ATR</p>
-                <p className="text-xs text-slate-500 mt-0.5 mb-3">Distanza mediana dal prezzo in unità ATR</p>
-                <p className={`text-2xl font-bold font-mono ${
-                  Math.abs(data.c2_p50_vs_atr) < 0.5 ? 'text-slate-400'
-                  : data.c2_p50_vs_atr > 0 ? 'text-emerald-400' : 'text-red-400'
-                }`}>
-                  {data.c2_p50_vs_atr >= 0 ? '+' : ''}{data.c2_p50_vs_atr.toFixed(3)}
-                </p>
+              <div className="elegant-card p-6 bg-white dark:bg-[#151E32] w-full h-full flex flex-col justify-between">
+                <div>
+                  <div className="flex items-center gap-3 mb-4">
+                    <div className="p-2 bg-slate-50 dark:bg-white/5 rounded-lg">
+                        <svg className="w-4 h-4 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 12l3-3 3 3 4-4M8 21l4-4 4 4M3 4h18M4 4h16v12a1 1 0 01-1 1H5a1 1 0 01-1-1V4z" /></svg>
+                    </div>
+                    <p className="text-sm font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider">p50 vs ATR</p>
+                  </div>
+                  <p className={`text-3xl font-bold font-mono tracking-tighter ${
+                    Math.abs(data.c2_p50_vs_atr) < 0.5 ? 'text-slate-500'
+                    : data.c2_p50_vs_atr > 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'
+                  }`}>
+                    {data.c2_p50_vs_atr >= 0 ? '+' : ''}{data.c2_p50_vs_atr.toFixed(3)}
+                  </p>
+                </div>
+                <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase mt-2">Bias Direzionale: {Math.abs(data.c2_p50_vs_atr) < 0.5 ? 'Neutro' : data.c2_p50_vs_atr > 0 ? 'Rialzista' : 'Ribassista'}</p>
               </div>
             </Tooltip>
           </div>
@@ -253,10 +276,10 @@ const FanChartSVG: React.FC<{
         <g key={i}>
           <line
             x1={PAD.l} y1={py(price)} x2={W - PAD.r} y2={py(price)}
-            stroke="rgba(255,255,255,0.04)" strokeDasharray="3,5"
+            stroke="currentColor" className="text-slate-200 dark:text-white/5" strokeDasharray="3,5"
           />
-          <text x={PAD.l - 5} y={py(price) + 4} textAnchor="end"
-            fontSize="9" fill="rgba(148,163,184,0.5)" fontFamily="monospace">
+          <text x={PAD.l - 8} y={py(price) + 4} textAnchor="end"
+            fontSize="9" className="fill-slate-400 dark:fill-slate-500 font-bold" fontFamily="monospace">
             {fmtPrice(price)}
           </text>
         </g>
@@ -277,7 +300,7 @@ const FanChartSVG: React.FC<{
       {/* Current price dashed reference */}
       <line
         x1={PAD.l} y1={py(currentPrice)} x2={W - PAD.r} y2={py(currentPrice)}
-        stroke="rgba(255,255,255,0.18)" strokeDasharray="5,5" strokeWidth="1"
+        stroke="currentColor" className="text-slate-300 dark:text-white/20" strokeDasharray="5,5" strokeWidth="1"
       />
 
       {/* P50 median path */}
@@ -297,8 +320,8 @@ const FanChartSVG: React.FC<{
       ))}
 
       {/* Current price label */}
-      <text x={PAD.l - 5} y={py(currentPrice) + 4} textAnchor="end"
-        fontSize="9" fill="rgba(255,255,255,0.4)" fontFamily="monospace">
+      <text x={PAD.l - 8} y={py(currentPrice) + 4} textAnchor="end"
+        fontSize="10" className="fill-slate-700 dark:fill-white font-bold" fontFamily="monospace">
         {fmtPrice(currentPrice)}
       </text>
 
@@ -311,12 +334,12 @@ const FanChartSVG: React.FC<{
       ))}
 
       {/* p10 / p90 boundary labels at last step */}
-      <text x={xs[n] + 4} y={py(p90[n]) + 4} textAnchor="start"
-        fontSize="8.5" fill="rgba(148,163,184,0.4)" fontFamily="monospace">
+      <text x={xs[n] + 8} y={py(p90[n]) + 4} textAnchor="start"
+        fontSize="9" className="fill-slate-400 dark:fill-slate-500 font-bold" fontFamily="monospace">
         {fmtPrice(p90[n])}
       </text>
-      <text x={xs[n] + 4} y={py(p10[n]) + 4} textAnchor="start"
-        fontSize="8.5" fill="rgba(148,163,184,0.4)" fontFamily="monospace">
+      <text x={xs[n] + 8} y={py(p10[n]) + 4} textAnchor="start"
+        fontSize="9" className="fill-slate-400 dark:fill-slate-500 font-bold" fontFamily="monospace">
         {fmtPrice(p10[n])}
       </text>
     </svg>
@@ -331,16 +354,18 @@ const QuantileCard: React.FC<{
   const diff = (value - current) / current * 100;
   const up = value >= current;
   return (
-    <div className={`rounded-xl p-4 border ${
-      highlight ? 'border-indigo-500/40 bg-indigo-500/10' : 'border-dark-border bg-white/5'
+    <div className={`rounded-xl p-4 border transition-all w-full h-full flex flex-col justify-between ${
+      highlight ? 'border-indigo-600/20 dark:border-indigo-500/40 bg-indigo-50 dark:bg-indigo-500/10 shadow-md' : 'border-slate-200 dark:border-white/5 bg-slate-50 dark:bg-white/5 hover:border-slate-300 dark:hover:border-white/10'
     }`}>
-      <p className="text-xs text-slate-500 mb-1">{label}</p>
-      <p className="text-lg font-bold font-mono text-white">
-        ${value.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
-      </p>
-      <p className={`text-xs font-mono mt-0.5 ${up ? 'text-emerald-400' : 'text-red-400'}`}>
-        {up ? '+' : ''}{diff.toFixed(2)}%
-      </p>
+      <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-1">{label}</p>
+      <div>
+        <p className={`text-xl font-bold font-mono tracking-tighter ${highlight ? 'text-indigo-600 dark:text-indigo-400' : 'text-slate-900 dark:text-white'}`}>
+          ${value.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
+        </p>
+        <p className={`text-[10px] font-bold font-mono mt-0.5 ${up ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>
+          {up ? '▲' : '▼'} {diff.toFixed(2)}%
+        </p>
+      </div>
     </div>
   );
 };
@@ -352,26 +377,26 @@ const ProbCard: React.FC<{
   const pct    = Math.round(value * 100);
   const active = value > threshold;
   const cols   = {
-    indigo:  { border: 'border-indigo-500/40',  bg: 'bg-indigo-500/10',  bar: 'bg-indigo-500',  txt: 'text-indigo-400'  },
-    amber:   { border: 'border-amber-500/40',   bg: 'bg-amber-500/10',   bar: 'bg-amber-500',   txt: 'text-amber-400'   },
-    emerald: { border: 'border-emerald-500/40', bg: 'bg-emerald-500/10', bar: 'bg-emerald-500', txt: 'text-emerald-400' },
+    indigo:  { border: 'border-indigo-600/20 dark:border-indigo-500/30',  bg: 'bg-indigo-50 dark:bg-indigo-500/5',  bar: 'bg-indigo-600 dark:bg-indigo-500',  txt: 'text-indigo-600 dark:text-indigo-400'  },
+    amber:   { border: 'border-amber-600/20 dark:border-amber-500/30',   bg: 'bg-amber-50 dark:bg-amber-500/5',   bar: 'bg-amber-600 dark:bg-amber-500',   txt: 'text-amber-600 dark:text-amber-400'   },
+    emerald: { border: 'border-emerald-600/20 dark:border-emerald-500/30', bg: 'bg-emerald-50 dark:bg-emerald-500/5', bar: 'bg-emerald-600 dark:bg-emerald-500', txt: 'text-emerald-600 dark:text-emerald-400' },
   };
   const c = cols[color];
   return (
-    <div className={`rounded-2xl border p-5 ${active ? `${c.border} ${c.bg}` : 'border-dark-border bg-dark-card'}`}>
-      <p className="text-sm font-semibold text-slate-300">{label}</p>
-      <p className="text-xs text-slate-500 mt-0.5 mb-3">{description}</p>
-      <div className="flex items-end gap-2 mb-3">
-        <p className={`text-3xl font-bold font-mono ${active ? c.txt : 'text-slate-400'}`}>{pct}%</p>
-        {active && <span className={`text-xs mb-1 ${c.txt}`}>▲ sopra soglia</span>}
+    <div className={`elegant-card p-6 transition-all w-full h-full flex flex-col justify-between ${active ? `${c.border} ${c.bg}` : 'border-slate-200 dark:border-white/5 bg-white dark:bg-[#151E32]'}`}>
+      <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-1">{label}</p>
+      <p className="text-xs font-medium text-slate-500 dark:text-slate-400 mb-4">{description}</p>
+      <div className="flex items-baseline gap-2 mb-4">
+        <p className={`text-4xl font-bold font-mono tracking-tighter ${active ? c.txt : 'text-slate-400 dark:text-slate-500'}`}>{pct}%</p>
+        {active && <span className={`text-[10px] font-bold uppercase ${c.txt} tracking-wider animate-pulse`}>Sopra Soglia</span>}
       </div>
-      <div className="h-1.5 bg-white/10 rounded-full overflow-hidden">
+      <div className="h-2 bg-slate-100 dark:bg-white/5 rounded-full overflow-hidden">
         <div
-          className={`h-full rounded-full transition-all duration-500 ${active ? c.bar : 'bg-slate-600'}`}
+          className={`h-full rounded-full transition-all duration-700 ${active ? c.bar : 'bg-slate-300 dark:bg-slate-700'}`}
           style={{ width: `${pct}%` }}
         />
       </div>
-      <p className="text-xs text-slate-600 mt-1.5">Soglia attivazione: {Math.round(threshold * 100)}%</p>
+      <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase mt-3">Target attivazione: {Math.round(threshold * 100)}%</p>
     </div>
   );
 };

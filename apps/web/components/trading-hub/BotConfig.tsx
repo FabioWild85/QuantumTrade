@@ -55,137 +55,142 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     }
   };
 
-  const upd = (key: keyof Config) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
-    const val = e.target.type === 'number' ? parseFloat(e.target.value) : e.target.value;
-    setConfig(c => ({ ...c, [key]: val }));
+  const upd = (key: keyof Config) => (v: number) => {
+    setConfig(c => ({ ...c, [key]: v }));
   };
 
   const rr = (config.tp_atr_mult / config.sl_atr_mult).toFixed(2);
   const be = (1 / (1 + config.tp_atr_mult / config.sl_atr_mult) * 100).toFixed(1);
 
   return (
-    <div className="space-y-6 max-w-2xl">
-      <div>
-        <h2 className="text-lg font-bold text-white">Bot Configuration</h2>
-        <p className="text-xs text-slate-500 mt-0.5">Parametri attivi della strategia TrendFollowing4hBTC</p>
+    <div className="space-y-8 max-w-4xl">
+      <div className="mb-8">
+        <h2 className="text-xl font-bold text-slate-900 dark:text-white uppercase tracking-tight">Parametri Operativi</h2>
+        <p className="text-[11px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mt-1">Configurazione Strategia BTC-PERP · Trend Following 4h</p>
       </div>
 
-      {/* Mode */}
-      <div className="rounded-2xl bg-dark-card border border-dark-border p-5">
-        <h3 className="text-sm font-bold text-slate-300 mb-4">Modalità</h3>
-        <div className="flex gap-3">
+      {/* Mode Selection */}
+      <Section title="Ambiente di Esecuzione" description="Seleziona la modalità operativa del bot. Il Paper Trading simula l'esecuzione, il Live Trading opera con fondi reali.">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <Tooltip text="Paper Trading: il bot simula operazioni usando dati reali di mercato ma senza usare fondi veri. Ideale per testare la strategia senza rischi." pos="bottom">
             <button
               onClick={() => setConfig(c => ({ ...c, mode: 'paper' }))}
-              className={`flex-1 py-3 rounded-xl text-sm font-semibold transition-colors ${
+              className={`w-full py-4 rounded-xl text-[11px] font-bold uppercase tracking-widest transition-all border ${
                 config.mode === 'paper'
-                  ? 'bg-indigo-600 text-white'
-                  : 'bg-white/5 text-slate-400 hover:bg-white/10'
+                  ? 'bg-indigo-600 text-white border-indigo-600 shadow-lg shadow-indigo-500/30'
+                  : 'bg-slate-50 dark:bg-white/5 text-slate-400 dark:text-slate-500 border-slate-100 dark:border-white/10 hover:bg-slate-100 dark:hover:bg-white/10'
               }`}
             >
-              📄 Paper Trading
+              Paper Trading
             </button>
           </Tooltip>
           <Tooltip text="Live Trading: il bot opera con fondi reali su Hyperliquid. Richiede un agent wallet configurato nelle Impostazioni. Usare con cautela." pos="bottom">
             <button
               onClick={() => setConfig(c => ({ ...c, mode: 'live' }))}
-              className={`flex-1 py-3 rounded-xl text-sm font-semibold transition-colors ${
+              className={`w-full py-4 rounded-xl text-[11px] font-bold uppercase tracking-widest transition-all border ${
                 config.mode === 'live'
-                  ? 'bg-amber-600 text-white'
-                  : 'bg-white/5 text-slate-400 hover:bg-white/10'
+                  ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-900 border-slate-900 dark:border-white shadow-lg'
+                  : 'bg-slate-50 dark:bg-white/5 text-slate-400 dark:text-slate-500 border-slate-100 dark:border-white/10 hover:bg-slate-100 dark:hover:bg-white/10'
               }`}
             >
-              ⚡ Live Trading
+              Live Trading
             </button>
           </Tooltip>
         </div>
         {config.mode === 'live' && (
-          <p className="mt-3 text-xs text-amber-400 bg-amber-500/10 rounded-lg px-3 py-2">
-            ⚠️ Live mode usa fondi reali su Hyperliquid mainnet. Assicurati che l'agent wallet sia configurato nelle Settings.
-          </p>
+          <div className="mt-4 flex items-start gap-3 bg-rose-50 dark:bg-rose-500/10 border border-rose-100 dark:border-rose-500/20 rounded-xl px-4 py-3 animate-in fade-in slide-in-from-top-1">
+             <svg className="w-5 h-5 text-rose-500 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
+             <p className="text-[10px] font-bold text-rose-600 dark:text-rose-400 uppercase tracking-tight leading-relaxed">
+               Attenzione: La modalità Live utilizza asset reali su Hyperliquid. Verifica attentamente le soglie di rischio prima di salvare.
+             </p>
+          </div>
         )}
-      </div>
+      </Section>
 
       {/* Risk Management */}
-      <div className="rounded-2xl bg-dark-card border border-dark-border p-5">
-        <h3 className="text-sm font-bold text-slate-300 mb-4">Risk Management</h3>
-        <div className="grid grid-cols-2 gap-4">
-          <Tooltip text="Distanza dello Stop Loss dal prezzo di entrata, espressa come multiplo dell'ATR (Average True Range). ATR misura la volatilità media del mercato. Valore maggiore = tolleranza maggiore alle oscillazioni." width="wide" pos="bottom">
-            <NumberField label="SL Multiplier (× ATR)" value={config.sl_atr_mult} min={0.5} max={5} step={0.1} onChange={upd('sl_atr_mult')} />
+      <Section title="Risk Management" description="Gestione dell'esposizione e dei livelli di uscita. Questi parametri determinano la conservatività del bot.">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-6">
+          <Tooltip text="Distanza dello Stop Loss dal prezzo di entrata, espressa come multiplo dell'ATR." width="wide" pos="bottom">
+            <NumInput label="SL Multiplier (× ATR)" value={config.sl_atr_mult} min={0.5} max={5} step={0.1} onChange={upd('sl_atr_mult')} />
           </Tooltip>
-          <Tooltip text="Distanza del Take Profit dal prezzo di entrata, in multipli di ATR. Valore maggiore = obiettivo di guadagno più lontano ma meno frequente." width="wide" pos="bottom">
-            <NumberField label="TP Multiplier (× ATR)" value={config.tp_atr_mult} min={1} max={10} step={0.1} onChange={upd('tp_atr_mult')} />
+          <Tooltip text="Distanza del Take Profit dal prezzo di entrata, in multipli di ATR." width="wide" pos="bottom">
+            <NumInput label="TP Multiplier (× ATR)" value={config.tp_atr_mult} min={1} max={10} step={0.1} onChange={upd('tp_atr_mult')} />
           </Tooltip>
-          <Tooltip text="Percentuale del capitale totale rischiata per ogni singolo trade. Con $10.000 e il 2%, ogni trade rischia al massimo $200." width="wide" pos="bottom">
-            <NumberField label="Position Size (%)" value={config.position_size_pct} min={0.1} max={5} step={0.1} onChange={upd('position_size_pct')} />
+          <Tooltip text="Percentuale del capitale totale rischiata per ogni singolo trade." width="wide" pos="bottom">
+            <NumInput label="Position Size (%)" value={config.position_size_pct} min={0.1} max={5} step={0.1} onChange={upd('position_size_pct')} />
           </Tooltip>
-          <Tooltip text="Perdita massima tollerata in un singolo giorno. Al raggiungimento, il bot smette di aprire nuovi trade fino al giorno successivo." width="wide" pos="bottom">
-            <NumberField label="Max Daily DD (%)" value={config.max_daily_dd_pct} min={0.5} max={10} step={0.5} onChange={upd('max_daily_dd_pct')} />
+          <Tooltip text="Perdita massima tollerata in un singolo giorno." width="wide" pos="bottom">
+            <NumInput label="Max Daily DD (%)" value={config.max_daily_dd_pct} min={0.5} max={10} step={0.5} onChange={upd('max_daily_dd_pct')} />
           </Tooltip>
-          <Tooltip text="Numero massimo di trade in perdita consecutivi prima che il bot si fermi automaticamente. Protegge da drawdown prolungati." width="wide" pos="bottom">
-            <NumberField label="Max Consecutive Losses" value={config.max_consecutive_losses} min={1} max={10} step={1} onChange={upd('max_consecutive_losses')} />
-          </Tooltip>
-        </div>
-        <div className="mt-4 p-3 rounded-xl bg-white/5 text-xs font-mono text-slate-400 flex gap-6">
-          <Tooltip text="Rapporto Rischio/Rendimento: quanti dollari guadagni per ogni dollaro rischiato. Con R:R = 1.75, su 100$ rischiati guadagni 175$ se il trade va bene." pos="top">
-            <span>R:R = <span className="text-indigo-400">{rr}</span></span>
-          </Tooltip>
-          <Tooltip text="Win rate minimo per non perdere soldi. Con questo R:R, devi vincere almeno questa percentuale di trade per essere in pareggio." pos="top">
-            <span>Break-even win rate = <span className="text-indigo-400">{be}%</span></span>
+          <Tooltip text="Numero massimo di trade in perdita consecutivi prima che il bot si fermi." width="wide" pos="bottom">
+            <NumInput label="Max Consecutive Losses" value={config.max_consecutive_losses} min={1} max={10} step={1} onChange={upd('max_consecutive_losses')} />
           </Tooltip>
         </div>
-      </div>
+        <div className="mt-8 flex gap-12 border-t border-slate-100 dark:border-white/5 pt-6">
+          <Tooltip text="Rapporto Rischio/Rendimento: quanti dollari guadagni per ogni dollaro rischiato." pos="top">
+            <div className="flex flex-col gap-1">
+               <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest">R:R Ratio</span>
+               <span className="text-lg font-bold font-mono text-indigo-600 dark:text-indigo-400">{rr}</span>
+            </div>
+          </Tooltip>
+          <Tooltip text="Win rate minimo per non perdere soldi con questo R:R." pos="top">
+            <div className="flex flex-col gap-1">
+               <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest">Break-even Win Rate</span>
+               <span className="text-lg font-bold font-mono text-indigo-600 dark:text-indigo-400">{be}%</span>
+            </div>
+          </Tooltip>
+        </div>
+      </Section>
 
-      {/* Signal Thresholds */}
-      <div className="rounded-2xl bg-dark-card border border-dark-border p-5">
-        <h3 className="text-sm font-bold text-slate-300 mb-4">Soglie Segnale</h3>
-        <div className="grid grid-cols-2 gap-4">
-          <Tooltip text="Soglia minima di probabilità direzionale (0–1) per aprire un trade. Con 0.62, il modello deve essere almeno 62% sicuro che il prezzo si muova nella direzione prevista." width="wide" pos="bottom">
-            <NumberField label="Directional Threshold" value={config.directional_threshold} min={0.5} max={0.9} step={0.01} onChange={upd('directional_threshold')} />
+      {/* AI Thresholds */}
+      <Section title="Soglie Modelli Ensemble" description="Controllo del rigore dei segnali generati dall'AI. Valori più alti riducono la frequenza operativa aumentando la precisione.">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-6">
+          <Tooltip text="Soglia minima di probabilità direzionale (0–1) per aprire un trade." width="wide" pos="bottom">
+            <NumInput label="Directional Threshold" value={config.directional_threshold} min={0.5} max={0.9} step={0.01} onChange={upd('directional_threshold')} />
           </Tooltip>
-          <Tooltip text="ADX (Average Directional Index) misura la forza del trend. Sotto questa soglia il mercato è considerato laterale e il bot non apre trade. Valore tipico: 20–25." width="wide" pos="bottom">
-            <NumberField label="ADX Gate (no-trade <)" value={config.adx_gate} min={10} max={40} step={1} onChange={upd('adx_gate')} />
+          <Tooltip text="ADX misura la forza del trend. Sotto questa soglia il bot non opera." width="wide" pos="bottom">
+            <NumInput label="ADX Power Gate" value={config.adx_gate} min={10} max={40} step={1} onChange={upd('adx_gate')} />
           </Tooltip>
-          <Tooltip text="Punteggio minimo del sistema Quantum Trade (0–100) richiesto come conferma del segnale. Include indicatori tecnici multipli come RSI, EMA, divergenze CVD." width="wide" pos="bottom">
-            <NumberField label="Confluence Gate (QT score)" value={config.confluence_gate} min={0} max={100} step={5} onChange={upd('confluence_gate')} />
+          <Tooltip text="Punteggio minimo del sistema Quantum Trade (0–100) richiesto come conferma." width="wide" pos="bottom">
+            <NumInput label="Confluence confirmation" value={config.confluence_gate} min={0} max={100} step={5} onChange={upd('confluence_gate')} />
           </Tooltip>
         </div>
-      </div>
+      </Section>
 
-      {/* Save */}
-      <button
-        onClick={handleSave}
-        disabled={loading}
-        className={`w-full py-3 rounded-xl text-sm font-bold transition-colors ${
-          saved
-            ? 'bg-emerald-600 text-white'
-            : 'bg-indigo-600 hover:bg-indigo-500 text-white disabled:opacity-50'
-        }`}
-      >
-        {saved ? '✓ Salvato' : loading ? '⏳ Salvataggio…' : '💾 Salva Configurazione'}
-      </button>
+      {/* Action Footer */}
+      <div className="pt-4">
+        <button
+          onClick={handleSave}
+          disabled={loading}
+          className={`w-full py-4 rounded-xl text-[11px] font-bold uppercase tracking-widest transition-all shadow-lg active:scale-[0.98] ${
+            saved
+              ? 'bg-emerald-600 text-white shadow-emerald-500/20'
+              : 'bg-indigo-600 hover:bg-indigo-500 text-white shadow-indigo-500/20 disabled:opacity-50'
+          }`}
+        >
+          {saved ? '✓ Configurazione Sincronizzata' : loading ? 'Salvataggio in corso…' : 'Applica e Salva Parametri'}
+        </button>
+      </div>
     </div>
   );
 };
 
-const NumberField: React.FC<{
-  label: string;
-  value: number;
-  min: number;
-  max: number;
-  step: number;
-  onChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
-}> = ({ label, value, min, max, step, onChange }) => (
-  <div>
-    <label className="text-xs text-slate-500 block mb-1">{label}</label>
-    <input
-      type="number"
-      value={value}
-      min={min}
-      max={max}
-      step={step}
-      onChange={onChange}
-      className="w-full bg-white/5 border border-dark-border rounded-lg px-3 py-2 text-sm font-mono text-white focus:outline-none focus:border-indigo-500 transition-colors"
-    />
+const Section: React.FC<{ title: string; description: string; children: React.ReactNode }> = ({ title, description, children }) => (
+  <div className="elegant-card p-6 bg-white dark:bg-[#151E32]">
+    <h3 className="text-sm font-bold text-slate-900 dark:text-white uppercase tracking-tight mb-1">{title}</h3>
+    <p className="text-[11px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-6 leading-relaxed">{description}</p>
+    {children}
   </div>
+);
+
+const NumInput: React.FC<{
+  label: string; value: number; onChange: (v: number) => void;
+  step?: number; min?: number; max?: number;
+}> = ({ label, value, onChange, step = 0.1, min, max }) => (
+  <label className="flex flex-col gap-2 w-full">
+    <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest ml-1">{label}</span>
+    <input type="number" value={value} step={step} min={min} max={max}
+      onChange={e => onChange(parseFloat(e.target.value))}
+      className="w-full bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 rounded-xl px-4 py-3 text-sm font-bold font-mono text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all outline-none" />
+  </label>
 );

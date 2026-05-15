@@ -178,3 +178,38 @@ class DecisionEngine:
             forecast_p50=p50,
             forecast_p90=p90,
         )
+
+
+def compute_qt_score(features: dict) -> float:
+    """
+    Composite 0-100 QT confluence score from available bar features.
+    Shared by both the backtest engine and the live execution engine so that
+    confluence_gate has an identical effect in both contexts.
+
+    Components:
+        ADX trend strength  0-25 pts   (ADX 15→0 / 40→25)
+        RSI extremity       0-20 pts   (distance from neutral 50)
+        Volume surge        0-20 pts   (vol_ratio > 1× → adds up to 20)
+        CVD momentum        0-15 pts   (absolute cvd_slope strength)
+        MTF alignment       0-20 pts   (daily regime + 4h/1d alignment)
+    """
+    score = 0.0
+
+    adx = float(features.get("adx_14") or 0)
+    score += min(25.0, max(0.0, (adx - 15.0) * 1.25))
+
+    rsi = float(features.get("rsi_14") or 50)
+    score += min(20.0, abs(rsi - 50.0) * 0.5)
+
+    vol_ratio = float(features.get("vol_ratio") or 1)
+    score += min(20.0, max(0.0, (vol_ratio - 1.0) * 15.0))
+
+    cvd_slope = float(features.get("cvd_slope") or 0)
+    score += min(15.0, abs(cvd_slope) * 10.0)
+
+    if float(features.get("d_regime") or 0) != 0:
+        score += 10.0
+    if float(features.get("mtf_aligned") or 0) != 0:
+        score += 10.0
+
+    return round(min(100.0, max(0.0, score)), 1)

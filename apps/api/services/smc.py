@@ -21,8 +21,12 @@ def detect_fvg(df: pd.DataFrame, min_gap_pct: float = 0.001) -> pd.DataFrame:
     """
     d = df.copy()
     gap = (d["low"].shift(-1) - d["high"].shift(1)).abs() / d["close"]
-    d["fvg_bull"] = ((d["low"].shift(-1) > d["high"].shift(1)) & (gap > min_gap_pct)).astype(float)
-    d["fvg_bear"] = ((d["high"].shift(-1) < d["low"].shift(1)) & (gap > min_gap_pct)).astype(float)
+    raw_bull = ((d["low"].shift(-1) > d["high"].shift(1)) & (gap > min_gap_pct)).astype(float)
+    raw_bear = ((d["high"].shift(-1) < d["low"].shift(1)) & (gap > min_gap_pct)).astype(float)
+    # FVG is only confirmed once the third candle closes (bar i+1).
+    # Shift by 1 so the signal is available starting from bar i+1, eliminating lookahead bias.
+    d["fvg_bull"] = raw_bull.shift(1).fillna(0.0)
+    d["fvg_bear"] = raw_bear.shift(1).fillna(0.0)
     return d
 
 

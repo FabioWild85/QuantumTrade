@@ -19,12 +19,14 @@ from services.hl_websocket import HLWebSocket
 from services.hyperliquid_data import HyperliquidData
 from services.smc import build_all_features, ALL_FEATURES
 from services.chronos_model import ChronosForecaster
-from services.decision import DecisionEngine, DecisionResult
+from services.decision import DecisionEngine, DecisionResult, compute_qt_score
 from services.risk import RiskManager
 from services.notifications import TelegramNotifier
 from services.trainer import LGBMTrainer, load_model
 from services.covariates import update_covariates, get_latest_covariates
 from services.supabase_client import get_supabase
+
+HL_TAKER_FEE = 0.00035  # 0.035% per side
 
 log = logging.getLogger(__name__)
 
@@ -250,15 +252,20 @@ class ExecutionEngine:
         if self.config.chronos_enabled:
             c2_out = self._chronos.forecast(df_4h["close"].values, horizon=3, atr=atr)
         else:
-            c2_out = {"c2_dir_prob": 0.5, "c2_p10": cur_px, "c2_p50": cur_px, "c2_p90": cur_px}
+            mark = snap["mark_price"]
+            c2_out = {"c2_dir_prob": 0.5, "c2_p10": mark, "c2_p50": mark, "c2_p90": mark}
 
         # 5. LightGBM probability (non-C2 features)
         lgbm_prob = self._get_lgbm_prob(df_feat)
 
-        # 6. External covariates (F&G, BTC dominance) + confluence score
+        # 6. External covariates (F&G, BTC dominance)
         await update_covariates()
-        covars     = get_latest_covariates()
-        confluence = covars.get("confluence_score")
+        covars = get_latest_covariates()
+
+        # Confluence score: computed from bar features (same formula as backtest)
+        # so confluence_gate has identical effect live vs. simulated.
+        confluence = (compute_qt_score(latest)
+                      if self.config.confluence_gate > 0 else None)
 
         # 7. Decision gate
         allowed, block_reason = self._risk.can_trade()
@@ -393,6 +400,7 @@ class ExecutionEngine:
             "take_profit":    params.take_profit,
             "size_usd":       params.size_usd,
             "size_contracts": size,
+            "entry_atr":      atr,
             "inference_id":   inference_id,
             "hl_order_id":    hl_order_id,
             "opened_at":      datetime.now(timezone.utc).isoformat(),
@@ -401,6 +409,7 @@ class ExecutionEngine:
             "be_sl_applied":      False,
             "sl_trailing_active": False,
             "high_water":         price,
+            "partial_done":       False,
         }
 
         try:
@@ -435,22 +444,12 @@ class ExecutionEngine:
             return
 
         self._position["bars_held"] = self._position.get("bars_held", 0) + 1
-        side  = self._position["side"]
-        sl    = self._position["stop_loss"]
-        tp    = self._position["take_profit"]
+        side    = self._position["side"]
+        entry   = self._position["entry_price"]
+        atr_val = float(df_feat.iloc[-1].get("atr_14") or current_price * 0.01)
 
-        atr_val = float(df_feat.iloc[-1].get("atr_14", current_price * 0.01))
-
-        # ── Max hold bars: time-based exit ───────────────────────────────────
-        if (self.config.max_hold_bars_enabled
-                and self._position["bars_held"] >= self.config.max_hold_bars):
-            log.info("Max hold bars reached (%d) — closing position", self.config.max_hold_bars)
-            await self._close_position(current_price, "max_hold_bars")
-            return
-
-        # ── Trailing SL: dynamic trail once activated (high water mark) ────────
+        # ── 1. Trailing SL update (always first, before any exit) ─────────────
         if self.config.trailing_sl_enabled:
-            entry     = self._position["entry_price"]
             trail_dist = self.config.trailing_sl_activation * atr_val
             if not self._position.get("sl_trailing_active"):
                 moved = (side == "long"  and current_price >= entry + trail_dist) or \
@@ -473,20 +472,63 @@ class ExecutionEngine:
                         log.info("Trailing SL updated: %.2f → %.2f", self._position["stop_loss"], new_sl)
                         self._position["stop_loss"] = new_sl
 
-        # ── Break-even SL: move SL to entry once price moves activation×ATR ──
+        # ── 2. Break-even SL ──────────────────────────────────────────────────
         if self.config.be_sl_enabled and not self._position.get("be_sl_applied", False):
-            entry = self._position["entry_price"]
             activation_dist = self.config.be_sl_activation * atr_val
             if side == "long" and current_price >= entry + activation_dist:
-                self._position["stop_loss"] = entry
+                self._position["stop_loss"] = max(self._position["stop_loss"], entry)
                 self._position["be_sl_applied"] = True
                 log.info("Break-even SL activated (long) — SL moved to entry %.2f", entry)
             elif side == "short" and current_price <= entry - activation_dist:
-                self._position["stop_loss"] = entry
+                self._position["stop_loss"] = min(self._position["stop_loss"], entry)
                 self._position["be_sl_applied"] = True
                 log.info("Break-even SL activated (short) — SL moved to entry %.2f", entry)
 
-        # ── LightGBM mid-trade exit (v2: consecutive-bar confirmation) ─────────
+        # ── 3. Partial TP (partial close, does not fully exit) ────────────────
+        if self.config.partial_tp_enabled and not self._position.get("partial_done", False):
+            entry_atr    = self._position.get("entry_atr") or atr_val
+            partial_tgt  = (entry + self.config.partial_tp_atr_mult * entry_atr
+                            if side == "long"
+                            else entry - self.config.partial_tp_atr_mult * entry_atr)
+            hit_partial  = ((side == "long"  and current_price >= partial_tgt) or
+                            (side == "short" and current_price <= partial_tgt))
+            if hit_partial:
+                frac              = self.config.partial_tp_pct / 100.0
+                partial_size_usd  = self._position["size_usd"] * frac
+                partial_contracts = round(self._position["size_contracts"] * frac, 4)
+                pnl_pct_p  = ((current_price - entry) / entry * 100 if side == "long"
+                              else (entry - current_price) / entry * 100)
+                fee_p      = partial_size_usd * HL_TAKER_FEE
+                pnl_usd_p  = partial_size_usd * pnl_pct_p / 100 - fee_p
+
+                self._equity                       += pnl_usd_p
+                self._position["size_usd"]         *= (1.0 - frac)
+                self._position["size_contracts"]    = round(self._position["size_contracts"] * (1.0 - frac), 4)
+                self._position["partial_done"]      = True
+                # Auto-move SL to break-even after partial TP (protects remaining position)
+                if not self._position.get("be_sl_applied", False):
+                    if side == "long":
+                        self._position["stop_loss"] = max(self._position["stop_loss"], entry)
+                    else:
+                        self._position["stop_loss"] = min(self._position["stop_loss"], entry)
+                    self._position["be_sl_applied"] = True
+
+                if self.mode == "live":
+                    await self._submit_partial_close(partial_contracts, current_price, side)
+
+                log.info(
+                    "[%s] Partial TP %.0f%% @ %.2f | pnl=+%.2f%% ($%.2f)",
+                    self.mode.upper(), self.config.partial_tp_pct, current_price,
+                    pnl_pct_p, pnl_usd_p,
+                )
+                await self._notifier.send_trade_closed(
+                    side=side, symbol=SYMBOL,
+                    pnl_usd=pnl_usd_p, pnl_pct=pnl_pct_p,
+                    reason=f"partial_tp_{int(self.config.partial_tp_pct)}pct",
+                    holding_hours=self._position["bars_held"] * 4,
+                )
+
+        # ── 4. LightGBM mid-trade exit ────────────────────────────────────────
         if (self.config.lgbm_exit_enabled and self._lgbm_model is not None
                 and self._position["bars_held"] >= self.config.lgbm_exit_min_hold_bars):
             lgbm_p     = self._get_lgbm_prob(df_feat)
@@ -504,7 +546,16 @@ class ExecutionEngine:
                 await self._close_position(current_price, "lgbm_exit")
                 return
 
-        # ── Standard SL / TP check ───────────────────────────────────────────
+        # ── 5. Max hold bars: time-based exit ─────────────────────────────────
+        if (self.config.max_hold_bars_enabled
+                and self._position["bars_held"] >= self.config.max_hold_bars):
+            log.info("Max hold bars reached (%d) — closing position", self.config.max_hold_bars)
+            await self._close_position(current_price, "max_hold_bars")
+            return
+
+        # ── 6. Standard SL / TP check ─────────────────────────────────────────
+        sl = self._position["stop_loss"]
+        tp = self._position["take_profit"]
         reason = None
         if self._risk.should_stop_loss(side, current_price, sl):
             reason = "stop_loss"
@@ -522,11 +573,12 @@ class ExecutionEngine:
         entry = self._position["entry_price"]
         size  = self._position["size_usd"]
 
-        pnl_pct = (
+        pnl_pct  = (
             (exit_price - entry) / entry * 100 if side == "long"
             else (entry - exit_price) / entry * 100
         )
-        pnl_usd = size * pnl_pct / 100
+        fee_exit = size * HL_TAKER_FEE
+        pnl_usd  = size * pnl_pct / 100 - fee_exit
 
         opened      = datetime.fromisoformat(self._position["opened_at"])
         holding_h   = (datetime.now(timezone.utc) - opened).total_seconds() / 3600
@@ -620,6 +672,32 @@ class ExecutionEngine:
         except Exception as exc:
             log.error("Live open order failed: %s", exc, exc_info=True)
             return None
+
+    async def _submit_partial_close(self, partial_contracts: float, price: float, side: str):
+        """Submit a reduce-only IOC order to close partial_contracts of the position."""
+        if not HL_AGENT_PRIVKEY:
+            return
+        try:
+            from hyperliquid.exchange import Exchange
+            from hyperliquid.utils import constants
+            import eth_account
+
+            wallet    = eth_account.Account.from_key(HL_AGENT_PRIVKEY)
+            endpoint  = constants.TESTNET_API_URL if HL_TESTNET else constants.MAINNET_API_URL
+            exchange  = Exchange(wallet, endpoint, account_address=os.getenv("HL_WALLET_ADDRESS"))
+            is_buy    = (side == "short")  # closing long = sell, closing short = buy
+            close_px  = round(price * (1.005 if is_buy else 0.995), 1)
+            size      = max(round(partial_contracts, 4), 0.001)
+
+            result = await asyncio.to_thread(
+                exchange.order,
+                SYMBOL, is_buy, size, close_px,
+                {"limit": {"tif": "Ioc"}},
+                True,  # reduce_only
+            )
+            log.info("Partial TP close order submitted: %s", result)
+        except Exception as exc:
+            log.error("Partial TP close order failed: %s", exc, exc_info=True)
 
     async def _submit_close_order(self):
         """Submit a market close order for the current position."""

@@ -23,7 +23,7 @@ const WIDTH_CLASSES = {
 export const Tooltip: React.FC<TooltipProps> = ({
   text, children, pos = 'top', width = 'normal',
 }) => (
-  <div className="relative inline-flex group/tip">
+  <div className="relative flex w-full group/tip">
     {children}
     <div className={`
       pointer-events-none absolute z-50 ${WIDTH_CLASSES[width]} ${POS_CLASSES[pos]}
