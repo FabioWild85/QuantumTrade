@@ -46,17 +46,21 @@ class DecisionEngine:
         chronos_weight: float = 0.40,
         c2_uncertainty_gate_enabled: bool = False,
         c2_uncertainty_threshold: float = 0.05,
+        c2_cont_prob_gate_enabled: bool = False,
+        c2_cont_prob_threshold: float = 0.25,
     ):
-        self.directional_threshold      = directional_threshold
-        self.adx_gate                   = adx_gate
-        self.confluence_gate            = confluence_gate
-        self.adx_gate_enabled           = adx_gate_enabled
-        self.sweep_gate_enabled         = sweep_gate_enabled
-        self.fvg_filter_enabled         = fvg_filter_enabled
-        self.mtf_alignment_enabled      = mtf_alignment_enabled
-        self.chronos_weight             = chronos_weight
+        self.directional_threshold       = directional_threshold
+        self.adx_gate                    = adx_gate
+        self.confluence_gate             = confluence_gate
+        self.adx_gate_enabled            = adx_gate_enabled
+        self.sweep_gate_enabled          = sweep_gate_enabled
+        self.fvg_filter_enabled          = fvg_filter_enabled
+        self.mtf_alignment_enabled       = mtf_alignment_enabled
+        self.chronos_weight              = chronos_weight
         self.c2_uncertainty_gate_enabled = c2_uncertainty_gate_enabled
-        self.c2_uncertainty_threshold   = c2_uncertainty_threshold
+        self.c2_uncertainty_threshold    = c2_uncertainty_threshold
+        self.c2_cont_prob_gate_enabled   = c2_cont_prob_gate_enabled
+        self.c2_cont_prob_threshold      = c2_cont_prob_threshold
 
     def decide(
         self,
@@ -84,11 +88,12 @@ class DecisionEngine:
         fvg_bull = features.get("fvg_bull", 0.0)
         d_regime = features.get("d_regime", 0)
 
-        dir_prob      = c2_output.get("c2_dir_prob", 0.5)
-        p10           = c2_output.get("c2_p10", current_price)
-        p50           = c2_output.get("c2_p50", current_price)
-        p90           = c2_output.get("c2_p90", current_price)
+        dir_prob       = c2_output.get("c2_dir_prob", 0.5)
+        p10            = c2_output.get("c2_p10", current_price)
+        p50            = c2_output.get("c2_p50", current_price)
+        p90            = c2_output.get("c2_p90", current_price)
         c2_uncertainty = c2_output.get("c2_uncertainty", 0.0)
+        c2_cont_prob   = c2_output.get("c2_cont_prob", 0.0)
 
         # ── Gating Level 1: ADX / volatility regime ──────────────────────────
         if self.adx_gate_enabled and adx < self.adx_gate:
@@ -108,6 +113,14 @@ class DecisionEngine:
                     f"— forecast dispersion too wide, no-trade"
                 )
                 return self._no_trade(reasoning, dir_prob, p10, p50, p90, features, c2_uncertainty)
+
+        # ── Gating Level 4: Chronos-2 continuation coherence gate ────────────
+        if self.c2_cont_prob_gate_enabled and c2_cont_prob < self.c2_cont_prob_threshold:
+            reasoning.append(
+                f"GATE: C2 cont_prob {c2_cont_prob:.2f} < {self.c2_cont_prob_threshold:.2f} "
+                f"— forecast paths too incoherent, no-trade"
+            )
+            return self._no_trade(reasoning, dir_prob, p10, p50, p90, features, c2_uncertainty)
 
         # ── Ensemble probability (Chronos-2 + LightGBM blend) ────────────────
         lgbm_weight   = 1.0 - self.chronos_weight

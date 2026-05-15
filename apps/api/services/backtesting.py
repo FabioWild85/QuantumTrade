@@ -44,7 +44,7 @@ async def run_backtest(req) -> dict:
     partial_tp_atr_mult      = getattr(cfg, "partial_tp_atr_mult",      1.5)
     partial_tp_pct           = getattr(cfg, "partial_tp_pct",           50.0)
     trailing_sl_enabled      = getattr(cfg, "trailing_sl_enabled",      False)
-    trailing_sl_activation   = getattr(cfg, "trailing_sl_activation",   1.0)
+    trailing_sl_activation   = getattr(cfg, "trailing_sl_activation",   1.5)
     lgbm_exit_enabled        = getattr(cfg, "lgbm_exit_enabled",        False)
     lgbm_exit_threshold      = getattr(cfg, "lgbm_exit_threshold",      0.30)
     lgbm_exit_min_hold_bars  = getattr(cfg, "lgbm_exit_min_hold_bars",  6)
@@ -66,6 +66,8 @@ async def run_backtest(req) -> dict:
     # Chronos-2 adaptive features
     c2_uncertainty_gate_enabled = getattr(cfg, "c2_uncertainty_gate_enabled", False)
     c2_uncertainty_threshold    = getattr(cfg, "c2_uncertainty_threshold",    0.05)
+    c2_cont_prob_gate_enabled   = getattr(cfg, "c2_cont_prob_gate_enabled",   False)
+    c2_cont_prob_threshold      = getattr(cfg, "c2_cont_prob_threshold",      0.25)
     dynamic_sl_tp_enabled       = getattr(cfg, "dynamic_sl_tp_enabled",       False)
     dynamic_sl_tp_blend         = getattr(cfg, "dynamic_sl_tp_blend",         0.50)
 
@@ -133,6 +135,8 @@ async def run_backtest(req) -> dict:
         chronos_weight=chronos_weight if use_chronos else 0.0,
         c2_uncertainty_gate_enabled=c2_uncertainty_gate_enabled if use_chronos else False,
         c2_uncertainty_threshold=c2_uncertainty_threshold,
+        c2_cont_prob_gate_enabled=c2_cont_prob_gate_enabled if use_chronos else False,
+        c2_cont_prob_threshold=c2_cont_prob_threshold,
     )
     risk = RiskManager(
         sl_atr_mult=sl_atr_mult,
@@ -327,14 +331,25 @@ async def run_backtest(req) -> dict:
             lgbm_p   = float(lgbm_model.predict_proba(row_x)[0, 1])
             cur_px   = float(row["close"])
 
-            # Chronos-2: real forecast OR corrected neutral prior
-            # Bug fix: neutral must use current_price for p10/p50/p90, not 0.0
-            # (p10=0 was blocking all longs via the p10 < price*0.995 filter)
+            # Chronos-2: real forecast OR neutral prior.
+            # Neutral prior sets all keys so cont_prob/uncertainty gates never
+            # accidentally block trades when Chronos is disabled.
+            # Deterministic seed = bar timestamp → same run always = same trades.
             if use_chronos and chronos_forecaster is not None:
                 close_so_far = df_feat["close"].values[:i + 1]
-                c2_out = chronos_forecaster.forecast(close_so_far, horizon=3, atr=atr)
+                bar_seed = int(df_feat.index[i].timestamp()) if hasattr(df_feat.index[i], "timestamp") else i
+                c2_out = chronos_forecaster.forecast(close_so_far, horizon=3, atr=atr, seed=bar_seed)
             else:
-                c2_out = {"c2_dir_prob": 0.5, "c2_p10": cur_px, "c2_p50": cur_px, "c2_p90": cur_px}
+                c2_out = {
+                    "c2_dir_prob":    0.5,
+                    "c2_p10":         cur_px,
+                    "c2_p50":         cur_px,
+                    "c2_p90":         cur_px,
+                    "c2_uncertainty": 0.0,
+                    "c2_vol_prob":    0.0,
+                    "c2_cont_prob":   1.0,  # neutral = fully coherent, never triggers cont gate
+                    "c2_p50_vs_atr":  0.0,
+                }
 
             # Compute QT confluence score so confluence_gate is active in backtest
             qt_score = compute_qt_score(features) if confluence_gate > 0 else None

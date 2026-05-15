@@ -60,6 +60,7 @@ class ChronosForecaster:
         close_series: np.ndarray,
         horizon: int = 3,
         atr: Optional[float] = None,
+        seed: Optional[int] = None,
     ) -> dict:
         """
         Args:
@@ -74,6 +75,11 @@ class ChronosForecaster:
         """
         pipeline = _load_pipeline()
         t0 = time.perf_counter()
+
+        # Deterministic seed for reproducible backtest runs; None = random (live mode)
+        if seed is not None:
+            torch.manual_seed(seed)
+            np.random.seed(seed % (2**31))
 
         ctx = close_series[-self.CONTEXT_LEN:]
         tensor = torch.tensor(ctx, dtype=torch.float32).unsqueeze(0)

@@ -15,6 +15,8 @@ interface Config {
   dynamic_sl_tp_blend: number;
   c2_uncertainty_gate_enabled: boolean;
   c2_uncertainty_threshold: number;
+  c2_cont_prob_gate_enabled: boolean;
+  c2_cont_prob_threshold: number;
   chronos_enabled: boolean;
 }
 
@@ -32,6 +34,8 @@ const DEFAULTS: Config = {
   dynamic_sl_tp_blend: 0.5,
   c2_uncertainty_gate_enabled: false,
   c2_uncertainty_threshold: 0.05,
+  c2_cont_prob_gate_enabled: false,
+  c2_cont_prob_threshold: 0.25,
   chronos_enabled: true,
 };
 
@@ -279,6 +283,58 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                   {(config.c2_uncertainty_threshold * 100).toFixed(1)}%
                 </span>
                 <span className="text-[10px] text-slate-400 dark:text-slate-500">(p90−p10)/p50</span>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* ── C2 Continuation Prob Gate ── */}
+        <div className={`flex flex-col gap-3 mt-6 pt-6 border-t transition-colors duration-200 ${config.c2_cont_prob_gate_enabled ? 'border-emerald-200 dark:border-emerald-500/25' : 'border-slate-100 dark:border-white/5'}`}>
+          <Tooltip text="Blocca il trade quando meno del X% delle simulazioni Chronos-2 mostra un trend coerente. Evita ingressi in mercati choppy/oscillanti. Range tipico BTC: 10-20% in ranging, 30-50% in trending. Soglia consigliata: 20-30%." width="wide" pos="bottom">
+            <label className="flex items-center gap-3 cursor-pointer group">
+              <div className="relative">
+                <input type="checkbox" className="sr-only" checked={config.c2_cont_prob_gate_enabled} onChange={e => setConfig(c => ({ ...c, c2_cont_prob_gate_enabled: e.target.checked }))} />
+                <div className={`w-10 h-5 rounded-full transition-all duration-300 ${config.c2_cont_prob_gate_enabled ? 'bg-emerald-600' : 'bg-slate-200 dark:bg-white/10'}`} />
+                <div className={`absolute top-1 left-1 w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.c2_cont_prob_gate_enabled ? 'translate-x-5' : ''}`} />
+              </div>
+              <div>
+                <p className={`text-sm font-bold transition-colors ${config.c2_cont_prob_gate_enabled ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-800 dark:text-slate-200 group-hover:text-emerald-600 dark:group-hover:text-emerald-400'}`}>
+                  Continuation Gate (Chronos-2)
+                  {config.c2_cont_prob_gate_enabled && <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-emerald-100 dark:bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 uppercase tracking-wider">Attivo</span>}
+                </p>
+                <p className="text-[11px] font-medium text-slate-400 dark:text-slate-500 leading-tight">
+                  No-trade se le simulazioni C2 non mostrano un trend coerente (mercato choppy)
+                </p>
+              </div>
+            </label>
+          </Tooltip>
+          {config.c2_cont_prob_gate_enabled && !config.chronos_enabled && (
+            <div className="flex items-start gap-3 bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/30 rounded-xl px-4 py-3">
+              <svg className="w-4 h-4 text-amber-500 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+              </svg>
+              <div>
+                <p className="text-[11px] font-bold text-amber-700 dark:text-amber-400 uppercase tracking-wide">Chronos-2 non attivo</p>
+                <p className="text-[11px] text-amber-600 dark:text-amber-500 leading-snug mt-0.5">
+                  Il Continuation Gate richiede Chronos-2. Il gate sarà ignorato finché Chronos non viene abilitato nelle Impostazioni avanzate.
+                </p>
+              </div>
+            </div>
+          )}
+          {config.c2_cont_prob_gate_enabled && (
+            <div className="flex items-center gap-4 pl-12">
+              <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest whitespace-nowrap">Min coerenza</span>
+              <div className="flex items-center gap-3 flex-1">
+                <input
+                  type="range" min="0.05" max="0.80" step="0.05"
+                  value={config.c2_cont_prob_threshold}
+                  onChange={e => setConfig(c => ({ ...c, c2_cont_prob_threshold: parseFloat(e.target.value) }))}
+                  className="flex-1 h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/15 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3.5 [&::-webkit-slider-thumb]:h-3.5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-emerald-500 [&::-webkit-slider-thumb]:shadow-sm [&::-webkit-slider-thumb]:cursor-pointer [&::-moz-range-thumb]:w-3.5 [&::-moz-range-thumb]:h-3.5 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-emerald-500 [&::-moz-range-thumb]:border-0"
+                />
+                <span className="text-[11px] font-bold font-mono text-emerald-600 dark:text-emerald-400 w-14 text-right">
+                  {(config.c2_cont_prob_threshold * 100).toFixed(0)}%
+                </span>
+                <span className="text-[10px] text-slate-400 dark:text-slate-500">simulazioni coerenti</span>
               </div>
             </div>
           )}

@@ -5,6 +5,7 @@ Single-user, single-bot, BTC-PERP on Hyperliquid (4h Trend Following)
 
 import asyncio
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Optional
@@ -82,13 +83,15 @@ app.add_middleware(
 @app.get("/health")
 async def health():
     status = await engine.get_status() if engine else {}
+    backtest_running = any(j["status"] == "running" for j in backtest_jobs.values())
     return {
-        "status":       "ok",
-        "running":      status.get("running", False),
-        "mode":         status.get("mode", "paper"),
-        "ws_connected": status.get("ws_connected", False),
-        "model_loaded": status.get("model_loaded", False),
-        "cycle_count":  status.get("cycle_count", 0),
+        "status":           "ok",
+        "running":          status.get("running", False),
+        "mode":             status.get("mode", "paper"),
+        "ws_connected":     status.get("ws_connected", False),
+        "model_loaded":     status.get("model_loaded", False),
+        "cycle_count":      status.get("cycle_count", 0),
+        "backtest_running": backtest_running,
     }
 
 
@@ -147,7 +150,7 @@ class BotConfig(BaseModel):
     partial_tp_atr_mult: float = Field(1.5, ge=0.5, le=5.0)
     partial_tp_pct: float = Field(50.0, ge=10.0, le=90.0)
     trailing_sl_enabled: bool = Field(False)
-    trailing_sl_activation: float = Field(1.0, ge=0.5, le=3.0)
+    trailing_sl_activation: float = Field(1.5, ge=0.5, le=3.0)
     # LightGBM mid-trade exit (v2: consecutive-bar confirmation)
     lgbm_exit_enabled: bool = Field(False)
     lgbm_exit_threshold: float = Field(0.30, ge=0.15, le=0.50)
@@ -168,6 +171,8 @@ class BotConfig(BaseModel):
     # Chronos-2 adaptive features
     c2_uncertainty_gate_enabled: bool = Field(False)
     c2_uncertainty_threshold: float = Field(0.05, ge=0.01, le=0.15)
+    c2_cont_prob_gate_enabled: bool = Field(False)
+    c2_cont_prob_threshold: float = Field(0.25, ge=0.05, le=0.80)
     dynamic_sl_tp_enabled: bool = Field(False)
     dynamic_sl_tp_blend: float = Field(0.50, ge=0.0, le=1.0)
 
@@ -446,6 +451,9 @@ class BacktestRequest(BaseModel):
 
 backtest_jobs: dict = {}
 
+# Single-slot executor: only one Chronos backtest at a time to avoid RAM exhaustion
+_backtest_executor = ThreadPoolExecutor(max_workers=1)
+
 
 @app.post("/backtest")
 async def backtest_start(req: BacktestRequest, background_tasks: BackgroundTasks):
@@ -455,8 +463,18 @@ async def backtest_start(req: BacktestRequest, background_tasks: BackgroundTasks
 
     async def run():
         from services.backtesting import run_backtest
-        result = await run_backtest(req)
-        backtest_jobs[job_id] = {"status": "done", "result": result}
+        try:
+            # Run in a thread so the event loop stays free for health checks and polling.
+            # asyncio.run() inside the thread creates its own loop for the async I/O inside run_backtest.
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                _backtest_executor,
+                lambda: asyncio.run(run_backtest(req))
+            )
+            backtest_jobs[job_id] = {"status": "done", "result": result}
+        except Exception as e:
+            logger.error(f"Backtest job {job_id} failed: {e}")
+            backtest_jobs[job_id] = {"status": "error", "result": {"error": str(e)}}
 
     background_tasks.add_task(run)
     return {"job_id": job_id, "status": "running"}

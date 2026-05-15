@@ -144,31 +144,34 @@ export const ForecastView: React.FC<{ apiBase: string }> = ({ apiBase }) => {
 
           {/* 3 probabilità */}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            <Tooltip text="Probabilità Direzionale: quanto il modello Chronos-2 è convinto che il prezzo salga nelle prossime 12 ore. Sopra 62% il bot considera un segnale LONG." width="wide" pos="bottom">
+            <Tooltip text="Probabilità Direzionale: percentuale di simulazioni Chronos-2 in cui BTC chiude più in alto tra 12h. Contribuisce al 40% dell'ensemble (LGBM 60% + C2 40%) — il gate reale è sull'ensemble a 62%, non su questo valore da solo." width="wide" pos="bottom">
               <ProbCard
                 label="Directional Prob"
                 description="P(prezzo sale entro 12h)"
                 value={data.c2_dir_prob}
                 threshold={0.62}
                 color="indigo"
+                gateType="ensemble"
               />
             </Tooltip>
-            <Tooltip text="Probabilità di Volatilità: quanto è probabile che il mercato si muova di oltre il 3% nelle prossime 12 ore (≈$3.000 su BTC). Alta volatilità = maggior potenziale ma anche maggior rischio." width="wide" pos="bottom">
+            <Tooltip text="Probabilità di Volatilità: percentuale di simulazioni in cui BTC si muove di oltre il 3% (≈$2.400 su BTC) nelle prossime 12h. Indicatore informativo — non blocca né attiva trade. Mercato attualmente sopra soglia = volatilità attesa." width="wide" pos="bottom">
               <ProbCard
                 label="Volatility Prob"
                 description="P(range > 3% in 12h)"
                 value={data.c2_vol_prob}
-                threshold={0.50}
+                threshold={0.20}
                 color="amber"
+                gateType="display"
               />
             </Tooltip>
-            <Tooltip text="Probabilità di Continuazione: quanto è coerente il trend passo dopo passo nelle previsioni. Alta = il modello vede un movimento consistente, non oscillante." width="wide" pos="bottom">
+            <Tooltip text="Probabilità di Continuazione: percentuale di simulazioni in cui tutti i passi vanno nella stessa direzione (trend coerente). Gate opzionale attivabile in Bot Config — soglia calibrata al 25% per BTC (mercato ranging = 10-20%, trending = 30-50%)." width="wide" pos="bottom">
               <ProbCard
                 label="Continuation Prob"
                 description="P(trend coerente passo-passo)"
                 value={data.c2_cont_prob}
-                threshold={0.60}
+                threshold={0.25}
                 color="emerald"
+                gateType="gate"
               />
             </Tooltip>
           </div>
@@ -373,7 +376,8 @@ const QuantileCard: React.FC<{
 const ProbCard: React.FC<{
   label: string; description: string; value: number; threshold: number;
   color: 'indigo' | 'amber' | 'emerald';
-}> = ({ label, description, value, threshold, color }) => {
+  gateType: 'ensemble' | 'gate' | 'display';
+}> = ({ label, description, value, threshold, color, gateType }) => {
   const pct    = Math.round(value * 100);
   const active = value > threshold;
   const cols   = {
@@ -382,6 +386,11 @@ const ProbCard: React.FC<{
     emerald: { border: 'border-emerald-600/20 dark:border-emerald-500/30', bg: 'bg-emerald-50 dark:bg-emerald-500/5', bar: 'bg-emerald-600 dark:bg-emerald-500', txt: 'text-emerald-600 dark:text-emerald-400' },
   };
   const c = cols[color];
+  const gateLabel = gateType === 'ensemble'
+    ? `Soglia ensemble: ${Math.round(threshold * 100)}%`
+    : gateType === 'gate'
+    ? `Gate opt-in: ${Math.round(threshold * 100)}%`
+    : `Soglia indicativa: ${Math.round(threshold * 100)}%`;
   return (
     <div className={`elegant-card p-6 transition-all w-full h-full flex flex-col justify-between ${active ? `${c.border} ${c.bg}` : 'border-slate-200 dark:border-white/5 bg-white dark:bg-[#151E32]'}`}>
       <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-1">{label}</p>
@@ -396,7 +405,7 @@ const ProbCard: React.FC<{
           style={{ width: `${pct}%` }}
         />
       </div>
-      <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase mt-3">Target attivazione: {Math.round(threshold * 100)}%</p>
+      <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase mt-3">{gateLabel}</p>
     </div>
   );
 };

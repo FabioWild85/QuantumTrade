@@ -27,6 +27,8 @@ interface BacktestTrade {
   reason: string;
   holding_bars: number;
   bar: number;
+  _levEq?: number;
+  _bankrupt?: boolean;
 }
 
 interface EquityPoint { bar: number; equity: number; }
@@ -200,14 +202,69 @@ const StatsGrid: React.FC<{ stats: BacktestStats; compare?: BacktestStats; label
   );
 };
 
-const TradeTable: React.FC<{ trades: BacktestTrade[] }> = ({ trades }) => {
+const TradeTable: React.FC<{ trades: BacktestTrade[]; showLevEquity?: boolean; initialCapital?: number }> = ({ trades, showLevEquity, initialCapital }) => {
   const numColor = (v: number) => v > 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400';
+  const eqColor  = (v: number) => {
+    if (!initialCapital) return 'text-slate-600 dark:text-slate-300';
+    return v >= initialCapital ? 'text-emerald-600 dark:text-emerald-400' : v <= 0 ? 'text-rose-600 dark:text-rose-400' : 'text-amber-500 dark:text-amber-400';
+  };
   const reasonStyle: Record<string, string> = {
     take_profit: 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-100 dark:border-emerald-500/20',
     partial_tp:  'bg-teal-50 dark:bg-teal-500/10 text-teal-600 dark:text-teal-400 border-teal-100 dark:border-teal-500/20',
     stop_loss:   'bg-rose-50 dark:bg-rose-500/10 text-rose-600 dark:text-rose-400 border-rose-100 dark:border-rose-500/20',
     end_of_period: 'bg-slate-50 dark:bg-white/5 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-white/10',
   };
+  // Table is shown newest-first; build reversed list and insert liquidation sentinel after the bankrupt trade
+  const reversed = [...trades].reverse();
+  const colSpan = showLevEquity ? 9 : 8;
+
+  const rows: React.ReactNode[] = [];
+  reversed.forEach((t, i) => {
+    rows.push(
+      <tr key={`t-${i}`} className={`hover:bg-slate-50/50 dark:hover:bg-white/[0.02] transition-colors group ${t._bankrupt ? 'bg-rose-50/30 dark:bg-rose-500/5' : ''}`}>
+        <td className="px-4 py-2 text-slate-400 font-mono">{t.bar}</td>
+        <td className="px-4 py-2">
+          <span className={`px-2 py-0.5 rounded text-[10px] font-bold tracking-wider ${t.side === 'long' ? 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-100 dark:border-emerald-500/20' : 'bg-rose-50 dark:bg-rose-500/10 text-rose-600 dark:text-rose-400 border border-rose-100 dark:border-rose-500/20'}`}>
+            {t.side.toUpperCase()}
+          </span>
+        </td>
+        <td className="px-4 py-2 text-right font-mono text-slate-600 dark:text-slate-300 font-bold">${t.entry.toLocaleString(undefined, { maximumFractionDigits: 0 })}</td>
+        <td className="px-4 py-2 text-right font-mono text-slate-600 dark:text-slate-300 font-bold">${t.exit.toLocaleString(undefined, { maximumFractionDigits: 0 })}</td>
+        <td className={`px-4 py-2 text-right font-mono font-bold ${numColor(t.pnl_pct)}`}>
+          {t.pnl_pct > 0 ? '+' : ''}{t.pnl_pct}%
+        </td>
+        <td className={`px-4 py-2 text-right font-mono font-medium ${numColor(t.pnl_usd)}`}>
+          {t.pnl_usd > 0 ? '+' : ''}${t.pnl_usd.toFixed(0)}
+        </td>
+        {showLevEquity && (
+          <td className={`px-4 py-2 text-right font-mono font-bold ${eqColor(t._levEq ?? 0)}`}>
+            {t._levEq !== undefined ? `$${t._levEq.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : '—'}
+          </td>
+        )}
+        <td className="px-4 py-2">
+          <span className={`px-2 py-0.5 rounded-lg text-[9px] font-bold uppercase tracking-wider border ${reasonStyle[t.reason] ?? 'bg-slate-50 dark:bg-white/5 text-slate-500 border-slate-200 dark:border-white/10'}`}>
+            {t.reason.replace(/_/g, ' ')}
+          </span>
+        </td>
+        <td className="px-4 py-2 text-right text-slate-400 dark:text-slate-500 font-mono">{t.holding_bars * 4}h</td>
+      </tr>
+    );
+    if (t._bankrupt) {
+      rows.push(
+        <tr key={`liq-${i}`} className="bg-rose-50 dark:bg-rose-500/10">
+          <td colSpan={colSpan} className="px-4 py-2.5 text-center">
+            <span className="inline-flex items-center gap-2 text-[10px] font-bold text-rose-600 dark:text-rose-400 uppercase tracking-widest">
+              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+              </svg>
+              Liquidazione — il capitale ha raggiunto $0 dopo questo trade. I trade successivi non vengono eseguiti.
+            </span>
+          </td>
+        </tr>
+      );
+    }
+  });
+
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-[11px]">
@@ -219,35 +276,13 @@ const TradeTable: React.FC<{ trades: BacktestTrade[] }> = ({ trades }) => {
             <th className="px-4 py-3 text-right">Exit</th>
             <th className="px-4 py-3 text-right">PnL %</th>
             <th className="px-4 py-3 text-right">PnL $</th>
+            {showLevEquity && <th className="px-4 py-3 text-right">Equity</th>}
             <th className="px-4 py-3 text-left">Reason</th>
             <th className="px-4 py-3 text-right">Hold</th>
           </tr>
         </thead>
         <tbody className="divide-y divide-slate-50 dark:divide-white/5">
-          {[...trades].reverse().map((t, i) => (
-            <tr key={i} className="hover:bg-slate-50/50 dark:hover:bg-white/[0.02] transition-colors group">
-              <td className="px-4 py-2 text-slate-400 font-mono">{t.bar}</td>
-              <td className="px-4 py-2">
-                <span className={`px-2 py-0.5 rounded text-[10px] font-bold tracking-wider ${t.side === 'long' ? 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-100 dark:border-emerald-500/20' : 'bg-rose-50 dark:bg-rose-500/10 text-rose-600 dark:text-rose-400 border border-rose-100 dark:border-rose-500/20'}`}>
-                  {t.side.toUpperCase()}
-                </span>
-              </td>
-              <td className="px-4 py-2 text-right font-mono text-slate-600 dark:text-slate-300 font-bold">${t.entry.toLocaleString(undefined, { maximumFractionDigits: 0 })}</td>
-              <td className="px-4 py-2 text-right font-mono text-slate-600 dark:text-slate-300 font-bold">${t.exit.toLocaleString(undefined, { maximumFractionDigits: 0 })}</td>
-              <td className={`px-4 py-2 text-right font-mono font-bold ${numColor(t.pnl_pct)}`}>
-                {t.pnl_pct > 0 ? '+' : ''}{t.pnl_pct}%
-              </td>
-              <td className={`px-4 py-2 text-right font-mono font-medium ${numColor(t.pnl_usd)}`}>
-                {t.pnl_usd > 0 ? '+' : ''}${t.pnl_usd.toFixed(0)}
-              </td>
-              <td className="px-4 py-2">
-                <span className={`px-2 py-0.5 rounded-lg text-[9px] font-bold uppercase tracking-wider border ${reasonStyle[t.reason] ?? 'bg-slate-50 dark:bg-white/5 text-slate-500 border-slate-200 dark:border-white/10'}`}>
-                  {t.reason.replace(/_/g, ' ')}
-                </span>
-              </td>
-              <td className="px-4 py-2 text-right text-slate-400 dark:text-slate-500 font-mono">{t.holding_bars * 4}h</td>
-            </tr>
-          ))}
+          {rows}
         </tbody>
       </table>
     </div>
@@ -279,20 +314,41 @@ function applyLeverage(result: BacktestResult, lev: number): BacktestResult {
   }
   const finalEquity = levCurve[levCurve.length - 1].equity;
 
-  // Scale individual trade P&L
-  const levTrades = result.trades.map(t => ({
-    ...t,
-    pnl_pct: Math.round(t.pnl_pct * lev * 10000) / 10000,
-    pnl_usd: Math.round(t.pnl_usd * lev * 100) / 100,
-  }));
+  // Build bar → levered equity map to annotate each trade's post-close equity.
+  const barToLevEq = new Map(levCurve.map(p => [p.bar, p.equity]));
+  const getEqAtBar = (bar: number) => {
+    if (barToLevEq.has(bar)) return barToLevEq.get(bar)!;
+    // fall back to nearest bar >= requested
+    for (const p of levCurve) { if (p.bar >= bar) return p.equity; }
+    return levCurve[levCurve.length - 1].equity;
+  };
 
-  // Recalculate stats from levered data
-  const pnlsPct = levTrades.map(t => t.pnl_pct);
-  const pnlsUsd = levTrades.map(t => t.pnl_usd);
-  const wins     = pnlsPct.filter(p => p > 0);
-  const losses   = pnlsPct.filter(p => p <= 0);
-  const totalPnlUsd = pnlsUsd.reduce((a, b) => a + b, 0);
-  const totalPnlPct = (totalPnlUsd / init) * 100;
+  // Scale individual trade P&L for display in trade log and attach per-trade equity.
+  // NOTE: pnl_usd is approximate (scaled, not compounded). Authoritative PnL = finalEquity - init.
+  let bankruptFound = false;
+  const levTrades = result.trades.map(t => {
+    const exitBar = t.bar; // t.bar is already the exit bar (backend: "bar": i at close)
+    const levEq   = getEqAtBar(exitBar);
+    const bankrupt = !bankruptFound && levEq <= 0;
+    if (bankrupt) bankruptFound = true;
+    return {
+      ...t,
+      pnl_pct:    Math.round(t.pnl_pct * lev * 10000) / 10000,
+      pnl_usd:    Math.round(t.pnl_usd * lev * 100) / 100,
+      _levEq:     Math.round(levEq * 100) / 100,
+      _bankrupt:  bankrupt,
+    };
+  });
+
+  // Recalculate stats from levered data.
+  // totalPnlUsd/Pct MUST be derived from finalEquity (compounded curve), NOT from the sum
+  // of individual scaled trade USD amounts. If equity hits 0 (bankruptcy) mid-run, subsequent
+  // winning trades would still add to the sum, producing a falsely positive PnL.
+  const pnlsPct     = levTrades.map(t => t.pnl_pct);
+  const wins        = pnlsPct.filter(p => p > 0);
+  const losses      = pnlsPct.filter(p => p <= 0);
+  const totalPnlUsd = finalEquity - init;
+  const totalPnlPct = ((finalEquity - init) / init) * 100;
   const winRate     = pnlsPct.length > 0 ? (wins.length / pnlsPct.length) * 100 : 0;
   const pf          = losses.length > 0 ? Math.abs(wins.reduce((a,b)=>a+b,0) / losses.reduce((a,b)=>a+b,0)) : 99;
 
@@ -385,6 +441,34 @@ const LeverageSelector: React.FC<{
   );
 };
 
+// ── Leverage compounding explanation banner ────────────────────────────────────
+const LeverageWarning: React.FC<{ lev: number; levPnlPct: number; basePnlPct: number; bankrupt: boolean }> = ({ lev, levPnlPct, basePnlPct, bankrupt }) => {
+  const worse = levPnlPct < basePnlPct;
+  if (!worse && !bankrupt) return null;
+  return (
+    <div className={`flex items-start gap-3 rounded-2xl px-5 py-4 border animate-in fade-in ${
+      bankrupt
+        ? 'bg-rose-50 dark:bg-rose-500/10 border-rose-200 dark:border-rose-500/25'
+        : 'bg-amber-50 dark:bg-amber-500/10 border-amber-200 dark:border-amber-500/25'
+    }`}>
+      <svg className={`w-4 h-4 flex-shrink-0 mt-0.5 ${bankrupt ? 'text-rose-500' : 'text-amber-500'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+      </svg>
+      <div className="space-y-1">
+        <p className={`text-[11px] font-bold uppercase tracking-wide ${bankrupt ? 'text-rose-700 dark:text-rose-400' : 'text-amber-700 dark:text-amber-400'}`}>
+          {bankrupt ? `Liquidazione a ${lev}× — capitale azzerato` : `La leva ${lev}× peggiora il risultato rispetto a 1×`}
+        </p>
+        <p className={`text-[11px] leading-snug ${bankrupt ? 'text-rose-600 dark:text-rose-500' : 'text-amber-600 dark:text-amber-500'}`}>
+          {bankrupt
+            ? `Con leva ${lev}×, ogni trade perde ${lev} volte di più. Una sequenza di perdite consecutive ha azzerato il capitale prima che i trade vincenti potessero recuperare. Gli stop loss sono attivi, ma a ${lev}× un SL del 2% consuma il ${lev * 2}% del conto.`
+            : `La leva amplifica ogni trade del ${lev}×, sia guadagni che perdite. Se le perdite si concentrano all'inizio del periodo, erodono la base di capitale prima che i vincitori possano compensare — anche se il risultato a 1× è positivo.`
+          }
+        </p>
+      </div>
+    </div>
+  );
+};
+
 // ── Job runner helper ──────────────────────────────────────────────────────────
 async function runJob(apiBase: string, body: object): Promise<BacktestResult> {
   const startRes = await fetch(`${apiBase}/backtest`, {
@@ -471,6 +555,15 @@ const HistoryResultCard: React.FC<{ result: BacktestResult; config?: Record<stri
       <div className="bg-slate-50/50 dark:bg-white/[0.02] rounded-2xl px-6 py-4 border border-slate-100 dark:border-white/5">
         <LeverageSelector value={lev} onChange={setLev} worstTradePct={result.stats.worst_trade_pct} />
       </div>
+      {/* Leverage compounding warning */}
+      {lev > 1 && (
+        <LeverageWarning
+          lev={lev}
+          levPnlPct={disp.stats.total_pnl_pct}
+          basePnlPct={result.stats.total_pnl_pct}
+          bankrupt={disp.trades.some(t => t._bankrupt)}
+        />
+      )}
       {/* Header summary */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <div className="bg-white dark:bg-[#151E32] rounded-2xl p-5 border border-slate-100 dark:border-white/5 shadow-sm">
@@ -511,7 +604,7 @@ const HistoryResultCard: React.FC<{ result: BacktestResult; config?: Record<stri
               Dettaglio Operazioni ({disp.trades.length}){lev > 1 ? ` — Leva ${lev}×` : ''}
             </h3>
           </div>
-          <TradeTable trades={disp.trades} />
+          <TradeTable trades={disp.trades} showLevEquity={lev > 1} initialCapital={result.initial_capital} />
         </div>
       )}
     </div>
@@ -1156,6 +1249,24 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
               </div>
             )}
 
+            {/* Chronos long-period warning */}
+            {useChronos && (() => {
+              const days = (new Date(toDate).getTime() - new Date(fromDate).getTime()) / 864e5;
+              return days > 45 ? (
+                <div className="flex items-start gap-3 bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/30 rounded-xl px-4 py-3">
+                  <svg className="w-4 h-4 text-amber-500 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+                  </svg>
+                  <div>
+                    <p className="text-[11px] font-bold text-amber-700 dark:text-amber-400 uppercase tracking-wide">Periodo lungo con Chronos-2 attivo</p>
+                    <p className="text-[11px] text-amber-600 dark:text-amber-500 leading-snug mt-0.5">
+                      Chronos-2 esegue un'inferenza AI su ogni barra ({Math.round(days / (4/24))} barre × ~{days > 90 ? '5-15' : '3-8'} sec). Il backtest potrebbe impiegare <strong>{days > 90 ? '30–60+ minuti' : '10–20 minuti'}</strong>. Considera un periodo più breve (&le;45 giorni) per risultati rapidi.
+                    </p>
+                  </div>
+                </div>
+              ) : null;
+            })()}
+
             {/* Run button */}
             <div className="flex flex-col sm:flex-row items-center gap-4 pt-4 border-t border-slate-100 dark:border-white/5">
               <button onClick={runBacktest} disabled={status === 'running'}
@@ -1195,6 +1306,15 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                 <div className="bg-slate-50/50 dark:bg-white/[0.02] rounded-2xl px-6 py-4 border border-slate-100 dark:border-white/5">
                   <LeverageSelector value={leverage} onChange={setLeverage} worstTradePct={result.stats.worst_trade_pct} />
                 </div>
+                {/* Leverage compounding warning */}
+                {leverage > 1 && (
+                  <LeverageWarning
+                    lev={leverage}
+                    levPnlPct={disp.stats.total_pnl_pct}
+                    basePnlPct={result.stats.total_pnl_pct}
+                    bankrupt={disp.trades.some(t => t._bankrupt)}
+                  />
+                )}
 
                 {/* Summary header */}
                 <div className="elegant-card p-6 bg-white dark:bg-[#151E32] grid grid-cols-1 sm:grid-cols-4 gap-6 items-center">
@@ -1269,7 +1389,7 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                         Cronologia Operazioni ({disp.trades.length}){leverage > 1 ? ` — Leva ${leverage}×` : ''}
                       </h3>
                     </div>
-                    <TradeTable trades={disp.trades} />
+                    <TradeTable trades={disp.trades} showLevEquity={leverage > 1} initialCapital={result.initial_capital} />
                   </div>
                 )}
               </>

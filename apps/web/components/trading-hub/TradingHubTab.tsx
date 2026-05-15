@@ -83,17 +83,19 @@ export const TradingHubTab: React.FC = () => {
 
 // ── Status badge (polls /health every 10s) ──────────────────────────────────
 const StatusBadge: React.FC<{ apiBase: string }> = ({ apiBase }) => {
-  const [status, setStatus] = React.useState<'loading' | 'online' | 'offline'>('loading');
-  const [running, setRunning] = React.useState(false);
+  const [status,           setStatus]          = React.useState<'loading' | 'online' | 'offline'>('loading');
+  const [running,          setRunning]         = React.useState(false);
+  const [backtestRunning,  setBacktestRunning] = React.useState(false);
 
   React.useEffect(() => {
     const check = async () => {
       try {
-        const r = await fetch(`${apiBase}/health`, { signal: AbortSignal.timeout(3000) });
+        const r = await fetch(`${apiBase}/health`, { signal: AbortSignal.timeout(8000) });
         if (r.ok) {
           const d = await r.json();
           setStatus('online');
-          setRunning(d.running);
+          setRunning(d.running ?? false);
+          setBacktestRunning(d.backtest_running ?? false);
         } else {
           setStatus('offline');
         }
@@ -106,12 +108,29 @@ const StatusBadge: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     return () => clearInterval(t);
   }, [apiBase]);
 
-  const color = status === 'online' ? (running ? 'bg-emerald-500' : 'bg-amber-500') : 'bg-slate-600';
-  const label = status === 'loading' ? '…' : status === 'offline' ? 'API offline' : running ? 'Running' : 'Idle';
+  const color = status !== 'online'
+    ? 'bg-slate-500'
+    : backtestRunning
+      ? 'bg-indigo-500'
+      : running
+        ? 'bg-emerald-500'
+        : 'bg-slate-400';
+
+  const label = status === 'loading'
+    ? '…'
+    : status === 'offline'
+      ? 'API offline'
+      : backtestRunning
+        ? 'Backtest'
+        : running
+          ? 'Running'
+          : 'Standby';
+
+  const pulse = running || backtestRunning;
 
   return (
     <div className="flex items-center gap-2 text-xs text-slate-400">
-      <span className={`w-2 h-2 rounded-full ${color} ${running ? 'animate-pulse' : ''}`} />
+      <span className={`w-2 h-2 rounded-full ${color} ${pulse ? 'animate-pulse' : ''}`} />
       <span>{label}</span>
     </div>
   );

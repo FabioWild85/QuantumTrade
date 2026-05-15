@@ -64,7 +64,7 @@ class BotConfig:
         self.partial_tp_pct         = kw.get("partial_tp_pct", 50.0)
         # Trailing SL: move SL to break-even once price moves trailing_sl_activation×ATR in our favour
         self.trailing_sl_enabled    = kw.get("trailing_sl_enabled", False)
-        self.trailing_sl_activation = kw.get("trailing_sl_activation", 1.0)
+        self.trailing_sl_activation = kw.get("trailing_sl_activation", 1.5)
         # LightGBM mid-trade exit: exit only after N consecutive bars below threshold
         self.lgbm_exit_enabled       = kw.get("lgbm_exit_enabled",       False)
         self.lgbm_exit_threshold     = kw.get("lgbm_exit_threshold",     0.30)
@@ -85,6 +85,8 @@ class BotConfig:
         # Chronos-2 adaptive features
         self.c2_uncertainty_gate_enabled = kw.get("c2_uncertainty_gate_enabled", False)
         self.c2_uncertainty_threshold    = kw.get("c2_uncertainty_threshold",    0.05)
+        self.c2_cont_prob_gate_enabled   = kw.get("c2_cont_prob_gate_enabled",   False)
+        self.c2_cont_prob_threshold      = kw.get("c2_cont_prob_threshold",      0.25)
         self.dynamic_sl_tp_enabled       = kw.get("dynamic_sl_tp_enabled",       False)
         self.dynamic_sl_tp_blend         = kw.get("dynamic_sl_tp_blend",         0.50)
 
@@ -425,7 +427,16 @@ class ExecutionEngine:
             c2_out = self._chronos.forecast(df_4h["close"].values, horizon=3, atr=atr)
         else:
             mark = snap["mark_price"]
-            c2_out = {"c2_dir_prob": 0.5, "c2_p10": mark, "c2_p50": mark, "c2_p90": mark}
+            c2_out = {
+                "c2_dir_prob":    0.5,
+                "c2_p10":         mark,
+                "c2_p50":         mark,
+                "c2_p90":         mark,
+                "c2_uncertainty": 0.0,
+                "c2_vol_prob":    0.0,
+                "c2_cont_prob":   1.0,
+                "c2_p50_vs_atr":  0.0,
+            }
 
         # 5. LightGBM probability (non-C2 features)
         lgbm_prob = self._get_lgbm_prob(df_feat)
@@ -452,6 +463,8 @@ class ExecutionEngine:
             chronos_weight              = self.config.chronos_weight if self.config.chronos_enabled else 0.0,
             c2_uncertainty_gate_enabled = self.config.c2_uncertainty_gate_enabled if self.config.chronos_enabled else False,
             c2_uncertainty_threshold    = self.config.c2_uncertainty_threshold,
+            c2_cont_prob_gate_enabled   = self.config.c2_cont_prob_gate_enabled if self.config.chronos_enabled else False,
+            c2_cont_prob_threshold      = self.config.c2_cont_prob_threshold,
         )
         result = decision_engine.decide(
             features=latest,
