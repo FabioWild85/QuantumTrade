@@ -123,6 +123,72 @@ class TelegramNotifier:
             f"Il bot potrebbe essere bloccato. Verifica immediatamente."
         )
 
+    async def send_partial_tp(
+        self,
+        side: str,
+        symbol: str,
+        pct: float,
+        price: float,
+        pnl_usd: float,
+        pnl_pct: float,
+        remaining_usd: float,
+        new_sl: float,
+    ):
+        sign = "+" if pnl_usd >= 0 else ""
+        await self._send(
+            f"⚡ <b>PARTIAL TP ESEGUITO — {side.upper()} {symbol}</b>\n"
+            f"Eseguito:  <code>{pct:.0f}% @ ${price:,.2f}</code>\n"
+            f"PnL leg:   <code>{sign}${pnl_usd:,.2f} ({sign}{pnl_pct:.2f}%)</code>\n"
+            f"Restante:  <code>${remaining_usd:,.0f}</code>\n"
+            f"SL → BE:   <code>${new_sl:,.2f}</code>"
+        )
+
+    async def send_sl_moved(
+        self,
+        side: str,
+        symbol: str,
+        old_sl: float,
+        new_sl: float,
+        high_water: float,
+        reason: str = "trailing",
+    ):
+        diff = new_sl - old_sl if side == "long" else old_sl - new_sl
+        sign = "+" if diff >= 0 else ""
+        await self._send(
+            f"🔔 <b>TRAILING SL AGGIORNATO — {side.upper()} {symbol}</b>\n"
+            f"SL prec.:  <code>${old_sl:,.2f}</code>\n"
+            f"Nuovo SL:  <code>${new_sl:,.2f} ({sign}${abs(diff):,.0f})</code>\n"
+            f"High water: <code>${high_water:,.2f}</code>"
+        )
+
+    async def send_breakeven_sl(
+        self,
+        side: str,
+        symbol: str,
+        entry_price: float,
+    ):
+        await self._send(
+            f"🔒 <b>BREAKEVEN SL ATTIVATO — {side.upper()} {symbol}</b>\n"
+            f"SL → entry: <code>${entry_price:,.2f}</code>\n"
+            f"<i>Trade ora a rischio zero</i>"
+        )
+
+    async def send_signal_blocked_opposite(
+        self,
+        signal_side: str,
+        open_side: str,
+        ensemble_pct: float,
+        reasoning: list,
+    ):
+        last_reason = reasoning[-1] if reasoning else "—"
+        await self._send(
+            f"⚠️ <b>SEGNALE CONTRARIO BLOCCATO — {signal_side.upper()}</b>\n"
+            f"Posizione aperta: <code>{open_side.upper()}</code>\n"
+            f"Ensemble:         <code>{ensemble_pct:.1f}%</code>\n"
+            f"Motivo:           <code>{last_reason}</code>\n"
+            f"<i>Segnale ignorato — posizione {open_side.upper()} in corso</i>"
+        )
+
     async def send_daily_summary(
         self,
         date: str,

@@ -194,9 +194,14 @@ async def bot_update_config(cfg: BotConfig):
         raise HTTPException(503, "Engine not initialized")
     engine.update_config(cfg)
     db = get_supabase()
+    # Preserve internal keys (e.g. _paper_position) that live in params
+    # but are not part of BotConfig — a full overwrite would wipe them.
+    existing = db.table("bot_configs").select("params").eq("name", "default").execute()
+    existing_params = (existing.data[0].get("params") or {}) if existing.data else {}
+    merged_params = {**existing_params, **cfg.model_dump()}
     db.table("bot_configs").upsert({
         "name": "default",
-        "params": cfg.model_dump(),
+        "params": merged_params,
         "mode": cfg.mode,
         "status": "updated",
     }, on_conflict="name").execute()
@@ -261,6 +266,41 @@ async def bot_stop():
     _persist_running_state(False)
     _log_event("bot_stopped", "Bot fermato dall'utente", "info")
     return {"status": "stopped"}
+
+
+@app.post("/bot/position/close")
+async def close_position_manual():
+    """Close the open position at current mark price without stopping the bot."""
+    if not engine:
+        raise HTTPException(503, "Engine not initialized")
+    if not engine._position:
+        raise HTTPException(404, "No open position")
+    result = await engine.close_position_manual()
+    _log_event(
+        "position_closed_manual",
+        f"Posizione chiusa manualmente @ ${result.get('exit_price', 0):,.2f}",
+        "info",
+        result,
+    )
+    return result
+
+
+@app.post("/retrain")
+async def force_retrain():
+    """
+    Manually trigger a LightGBM retrain.
+    Blocks until complete (~10-30s). Returns metrics on success, {"status": "busy"} if already running.
+    """
+    if not engine:
+        raise HTTPException(503, "Engine not initialized")
+    result = await engine.retrain_manual()
+    _log_event(
+        "lgbm_retrain_manual",
+        f"Retrain manuale: status={result.get('status')} acc={result.get('oos_accuracy', 'N/A')}",
+        "info",
+        result,
+    )
+    return result
 
 
 @app.post("/bot/kill")
@@ -419,41 +459,39 @@ async def get_inference_logs(limit: int = 50):
 
 # ─── Retraining ──────────────────────────────────────────────────────────────
 
-@app.post("/retrain")
-async def retrain_now(background_tasks: BackgroundTasks):
-    """Trigger an immediate LightGBM retrain (runs in background)."""
-    if not engine:
-        raise HTTPException(503, "Engine not initialized")
-
-    async def _run():
-        from services.trainer import LGBMTrainer
-        trainer = LGBMTrainer()
-        metrics = await trainer.retrain()
-        if metrics.get("status") == "ok":
-            from services.trainer import load_model
-            result = load_model()
-            if result and engine:
-                engine._lgbm_model, engine._lgbm_features = result
-        log.info("Manual retrain complete: %s", metrics)
-
-    background_tasks.add_task(_run)
-    return {"status": "retraining_started"}
-
-
 @app.get("/retrain/status")
 async def retrain_status():
-    """Check model info from disk."""
+    """Check model info and last retrain metrics."""
     from services.trainer import MODEL_PATH
     import os
     if not MODEL_PATH.exists():
-        return {"model_exists": False}
+        return {"model_exists": False, "model_loaded": False}
     mtime = os.path.getmtime(MODEL_PATH)
     trained_at = datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat()
     return {
         "model_exists":  True,
         "trained_at":    trained_at,
         "model_loaded":  engine._lgbm_model is not None if engine else False,
+        "last_retrain":  engine._last_retrain_metrics if engine else None,
     }
+
+
+# ─── Trade Events ────────────────────────────────────────────────────────────
+
+@app.get("/trade-events")
+async def get_trade_events(trade_id: str, limit: int = 50):
+    """Return lifecycle events for a specific trade (sl_moved, be_sl, partial_tp…)."""
+    try:
+        db = get_supabase()
+        result = db.table("trade_events") \
+            .select("*") \
+            .eq("trade_id", trade_id) \
+            .order("time", desc=False) \
+            .limit(limit) \
+            .execute()
+        return result.data or []
+    except Exception:
+        return []
 
 
 # ─── Covariates ───────────────────────────────────────────────────────────────

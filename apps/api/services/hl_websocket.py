@@ -7,19 +7,16 @@ Provides event-driven candle close trigger + real-time CVD / OI accumulation.
 import asyncio
 import json
 import logging
-import os
 from typing import Optional
 
 import websockets
 
 log = logging.getLogger(__name__)
 
-HL_TESTNET = os.getenv("HL_TESTNET", "true").lower() == "true"
-WS_URL = (
-    "wss://api.hyperliquid-testnet.xyz/ws"
-    if HL_TESTNET
-    else "wss://api.hyperliquid.xyz/ws"
-)
+# Market data feed always connects to mainnet — real prices are needed in both
+# paper and live modes. HL_TESTNET controls only order execution (in execution.py),
+# not the data feed.
+WS_URL = "wss://api.hyperliquid.xyz/ws"
 RECONNECT_BASE_S = 5.0
 CANDLE_CLOSE_TIMEOUT_S = 14_430.0  # 4h + 30s fallback
 
@@ -56,7 +53,7 @@ class HLWebSocket:
     async def start(self):
         self._running = True
         self._task = asyncio.create_task(self._run_forever())
-        log.info("HLWebSocket started (%s)", "testnet" if HL_TESTNET else "mainnet")
+        log.info("HLWebSocket started (mainnet data feed)")
 
     async def stop(self):
         self._running = False
@@ -67,6 +64,10 @@ class HLWebSocket:
     @property
     def is_connected(self) -> bool:
         return self._connected.is_set()
+
+    @property
+    def latest_mark(self) -> Optional[float]:
+        return self._latest_mark if self._latest_mark > 0 else None
 
     # ── Public interface ──────────────────────────────────────────────────────
 

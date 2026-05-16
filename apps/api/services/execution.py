@@ -23,7 +23,7 @@ from services.chronos_model import ChronosForecaster
 from services.decision import DecisionEngine, DecisionResult, compute_qt_score
 from services.risk import RiskManager
 from services.notifications import TelegramNotifier
-from services.trainer import LGBMTrainer, load_model
+from services.trainer import LGBMTrainer, load_model, _retrain_lock
 from services.covariates import update_covariates, get_latest_covariates
 from services.supabase_client import get_supabase
 
@@ -124,14 +124,20 @@ class ExecutionEngine:
         self._consecutive_errors: int   = 0
         self._retrain_task: Optional[asyncio.Task] = None
         self._task: Optional[asyncio.Task]         = None
+        self._last_retrain_metrics: Optional[dict] = None
 
     # ── Config ────────────────────────────────────────────────────────────────
 
     def update_config(self, cfg):
         for k, v in cfg.model_dump().items():
             setattr(self.config, k, v)
-        # Rebuild risk manager with new limits (preserve daily counters)
-        self._risk = self._build_risk_manager()
+        self._risk.update_limits(
+            sl_atr_mult=self.config.sl_atr_mult,
+            tp_atr_mult=self.config.tp_atr_mult,
+            position_size_pct=self.config.position_size_pct,
+            max_daily_dd_pct=self.config.max_daily_dd_pct,
+            max_consecutive_losses=self.config.max_consecutive_losses,
+        )
         log.info("Config updated: %s", cfg.model_dump())
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
@@ -173,6 +179,19 @@ class ExecutionEngine:
         log.info("Execution engine stopped")
         await self._notifier.send_bot_stopped("manual")
 
+    async def close_position_manual(self) -> dict:
+        """Close the current position at mark price without stopping the bot."""
+        if not self._position:
+            return {"closed": False, "reason": "no_position"}
+
+        # Snapshot entry_price before the await so we have a safe fallback
+        # even if _cycle() closes the position concurrently during the network call.
+        fallback_price = self._position["entry_price"]
+        snap  = await self._hl.get_market_snapshot(SYMBOL)
+        price = snap.get("mark_price", fallback_price)
+        await self._close_position(price, "manual")  # _close_position guards None internally
+        return {"closed": True, "exit_price": price}
+
     async def kill(self) -> dict:
         """Emergency: cancel open orders, close positions immediately."""
         self.running = False
@@ -195,7 +214,7 @@ class ExecutionEngine:
                 snap  = await self._hl.get_market_snapshot(SYMBOL)
                 price = snap.get("mark_price", self._position["entry_price"])
                 await self._close_position(price, "kill")
-            positions_closed = 1
+                positions_closed = 1
 
         self._position = None
         log.warning("KILL SWITCH activated")
@@ -292,6 +311,28 @@ class ExecutionEngine:
                         "Paper position restored: %s %.4f BTC @ %.2f",
                         saved_pos["side"].upper(), saved_pos["size_contracts"], saved_pos["entry_price"],
                     )
+                    # Backfill UI-display fields added after this position was saved.
+                    # _manage_position() recomputes these independently; these copies
+                    # exist only so the Monitor card can show them immediately.
+                    _e    = self._position.get("entry_price", 0)
+                    _atr  = self._position.get("entry_atr") or _e * 0.01
+                    _long = self._position.get("side", "long") == "long"
+                    if "sl_original" not in self._position:
+                        self._position["sl_original"] = self._position.get("stop_loss")
+                    if "partial_tp_price" not in self._position:
+                        self._position["partial_tp_price"] = (
+                            (_e + self.config.partial_tp_atr_mult * _atr) if _long
+                            else (_e - self.config.partial_tp_atr_mult * _atr)
+                        ) if self.config.partial_tp_enabled else None
+                    if "trailing_sl_activation_price" not in self._position:
+                        self._position["trailing_sl_activation_price"] = (
+                            (_e + self.config.trailing_sl_activation * _atr) if _long
+                            else (_e - self.config.trailing_sl_activation * _atr)
+                        ) if self.config.trailing_sl_enabled else None
+                    if "trailing_sl_dist" not in self._position:
+                        self._position["trailing_sl_dist"] = (
+                            self.config.trailing_sl_activation * _atr
+                        ) if self.config.trailing_sl_enabled else None
         except Exception as exc:
             log.warning("Could not restore paper state: %s", exc)
 
@@ -308,14 +349,18 @@ class ExecutionEngine:
 
     async def get_status(self) -> dict:
         return {
-            "running":       self.running,
-            "mode":          self.mode,
-            "equity":        self._equity,
-            "position":      self._position,
-            "cycle_count":   self._cycle_count,
-            "ws_connected":  self._ws.is_connected,
-            "model_loaded":  self._lgbm_model is not None,
-            "config":        self.config.model_dump(),
+            "running":              self.running,
+            "mode":                 self.mode,
+            "hl_testnet":           HL_TESTNET,
+            "equity":               self._equity,
+            "position":             self._position,
+            "mark_price":           self._ws.latest_mark,
+            "cycle_count":          self._cycle_count,
+            "ws_connected":         self._ws.is_connected,
+            "model_loaded":         self._lgbm_model is not None,
+            "retrain_in_progress":  _retrain_lock.locked(),
+            "last_retrain":         self._last_retrain_metrics,
+            "config":               self.config.model_dump(),
         }
 
     # ── Main Loop ─────────────────────────────────────────────────────────────
@@ -500,6 +545,47 @@ class ExecutionEngine:
             await self._open_position(result, snap, atr, inference_id)
         elif not allowed:
             log.info("Trade blocked: %s", block_reason)
+        elif result.action != "no_trade" and self._position is not None:
+            open_side    = self._position["side"]
+            signal_side  = result.action
+            ensemble_pct = round(result.confidence * 100, 1)
+            is_opposite  = (signal_side != open_side)
+
+            kind  = "signal_blocked_opposite" if is_opposite else "signal_blocked_same"
+            label = "SEGNALE CONTRARIO IGNORATO" if is_opposite else "Segnale uguale ignorato"
+            log.info(
+                "[%s] %s — %s mentre posizione %s aperta | ensemble=%.1f%% | %s",
+                self.mode.upper(), label, signal_side.upper(), open_side.upper(),
+                ensemble_pct, result.reasoning[-1] if result.reasoning else "—",
+            )
+            try:
+                db = get_supabase()
+                db.table("events").insert({
+                    "severity": "warning" if is_opposite else "info",
+                    "kind":     kind,
+                    "message":  (
+                        f"{'⚠️' if is_opposite else 'ℹ️'} {label}: {signal_side.upper()} "
+                        f"@ {ensemble_pct}% (posizione {open_side.upper()} aperta)"
+                    ),
+                    "payload": {
+                        "signal":       signal_side,
+                        "open_side":    open_side,
+                        "ensemble_pct": ensemble_pct,
+                        "is_opposite":  is_opposite,
+                        "reasoning":    result.reasoning,
+                        "inference_id": inference_id,
+                    },
+                }).execute()
+            except Exception as exc:
+                log.warning("signal_blocked event insert failed: %s", exc)
+
+            if is_opposite:
+                asyncio.create_task(self._notifier.send_signal_blocked_opposite(
+                    signal_side=signal_side,
+                    open_side=open_side,
+                    ensemble_pct=ensemble_pct,
+                    reasoning=result.reasoning,
+                ))
 
         # 9. Manage existing position (SL/TP + optional LightGBM mid-trade exit)
         if self._position:
@@ -540,32 +626,46 @@ class ExecutionEngine:
 
     # ── Retraining ────────────────────────────────────────────────────────────
 
+    async def _reload_model_after_retrain(self, metrics: dict, trigger: str = "auto"):
+        """Common post-retrain logic: reload model, persist metrics, log to Supabase."""
+        result = load_model()
+        if result:
+            self._lgbm_model, self._lgbm_features = result
+        self._last_retrain_metrics = metrics
+        log.info(
+            "LightGBM model reloaded (%s): OOS acc=%.2f%%, ll=%.4f",
+            trigger, metrics["oos_accuracy"] * 100, metrics["oos_log_loss"],
+        )
+        try:
+            db = get_supabase()
+            db.table("events").insert({
+                "severity": "info",
+                "kind":     "lgbm_retrained",
+                "message":  f"LightGBM retrained ({trigger}): OOS acc={metrics['oos_accuracy']:.2%}",
+                "payload":  {**metrics, "trigger": trigger},
+            }).execute()
+        except Exception:
+            pass
+
     async def _retrain_background(self):
         log.info("Auto-retraining triggered (cycle %d)", self._cycle_count)
         try:
             metrics = await self._trainer.retrain(SYMBOL, lookback_candles=500)
             if metrics.get("status") == "ok":
-                # Reload the freshly trained model
-                result = load_model()
-                if result:
-                    self._lgbm_model, self._lgbm_features = result
-                log.info(
-                    "Model reloaded after retrain: OOS acc=%.2f%%, ll=%.4f",
-                    metrics["oos_accuracy"] * 100, metrics["oos_log_loss"],
-                )
-                # Log event to Supabase
-                try:
-                    db = get_supabase()
-                    db.table("events").insert({
-                        "severity": "info",
-                        "kind":     "lgbm_retrained",
-                        "message":  f"LightGBM retrained: OOS acc={metrics['oos_accuracy']:.2%}",
-                        "payload":  metrics,
-                    }).execute()
-                except Exception:
-                    pass
+                await self._reload_model_after_retrain(metrics, trigger="auto")
         except Exception as exc:
             log.error("Retraining failed: %s", exc, exc_info=True)
+
+    async def retrain_manual(self) -> dict:
+        """
+        Manual retrain triggered from the UI.
+        Blocks until complete (~10-30s) and returns the metrics dict.
+        Returns {"status": "busy"} immediately if a retrain is already in progress.
+        """
+        metrics = await self._trainer.retrain(SYMBOL, lookback_candles=500)
+        if metrics.get("status") == "ok":
+            await self._reload_model_after_retrain(metrics, trigger="manual")
+        return metrics
 
     # ── Position management ───────────────────────────────────────────────────
 
@@ -616,14 +716,27 @@ class ExecutionEngine:
                 params.stop_loss, params.take_profit, params.rr_ratio,
             )
 
+        # Pre-calculate level prices so the UI can show them immediately
+        _atr = atr or price * 0.01
+        _is_long = result.action == "long"
+        _partial_tp_price = (
+            (price + self.config.partial_tp_atr_mult * _atr) if _is_long
+            else (price - self.config.partial_tp_atr_mult * _atr)
+        ) if self.config.partial_tp_enabled else None
+        _trailing_activation_price = (
+            (price + self.config.trailing_sl_activation * _atr) if _is_long
+            else (price - self.config.trailing_sl_activation * _atr)
+        ) if self.config.trailing_sl_enabled else None
+
         self._position = {
             "side":           result.action,
             "entry_price":    price,
             "stop_loss":      params.stop_loss,
             "take_profit":    params.take_profit,
+            "sl_original":    params.stop_loss,
             "size_usd":       params.size_usd,
             "size_contracts": size,
-            "entry_atr":      atr,
+            "entry_atr":      _atr,
             "inference_id":   inference_id,
             "hl_order_id":    hl_order_id,
             "opened_at":      datetime.now(timezone.utc).isoformat(),
@@ -633,6 +746,10 @@ class ExecutionEngine:
             "sl_trailing_active": False,
             "high_water":         price,
             "partial_done":       False,
+            # Pre-calculated level prices for UI
+            "partial_tp_price":              _partial_tp_price,
+            "trailing_sl_activation_price":  _trailing_activation_price,
+            "trailing_sl_dist":              (self.config.trailing_sl_activation * _atr) if self.config.trailing_sl_enabled else None,
         }
 
         # Persist paper position immediately so it survives a restart
@@ -641,7 +758,7 @@ class ExecutionEngine:
 
         try:
             db = get_supabase()
-            db.table("orders").insert({
+            order_res = db.table("orders").insert({
                 "bot_id":       "default",
                 "hl_order_id":  hl_order_id,
                 "symbol":       SYMBOL,
@@ -651,6 +768,13 @@ class ExecutionEngine:
                 "status":       "filled" if self.mode == "paper" else "pending",
                 "inference_id": inference_id,
             }).execute()
+            # Capture the generated order ID and store it in the position
+            # so _emit_trade_event() can link events to this trade.
+            if order_res.data:
+                self._position["trade_id"] = order_res.data[0].get("id")
+                # Re-persist with trade_id now populated (first persist at line above had no ID yet)
+                if self.mode == "paper":
+                    self._save_paper_position()
             db.table("events").insert({
                 "severity": "info",
                 "kind": "trade_opened",
@@ -676,6 +800,21 @@ class ExecutionEngine:
             inference_id=inference_id,
         )
 
+    async def _emit_trade_event(self, kind: str, payload: dict):
+        """Insert a trade lifecycle event into Supabase trade_events table (best-effort)."""
+        if not self._position:
+            return
+        try:
+            db = get_supabase()
+            db.table("trade_events").insert({
+                "trade_id": self._position.get("trade_id"),
+                "kind":     kind,
+                "payload":  payload,
+                "time":     datetime.now(timezone.utc).isoformat(),
+            }).execute()
+        except Exception as exc:
+            log.debug("trade_event insert skipped: %s", exc)
+
     async def _manage_position(self, current_price: float, df_feat: pd.DataFrame):
         if not self._position:
             return
@@ -700,14 +839,34 @@ class ExecutionEngine:
                     self._position["high_water"] = max(self._position["high_water"], current_price)
                     new_sl = self._position["high_water"] - trail_dist
                     if new_sl > self._position["stop_loss"]:
-                        log.info("Trailing SL updated: %.2f → %.2f", self._position["stop_loss"], new_sl)
+                        old_sl = self._position["stop_loss"]
+                        log.info("Trailing SL updated: %.2f → %.2f", old_sl, new_sl)
                         self._position["stop_loss"] = new_sl
+                        asyncio.create_task(self._emit_trade_event("sl_moved", {
+                            "sl_old": old_sl, "sl_new": new_sl,
+                            "high_water": self._position["high_water"],
+                            "current_price": current_price, "reason": "trailing",
+                        }))
+                        asyncio.create_task(self._notifier.send_sl_moved(
+                            side, SYMBOL, old_sl=old_sl, new_sl=new_sl,
+                            high_water=self._position["high_water"], reason="trailing",
+                        ))
                 else:
                     self._position["high_water"] = min(self._position["high_water"], current_price)
                     new_sl = self._position["high_water"] + trail_dist
                     if new_sl < self._position["stop_loss"]:
-                        log.info("Trailing SL updated: %.2f → %.2f", self._position["stop_loss"], new_sl)
+                        old_sl = self._position["stop_loss"]
+                        log.info("Trailing SL updated: %.2f → %.2f", old_sl, new_sl)
                         self._position["stop_loss"] = new_sl
+                        asyncio.create_task(self._emit_trade_event("sl_moved", {
+                            "sl_old": old_sl, "sl_new": new_sl,
+                            "high_water": self._position["high_water"],
+                            "current_price": current_price, "reason": "trailing",
+                        }))
+                        asyncio.create_task(self._notifier.send_sl_moved(
+                            side, SYMBOL, old_sl=old_sl, new_sl=new_sl,
+                            high_water=self._position["high_water"], reason="trailing",
+                        ))
 
         # ── 2. Break-even SL ──────────────────────────────────────────────────
         if self.config.be_sl_enabled and not self._position.get("be_sl_applied", False):
@@ -716,10 +875,18 @@ class ExecutionEngine:
                 self._position["stop_loss"] = max(self._position["stop_loss"], entry)
                 self._position["be_sl_applied"] = True
                 log.info("Break-even SL activated (long) — SL moved to entry %.2f", entry)
+                asyncio.create_task(self._emit_trade_event("be_sl", {
+                    "sl_new": entry, "current_price": current_price,
+                }))
+                asyncio.create_task(self._notifier.send_breakeven_sl(side, SYMBOL, entry_price=entry))
             elif side == "short" and current_price <= entry - activation_dist:
                 self._position["stop_loss"] = min(self._position["stop_loss"], entry)
                 self._position["be_sl_applied"] = True
                 log.info("Break-even SL activated (short) — SL moved to entry %.2f", entry)
+                asyncio.create_task(self._emit_trade_event("be_sl", {
+                    "sl_new": entry, "current_price": current_price,
+                }))
+                asyncio.create_task(self._notifier.send_breakeven_sl(side, SYMBOL, entry_price=entry))
 
         # ── 3. Partial TP (partial close, does not fully exit) ────────────────
         if self.config.partial_tp_enabled and not self._position.get("partial_done", False):
@@ -758,12 +925,24 @@ class ExecutionEngine:
                     self.mode.upper(), self.config.partial_tp_pct, current_price,
                     pnl_pct_p, pnl_usd_p,
                 )
-                await self._notifier.send_trade_closed(
+                asyncio.create_task(self._emit_trade_event("partial_tp", {
+                    "price": current_price,
+                    "pct_closed": self.config.partial_tp_pct,
+                    "pnl_usd": round(pnl_usd_p, 2),
+                    "pnl_pct": round(pnl_pct_p, 4),
+                    "remaining_usd": self._position["size_usd"],
+                    "remaining_contracts": self._position["size_contracts"],
+                    "new_sl": self._position["stop_loss"],
+                }))
+                asyncio.create_task(self._notifier.send_partial_tp(
                     side=side, symbol=SYMBOL,
-                    pnl_usd=pnl_usd_p, pnl_pct=pnl_pct_p,
-                    reason=f"partial_tp_{int(self.config.partial_tp_pct)}pct",
-                    holding_hours=self._position["bars_held"] * 4,
-                )
+                    pct=self.config.partial_tp_pct,
+                    price=current_price,
+                    pnl_usd=pnl_usd_p,
+                    pnl_pct=pnl_pct_p,
+                    remaining_usd=self._position["size_usd"],
+                    new_sl=self._position["stop_loss"],
+                ))
 
         # ── 4. LightGBM mid-trade exit ────────────────────────────────────────
         if (self.config.lgbm_exit_enabled and self._lgbm_model is not None

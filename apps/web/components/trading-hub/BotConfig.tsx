@@ -39,17 +39,64 @@ const DEFAULTS: Config = {
   chronos_enabled: true,
 };
 
+interface RetrainMetrics {
+  status: 'ok' | 'busy';
+  trained_at?: string;
+  elapsed_s?: number;
+  train_rows?: number;
+  val_rows?: number;
+  n_features?: number;
+  oos_accuracy?: number;
+  oos_log_loss?: number;
+  best_iteration?: number | null;
+}
+
 export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
-  const [config, setConfig] = useState<Config>(DEFAULTS);
-  const [saved, setSaved]   = useState(false);
-  const [loading, setLoading] = useState(false);
+  const [config, setConfig]             = useState<Config>(DEFAULTS);
+  const [saved, setSaved]               = useState(false);
+  const [loading, setLoading]           = useState(false);
+  const [modelLoaded, setModelLoaded]   = useState<boolean | null>(null);
+  const [retraining, setRetraining]     = useState(false);
+  const [retrainResult, setRetrainResult] = useState<RetrainMetrics | null>(null);
+  const [lastRetrain, setLastRetrain]   = useState<RetrainMetrics | null>(null);
+  const [hlTestnet, setHlTestnet]       = useState<boolean | null>(null);
 
   useEffect(() => {
     fetch(`${apiBase}/bot`)
       .then(r => r.ok ? r.json() : null)
       .then(d => d && setConfig(c => ({ ...c, ...d })))
       .catch(() => {});
+    // Fetch bot status to populate model info and network config
+    fetch(`${apiBase}/bot/status`)
+      .then(r => r.ok ? r.json() : null)
+      .then(s => {
+        if (!s) return;
+        setModelLoaded(s.model_loaded ?? false);
+        setHlTestnet(s.hl_testnet ?? true);
+        if (s.last_retrain) setLastRetrain(s.last_retrain);
+        if (s.retrain_in_progress) setRetraining(true);
+      })
+      .catch(() => {});
   }, [apiBase]);
+
+  const handleRetrain = async () => {
+    if (!confirm('Avvia retrain manuale di LightGBM?\n\nIl modello verrà ricalcolato sugli ultimi 500 candles (4h). Il processo dura 10–30 secondi.')) return;
+    setRetraining(true);
+    setRetrainResult(null);
+    try {
+      const r = await fetch(`${apiBase}/retrain`, { method: 'POST' });
+      const data: RetrainMetrics = await r.json();
+      setRetrainResult(data);
+      if (data.status === 'ok') {
+        setModelLoaded(true);
+        setLastRetrain(data);
+      }
+    } catch {
+      setRetrainResult({ status: 'busy' });
+    } finally {
+      setRetraining(false);
+    }
+  };
 
   const handleSave = async () => {
     if (!confirm(`Salva configurazione in modalità ${config.mode.toUpperCase()}?`)) return;
@@ -117,6 +164,63 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
              <p className="text-[10px] font-bold text-rose-600 dark:text-rose-400 uppercase tracking-tight leading-relaxed">
                Attenzione: La modalità Live utilizza asset reali su Hyperliquid. Verifica attentamente le soglie di rischio prima di salvare.
              </p>
+          </div>
+        )}
+      </Section>
+
+      {/* Network for live orders */}
+      <Section
+        title="Rete Ordini Live"
+        description="Indica su quale rete Hyperliquid vengono inviati gli ordini quando il bot è in modalità Live. I dati di mercato (prezzi, OHLCV) vengono sempre da mainnet."
+      >
+        {hlTestnet === null ? (
+          <div className="h-16 bg-slate-100 dark:bg-white/5 rounded-xl animate-pulse" />
+        ) : (
+          <div className="space-y-4">
+            {/* Current network badge */}
+            <div className={`flex items-center justify-between p-4 rounded-xl border ${
+              hlTestnet
+                ? 'bg-amber-50 dark:bg-amber-500/10 border-amber-200 dark:border-amber-500/25'
+                : 'bg-rose-50 dark:bg-rose-500/10 border-rose-200 dark:border-rose-500/25'
+            }`}>
+              <div className="flex items-center gap-3">
+                <span className={`w-2.5 h-2.5 rounded-full ${hlTestnet ? 'bg-amber-500' : 'bg-rose-500 animate-pulse'}`} />
+                <div>
+                  <p className={`text-xs font-bold uppercase tracking-widest ${hlTestnet ? 'text-amber-700 dark:text-amber-400' : 'text-rose-700 dark:text-rose-400'}`}>
+                    {hlTestnet ? 'Hyperliquid Testnet' : 'Hyperliquid Mainnet'}
+                  </p>
+                  <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5">
+                    {hlTestnet
+                      ? 'Ordini con fondi virtuali — nessun rischio reale'
+                      : 'Ordini con fondi reali — massima attenzione'}
+                  </p>
+                </div>
+              </div>
+              <span className={`text-[9px] font-bold uppercase tracking-widest px-2 py-1 rounded border ${
+                hlTestnet
+                  ? 'bg-amber-100 dark:bg-amber-500/15 text-amber-700 dark:text-amber-400 border-amber-300 dark:border-amber-500/30'
+                  : 'bg-rose-100 dark:bg-rose-500/15 text-rose-700 dark:text-rose-400 border-rose-300 dark:border-rose-500/30'
+              }`}>
+                {hlTestnet ? 'TESTNET' : 'MAINNET'}
+              </span>
+            </div>
+
+            {/* How to switch */}
+            <div className="bg-slate-50 dark:bg-white/[0.03] border border-slate-100 dark:border-white/8 rounded-xl p-4 space-y-2">
+              <p className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest">Come cambiare rete</p>
+              <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
+                La rete è configurata tramite variabile d'ambiente <code className="text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-500/10 px-1 rounded">HL_TESTNET</code> nel file <code className="text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-500/10 px-1 rounded">.env</code> sul VPS.
+              </p>
+              <div className="font-mono text-[10px] bg-slate-900 dark:bg-black/40 text-emerald-400 rounded-lg px-3 py-2 space-y-0.5 mt-2">
+                <div className="text-slate-500"># Testnet (default — ordini virtuali)</div>
+                <div>HL_TESTNET=<span className="text-amber-400">true</span></div>
+                <div className="text-slate-500 mt-1"># Mainnet (fondi reali)</div>
+                <div>HL_TESTNET=<span className="text-rose-400">false</span></div>
+              </div>
+              <p className="text-[10px] text-slate-400 dark:text-slate-500 leading-relaxed mt-1">
+                Dopo aver modificato il file, riavvia il servizio con <code className="text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-500/10 px-1 rounded">systemctl restart quantum-trade</code>.
+              </p>
+            </div>
           </div>
         )}
       </Section>
@@ -339,6 +443,106 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
             </div>
           )}
         </div>
+      </Section>
+
+      {/* LightGBM Model */}
+      <Section title="LightGBM — Modello Direzionale" description="Il modello di machine learning viene riaddestrato automaticamente ogni 120 candele (~30 giorni). Usa il retrain manuale per aggiornarlo prima di avviare il bot dopo un periodo di inattività.">
+        {/* Model status row */}
+        <div className="flex items-center justify-between mb-5">
+          <div className="flex items-center gap-3">
+            <div className={`w-2 h-2 rounded-full ${modelLoaded === null ? 'bg-slate-300 dark:bg-slate-600' : modelLoaded ? 'bg-emerald-500' : 'bg-amber-400'}`} />
+            <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest">
+              {modelLoaded === null ? 'Caricamento…' : modelLoaded ? 'Modello caricato' : 'Nessun modello — usa ATR neutro'}
+            </span>
+          </div>
+          {lastRetrain?.trained_at && (
+            <span className="text-[10px] font-mono text-slate-400 dark:text-slate-500">
+              Ultimo retrain: {new Date(lastRetrain.trained_at).toLocaleString('it-IT', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}
+            </span>
+          )}
+        </div>
+
+        {/* Last retrain metrics */}
+        {lastRetrain?.status === 'ok' && !retrainResult && (
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-5">
+            {[
+              { label: 'OOS Accuracy',  value: `${((lastRetrain.oos_accuracy ?? 0) * 100).toFixed(1)}%` },
+              { label: 'Log Loss',      value: (lastRetrain.oos_log_loss ?? 0).toFixed(4) },
+              { label: 'Training Rows', value: (lastRetrain.train_rows ?? 0).toLocaleString() },
+              { label: 'Features',      value: lastRetrain.n_features ?? '—' },
+            ].map(({ label, value }) => (
+              <div key={label} className="bg-slate-50 dark:bg-white/5 rounded-xl px-3 py-2 text-center">
+                <p className="text-[9px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-0.5">{label}</p>
+                <p className="text-sm font-bold font-mono text-slate-900 dark:text-white">{value}</p>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Result after manual retrain */}
+        {retrainResult && (
+          <div className={`flex items-start gap-3 rounded-xl px-4 py-3 mb-5 ${
+            retrainResult.status === 'ok'
+              ? 'bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/30'
+              : 'bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/30'
+          }`}>
+            <div className="flex-1">
+              {retrainResult.status === 'ok' ? (
+                <>
+                  <p className="text-[11px] font-bold text-emerald-700 dark:text-emerald-400 uppercase tracking-wide mb-1">Retrain completato</p>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                    {[
+                      { label: 'OOS Accuracy',  value: `${((retrainResult.oos_accuracy ?? 0) * 100).toFixed(1)}%` },
+                      { label: 'Log Loss',      value: (retrainResult.oos_log_loss ?? 0).toFixed(4) },
+                      { label: 'Training Rows', value: (retrainResult.train_rows ?? 0).toLocaleString() },
+                      { label: 'Durata',        value: `${retrainResult.elapsed_s ?? 0}s` },
+                    ].map(({ label, value }) => (
+                      <div key={label}>
+                        <p className="text-[9px] font-bold text-emerald-600 dark:text-emerald-500 uppercase tracking-widest">{label}</p>
+                        <p className="text-sm font-bold font-mono text-emerald-800 dark:text-emerald-300">{value}</p>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              ) : (
+                <p className="text-[11px] font-bold text-amber-700 dark:text-amber-400 uppercase tracking-wide">
+                  Retrain già in corso — riprova tra qualche secondo
+                </p>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Retrain button */}
+        <button
+          onClick={handleRetrain}
+          disabled={retraining}
+          className={`flex items-center justify-center gap-2 w-full py-3 rounded-xl text-[11px] font-bold uppercase tracking-widest transition-all border ${
+            retraining
+              ? 'bg-slate-100 dark:bg-white/5 text-slate-400 dark:text-slate-500 border-slate-200 dark:border-white/10 cursor-not-allowed'
+              : 'bg-slate-900 dark:bg-white text-white dark:text-slate-900 border-transparent hover:bg-slate-700 dark:hover:bg-slate-100 shadow-md active:scale-[0.98]'
+          }`}
+        >
+          {retraining ? (
+            <>
+              <svg className="w-3.5 h-3.5 animate-spin" viewBox="0 0 24 24" fill="none">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4l3-3-3-3v4a8 8 0 00-8 8h4z" />
+              </svg>
+              Retrain in corso…
+            </>
+          ) : (
+            <>
+              <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 12a9 9 0 11-6.219-8.56" />
+              </svg>
+              Forza Retrain LightGBM
+            </>
+          )}
+        </button>
+        <p className="text-[10px] text-slate-400 dark:text-slate-500 text-center mt-2">
+          Addestra il modello sugli ultimi 500 candles 4h · non interrompe il bot
+        </p>
       </Section>
 
       {/* Action Footer */}

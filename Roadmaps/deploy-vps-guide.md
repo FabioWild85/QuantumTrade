@@ -51,11 +51,19 @@ rsync -avz --delete \
 ### Backend (sync file Python)
 
 ```bash
-rsync -avz \
+rsync -avz --exclude='.venv' \
   -e "ssh -i ~/.ssh/id_ed25519" \
   "/Users/fabiowild/Desktop/Quantum Trade/apps/api/" \
   root@77.42.84.8:/opt/quantum-trade/apps/api/
 ```
+
+> **IMPORTANTE:** escludere sempre `.venv` dall'rsync — contiene binari macOS incompatibili con Linux.
+> Il venv sul VPS è gestito separatamente. Se si aggiungono nuove dipendenze al `requirements.txt`,
+> installarle sul VPS manualmente:
+> ```bash
+> ssh -i ~/.ssh/id_ed25519 root@77.42.84.8 \
+>   "cd /opt/quantum-trade/apps/api && .venv/bin/pip install -r requirements.txt"
+> ```
 
 ### Riavvio servizi sul VPS
 
@@ -100,3 +108,4 @@ ssh -i ~/.ssh/id_ed25519 root@77.42.84.8 "systemctl status nginx"
 | Modifiche frontend non visibili sul sito | Deploy su `/var/www/` invece di `/opt/` | Usare `/opt/quantum-trade/dist/` |
 | Modifiche frontend non visibili dopo deploy corretto | Cache del browser | `Cmd+Shift+R` per hard refresh |
 | `dist/` non trovata | Vite mette l'output in `dist/` nella root del progetto, non in `apps/web/dist/` | Rsync da `/Users/fabiowild/Desktop/Quantum Trade/dist/` |
+| Backend crash `exit-code 127` dopo deploy | rsync ha copiato `.venv` macOS sul server Linux, sovrascrivendo i binari | Usare sempre `--exclude='.venv'` nell'rsync del backend. Ripristino: `rm -rf .venv && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt` |

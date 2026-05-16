@@ -48,6 +48,21 @@ class RiskManager:
         self._consecutive_losses: int = 0
         self._daily_reset_date: Optional[str] = None
 
+    def update_limits(
+        self,
+        sl_atr_mult: float,
+        tp_atr_mult: float,
+        position_size_pct: float,
+        max_daily_dd_pct: float,
+        max_consecutive_losses: int,
+    ) -> None:
+        """Update configurable limits in-place without resetting runtime counters."""
+        self.sl_atr_mult            = sl_atr_mult
+        self.tp_atr_mult            = tp_atr_mult
+        self.position_size_pct      = position_size_pct
+        self.max_daily_dd_pct       = max_daily_dd_pct
+        self.max_consecutive_losses = max_consecutive_losses
+
     # ── Trade Parameter Calculation ───────────────────────────────────────────
 
     def calculate_trade_params(

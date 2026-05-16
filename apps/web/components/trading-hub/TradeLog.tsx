@@ -13,6 +13,13 @@ interface Trade {
   holding_sec: number | null;
 }
 
+interface TradeEvent {
+  id: string;
+  kind: 'sl_moved' | 'be_sl' | 'partial_tp' | 'tp2_hit' | 'sl_hit';
+  payload: Record<string, number | string | boolean | null>;
+  time: string;
+}
+
 interface InferenceLog {
   id: string;
   time: string;
@@ -43,11 +50,37 @@ const KEY_FEATURES = [
 ];
 
 export const TradeLog: React.FC<{ apiBase: string }> = ({ apiBase }) => {
-  const [trades,   setTrades]   = useState<Trade[]>([]);
-  const [logs,     setLogs]     = useState<InferenceLog[]>([]);
-  const [expanded, setExpanded] = useState<string | null>(null);
-  const [tab,      setTab]      = useState<'trades' | 'inference'>('trades');
-  const [loading,  setLoading]  = useState(true);
+  const [trades,       setTrades]       = useState<Trade[]>([]);
+  const [logs,         setLogs]         = useState<InferenceLog[]>([]);
+  const [expanded,     setExpanded]     = useState<string | null>(null);
+  const [expandedTrade, setExpandedTrade] = useState<string | null>(null);
+  const [tradeEvents,  setTradeEvents]  = useState<Record<string, TradeEvent[]>>({});
+  const [loadingEvents, setLoadingEvents] = useState<string | null>(null);
+  const [tab,          setTab]          = useState<'trades' | 'inference'>('trades');
+  const [loading,      setLoading]      = useState(true);
+
+  const loadTradeEvents = async (tradeId: string) => {
+    if (tradeEvents[tradeId] !== undefined) return; // already loaded
+    setLoadingEvents(tradeId);
+    try {
+      const r = await fetch(`${apiBase}/trade-events?trade_id=${tradeId}&limit=50`);
+      const data: TradeEvent[] = r.ok ? await r.json() : [];
+      setTradeEvents(prev => ({ ...prev, [tradeId]: data }));
+    } catch {
+      setTradeEvents(prev => ({ ...prev, [tradeId]: [] }));
+    } finally {
+      setLoadingEvents(null);
+    }
+  };
+
+  const toggleTradeExpand = (id: string) => {
+    if (expandedTrade === id) {
+      setExpandedTrade(null);
+    } else {
+      setExpandedTrade(id);
+      loadTradeEvents(id);
+    }
+  };
 
   useEffect(() => {
     setLoading(true);
@@ -165,45 +198,72 @@ export const TradeLog: React.FC<{ apiBase: string }> = ({ apiBase }) => {
               </thead>
               <tbody>
                 {trades.map(t => {
-                  const pnl     = t.pnl_usd ?? 0;
-                  const pnlPct  = t.pnl_pct ?? 0;
-                  const isOpen  = !t.closed_at;
+                  const pnl      = t.pnl_usd ?? 0;
+                  const pnlPct   = t.pnl_pct ?? 0;
+                  const isOpen   = !t.closed_at;
+                  const isExpTrade = expandedTrade === t.id;
+                  const events   = tradeEvents[t.id] ?? null;
                   return (
-                    <tr key={t.id} className="border-b border-slate-50 dark:border-white/5 hover:bg-slate-50/50 dark:hover:bg-white/[0.02] transition-colors group">
-                      <td className="px-6 py-4 font-mono text-slate-500 dark:text-slate-400 text-xs">
-                        {new Date(t.opened_at).toLocaleString('it-IT', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}
-                      </td>
-                      <td className="px-6 py-4">
-                        <span className={`px-2 py-1 rounded-lg text-[10px] font-bold uppercase tracking-wider ${
-                          t.side === 'long' ? 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-100 dark:border-emerald-500/20'
-                                           : 'bg-rose-50 dark:bg-rose-500/10 text-rose-600 dark:text-rose-400 border border-rose-100 dark:border-rose-500/20'
+                    <React.Fragment key={t.id}>
+                      <tr
+                        onClick={() => toggleTradeExpand(t.id)}
+                        className={`border-b border-slate-50 dark:border-white/5 cursor-pointer transition-colors group ${isExpTrade ? 'bg-slate-50/80 dark:bg-white/[0.03]' : 'hover:bg-slate-50/50 dark:hover:bg-white/[0.02]'}`}
+                      >
+                        <td className="px-6 py-4 font-mono text-slate-500 dark:text-slate-400 text-xs">
+                          <div className="flex items-center gap-2">
+                            <svg className={`w-3 h-3 text-slate-300 dark:text-slate-600 transition-transform duration-200 ${isExpTrade ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7"/></svg>
+                            {new Date(t.opened_at).toLocaleString('it-IT', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}
+                          </div>
+                        </td>
+                        <td className="px-6 py-4">
+                          <span className={`px-2 py-1 rounded-lg text-[10px] font-bold uppercase tracking-wider ${
+                            t.side === 'long' ? 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-100 dark:border-emerald-500/20'
+                                             : 'bg-rose-50 dark:bg-rose-500/10 text-rose-600 dark:text-rose-400 border border-rose-100 dark:border-rose-500/20'
+                          }`}>
+                            {t.side?.toUpperCase()}
+                          </span>
+                        </td>
+                        <td className={`px-6 py-4 text-right font-mono font-bold text-xs ${
+                          isOpen ? 'text-amber-500' : pnl >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'
                         }`}>
-                          {t.side?.toUpperCase()}
-                        </span>
-                      </td>
-                      <td className={`px-6 py-4 text-right font-mono font-bold text-xs ${
-                        isOpen ? 'text-amber-500' : pnl >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'
-                      }`}>
-                        {isOpen ? (
-                          <span className="opacity-60 italic">In corso…</span>
-                        ) : (
-                          <>
-                            {pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}
-                            <span className="text-[10px] ml-1.5 opacity-60">
-                              ({pnlPct >= 0 ? '+' : ''}{pnlPct.toFixed(2)}%)
-                            </span>
-                          </>
-                        )}
-                      </td>
-                      <td className="px-6 py-4 text-slate-500 dark:text-slate-400 text-xs hidden sm:table-cell">
-                        {t.reason_close
-                          ? <ReasonBadge reason={t.reason_close} />
-                          : <span className="text-slate-400 italic">—</span>}
-                      </td>
-                      <td className="px-6 py-4 text-right font-mono text-slate-400 dark:text-slate-500 text-xs hidden sm:table-cell">
-                        {hms(t.holding_sec)}
-                      </td>
-                    </tr>
+                          {isOpen ? (
+                            <span className="opacity-60 italic">In corso…</span>
+                          ) : (
+                            <>
+                              {pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}
+                              <span className="text-[10px] ml-1.5 opacity-60">
+                                ({pnlPct >= 0 ? '+' : ''}{pnlPct.toFixed(2)}%)
+                              </span>
+                            </>
+                          )}
+                        </td>
+                        <td className="px-6 py-4 text-slate-500 dark:text-slate-400 text-xs hidden sm:table-cell">
+                          {t.reason_close
+                            ? <ReasonBadge reason={t.reason_close} />
+                            : <span className="text-slate-400 italic">—</span>}
+                        </td>
+                        <td className="px-6 py-4 text-right font-mono text-slate-400 dark:text-slate-500 text-xs hidden sm:table-cell">
+                          {hms(t.holding_sec)}
+                        </td>
+                      </tr>
+                      {/* ── Event timeline (expanded) ── */}
+                      {isExpTrade && (
+                        <tr className="border-b border-slate-100 dark:border-white/5">
+                          <td colSpan={5} className="px-6 py-4 bg-slate-50/50 dark:bg-black/10">
+                            {loadingEvents === t.id ? (
+                              <p className="text-xs text-slate-400 italic">Caricamento eventi…</p>
+                            ) : events && events.length > 0 ? (
+                              <TradeTimeline events={events} openedAt={t.opened_at} closedAt={t.closed_at} side={t.side} />
+                            ) : (
+                              <p className="text-xs text-slate-400 dark:text-slate-500 italic">
+                                Nessun evento registrato per questo trade.
+                                {!events && ' (tabella trade_events non ancora creata su Supabase)'}
+                              </p>
+                            )}
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
                   );
                 })}
               </tbody>
@@ -332,6 +392,80 @@ export const TradeLog: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     </div>
   );
 };
+
+// ── Trade Timeline ────────────────────────────────────────────────────────────
+
+const EVENT_META: Record<string, { icon: string; label: string; colorClass: string }> = {
+  sl_moved:   { icon: '🔔', label: 'Trailing SL aggiornato', colorClass: 'border-l-indigo-400 bg-indigo-50/50 dark:bg-indigo-500/5' },
+  be_sl:      { icon: '🔒', label: 'Breakeven SL attivato',  colorClass: 'border-l-slate-400 bg-slate-50/50 dark:bg-slate-500/5' },
+  partial_tp: { icon: '⚡', label: 'Partial TP eseguito',    colorClass: 'border-l-amber-400 bg-amber-50/50 dark:bg-amber-500/5' },
+  tp2_hit:    { icon: '✅', label: 'Take Profit finale',     colorClass: 'border-l-emerald-500 bg-emerald-50/50 dark:bg-emerald-500/5' },
+  sl_hit:     { icon: '❌', label: 'Stop Loss colpito',      colorClass: 'border-l-rose-500 bg-rose-50/50 dark:bg-rose-500/5' },
+};
+
+const fmt = (n: number) => n.toLocaleString('en-US', { maximumFractionDigits: 0 });
+
+const TradeTimeline: React.FC<{
+  events: TradeEvent[];
+  openedAt: string;
+  closedAt: string | null;
+  side: string;
+}> = ({ events, openedAt, closedAt, side }) => (
+  <div className="flex flex-col gap-2 py-1">
+    {/* Open row */}
+    <div className="flex items-start gap-3 pl-2 text-xs">
+      <span className="text-[10px] font-mono text-slate-400 w-28 shrink-0 pt-0.5">
+        {new Date(openedAt).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })}
+      </span>
+      <div className="flex-1 px-3 py-2 border-l-2 border-l-emerald-400 bg-emerald-50/50 dark:bg-emerald-500/5 rounded-r-xl">
+        <span className="font-bold text-emerald-700 dark:text-emerald-400">📈 TRADE APERTO · {side.toUpperCase()}</span>
+      </div>
+    </div>
+
+    {/* Event rows */}
+    {events.map(ev => {
+      const meta = EVENT_META[ev.kind] ?? { icon: '•', label: ev.kind, colorClass: 'border-l-slate-300 bg-slate-50/30' };
+      const p    = ev.payload;
+      return (
+        <div key={ev.id} className="flex items-start gap-3 pl-2 text-xs">
+          <span className="text-[10px] font-mono text-slate-400 w-28 shrink-0 pt-0.5">
+            {new Date(ev.time).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })}
+          </span>
+          <div className={`flex-1 px-3 py-2 border-l-2 rounded-r-xl ${meta.colorClass}`}>
+            <span className="font-bold text-slate-700 dark:text-slate-300">{meta.icon} {meta.label}</span>
+            {ev.kind === 'sl_moved' && p.sl_old != null && p.sl_new != null && (
+              <span className="ml-2 font-mono text-slate-500 dark:text-slate-400">
+                ${fmt(Number(p.sl_old))} → ${fmt(Number(p.sl_new))}
+              </span>
+            )}
+            {ev.kind === 'partial_tp' && p.pnl_usd != null && (
+              <span className="ml-2 font-mono text-amber-600 dark:text-amber-400">
+                {Number(p.pct_closed).toFixed(0)}% · +${Number(p.pnl_usd).toFixed(2)}
+              </span>
+            )}
+            {ev.kind === 'be_sl' && p.sl_new != null && (
+              <span className="ml-2 font-mono text-slate-500 dark:text-slate-400">
+                SL → ${fmt(Number(p.sl_new))}
+              </span>
+            )}
+          </div>
+        </div>
+      );
+    })}
+
+    {/* Close row */}
+    {closedAt && (
+      <div className="flex items-start gap-3 pl-2 text-xs">
+        <span className="text-[10px] font-mono text-slate-400 w-28 shrink-0 pt-0.5">
+          {new Date(closedAt).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })}
+        </span>
+        <div className="flex-1 px-3 py-2 border-l-2 border-l-slate-300 dark:border-l-slate-600 bg-slate-50/30 dark:bg-slate-700/10 rounded-r-xl">
+          <span className="font-bold text-slate-500 dark:text-slate-400">🔚 TRADE CHIUSO</span>
+        </div>
+      </div>
+    )}
+  </div>
+);
 
 // ── Sub-components ────────────────────────────────────────────────────────────
 
