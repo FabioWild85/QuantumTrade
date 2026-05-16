@@ -35,7 +35,7 @@ const DEFAULTS: Config = {
   c2_uncertainty_gate_enabled: false,
   c2_uncertainty_threshold: 0.05,
   c2_cont_prob_gate_enabled: false,
-  c2_cont_prob_threshold: 0.25,
+  c2_cont_prob_threshold: 0.10,
   chronos_enabled: true,
 };
 
@@ -238,7 +238,7 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
 
         {/* ── C2 Uncertainty Gate ── */}
         <div className={`flex flex-col gap-3 mt-6 pt-6 border-t transition-colors duration-200 ${config.c2_uncertainty_gate_enabled ? 'border-cyan-200 dark:border-cyan-500/25' : 'border-slate-100 dark:border-white/5'}`}>
-          <Tooltip text="Blocca il trade quando la banda di incertezza di Chronos-2 (p90−p10)/p50 supera la soglia. Un valore alto = i 200 scenari sono molto dispersi = modello senza visione chiara. Richiede Chronos-2 attivo." width="wide" pos="bottom">
+          <Tooltip text="Blocca il trade quando la banda di incertezza di Chronos-2 (p90−p10)/prezzo supera la soglia. Un valore alto = la distribuzione quantile è molto dispersa = modello senza visione chiara. Richiede Chronos-2 attivo." width="wide" pos="bottom">
             <label className="flex items-center gap-3 cursor-pointer group">
               <div className="relative">
                 <input type="checkbox" className="sr-only" checked={config.c2_uncertainty_gate_enabled} onChange={e => setConfig(c => ({ ...c, c2_uncertainty_gate_enabled: e.target.checked }))} />
@@ -282,7 +282,7 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                 <span className="text-[11px] font-bold font-mono text-cyan-600 dark:text-cyan-400 w-14 text-right">
                   {(config.c2_uncertainty_threshold * 100).toFixed(1)}%
                 </span>
-                <span className="text-[10px] text-slate-400 dark:text-slate-500">(p90−p10)/p50</span>
+                <span className="text-[10px] text-slate-400 dark:text-slate-500">(p90−p10)/prezzo</span>
               </div>
             </div>
           )}
@@ -290,7 +290,7 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
 
         {/* ── C2 Continuation Prob Gate ── */}
         <div className={`flex flex-col gap-3 mt-6 pt-6 border-t transition-colors duration-200 ${config.c2_cont_prob_gate_enabled ? 'border-emerald-200 dark:border-emerald-500/25' : 'border-slate-100 dark:border-white/5'}`}>
-          <Tooltip text="Blocca il trade quando meno del X% delle simulazioni Chronos-2 mostra un trend coerente. Evita ingressi in mercati choppy/oscillanti. Range tipico BTC: 10-20% in ranging, 30-50% in trending. Soglia consigliata: 20-30%." width="wide" pos="bottom">
+          <Tooltip text="Blocca il trade quando l'imbalance netto tra bande quantili rialziste e ribassiste è sotto soglia. Le bande opposte si cancellano — un fan simmetrico (metà up, metà down) dà 0%; tutte le bande concordi dà 100%. Soglia consigliata: 10-15%." width="wide" pos="bottom">
             <label className="flex items-center gap-3 cursor-pointer group">
               <div className="relative">
                 <input type="checkbox" className="sr-only" checked={config.c2_cont_prob_gate_enabled} onChange={e => setConfig(c => ({ ...c, c2_cont_prob_gate_enabled: e.target.checked }))} />
@@ -303,7 +303,7 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                   {config.c2_cont_prob_gate_enabled && <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-emerald-100 dark:bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 uppercase tracking-wider">Attivo</span>}
                 </p>
                 <p className="text-[11px] font-medium text-slate-400 dark:text-slate-500 leading-tight">
-                  No-trade se le simulazioni C2 non mostrano un trend coerente (mercato choppy)
+                  No-trade se le bande quantili C2 non mostrano una direzione coerente (mercato choppy)
                 </p>
               </div>
             </label>
@@ -334,7 +334,7 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                 <span className="text-[11px] font-bold font-mono text-emerald-600 dark:text-emerald-400 w-14 text-right">
                   {(config.c2_cont_prob_threshold * 100).toFixed(0)}%
                 </span>
-                <span className="text-[10px] text-slate-400 dark:text-slate-500">simulazioni coerenti</span>
+                <span className="text-[10px] text-slate-400 dark:text-slate-500">bande quantili coerenti</span>
               </div>
             </div>
           )}

@@ -118,7 +118,7 @@ class DecisionEngine:
         if self.c2_cont_prob_gate_enabled and c2_cont_prob < self.c2_cont_prob_threshold:
             reasoning.append(
                 f"GATE: C2 cont_prob {c2_cont_prob:.2f} < {self.c2_cont_prob_threshold:.2f} "
-                f"— forecast paths too incoherent, no-trade"
+                f"— quantile bands too incoherent, no-trade"
             )
             return self._no_trade(reasoning, dir_prob, p10, p50, p90, features, c2_uncertainty)
 

@@ -336,9 +336,18 @@ async def run_backtest(req) -> dict:
             # accidentally block trades when Chronos is disabled.
             # Deterministic seed = bar timestamp → same run always = same trades.
             if use_chronos and chronos_forecaster is not None:
-                close_so_far = df_feat["close"].values[:i + 1]
-                bar_seed = int(df_feat.index[i].timestamp()) if hasattr(df_feat.index[i], "timestamp") else i
-                c2_out = chronos_forecaster.forecast(close_so_far, horizon=3, atr=atr, seed=bar_seed)
+                close_so_far   = df_feat["close"].values[:i + 1]
+                volume_so_far  = df_feat["volume"].values[:i + 1]    if "volume"    in df_feat.columns else None
+                oi_so_far      = df_feat["oi_raw"].values[:i + 1]    if "oi_raw"    in df_feat.columns else None
+                funding_so_far = df_feat["funding"].values[:i + 1]   if "funding"   in df_feat.columns else None
+                cvd_so_far     = df_feat["delta_raw"].values[:i + 1] if "delta_raw" in df_feat.columns else None
+                c2_out = chronos_forecaster.forecast(
+                    close_so_far, horizon=3, atr=atr,
+                    volume_series=volume_so_far,
+                    oi_series=oi_so_far,
+                    funding_series=funding_so_far,
+                    cvd_series=cvd_so_far,
+                )
             else:
                 c2_out = {
                     "c2_dir_prob":    0.5,

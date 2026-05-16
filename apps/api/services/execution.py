@@ -411,7 +411,16 @@ class ExecutionEngine:
 
         # Build liquidation df from WS accumulators (approximate)
         df_liq = _make_liq_df(ws_snap)
-        df_oi  = pd.DataFrame()  # OI delta handled inside build_all_features via WS values
+
+        # Fetch real OI history for Chronos-2 covariate (non-blocking: empty df on failure)
+        try:
+            from services.external_data import get_best_oi
+            from datetime import date, timedelta
+            _today  = date.today().isoformat()
+            _from_d = (date.today() - timedelta(days=90)).isoformat()
+            df_oi = await get_best_oi(SYMBOL, start_date=_from_d, end_date=_today)
+        except Exception:
+            df_oi = pd.DataFrame()
 
         # 3. Build full 64-feature matrix
         df_feat = build_all_features(df_4h, df_fund, df_oi, df_liq)
@@ -424,7 +433,15 @@ class ExecutionEngine:
         # 4. Chronos-2 inference (skip if disabled — use neutral prior)
         cur_px = float(df_4h["close"].iloc[-1])
         if self.config.chronos_enabled:
-            c2_out = self._chronos.forecast(df_4h["close"].values, horizon=3, atr=atr)
+            c2_out = self._chronos.forecast(
+                df_feat["close"].values,
+                horizon=3,
+                atr=atr,
+                volume_series= df_feat["volume"].values    if "volume"    in df_feat.columns else None,
+                oi_series=     df_feat["oi_raw"].values    if "oi_raw"    in df_feat.columns else None,
+                funding_series=df_feat["funding"].values   if "funding"   in df_feat.columns else None,
+                cvd_series=    df_feat["delta_raw"].values if "delta_raw" in df_feat.columns else None,
+            )
         else:
             mark = snap["mark_price"]
             c2_out = {

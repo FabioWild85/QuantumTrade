@@ -288,8 +288,11 @@ async def bot_status():
 async def get_forecast(symbol: str = "BTC", horizon: int = 3):
     """On-demand Chronos-2 forecast with full fan-chart data for the UI."""
     import ta as _ta
+    import pandas as pd
+    from datetime import date, timedelta
     from services.chronos_model import ChronosForecaster
     from services.hyperliquid_data import HyperliquidData
+    from services.external_data import get_best_oi
 
     hl = HyperliquidData()
     df = await hl.get_ohlcv(symbol, "4h", limit=512)
@@ -298,8 +301,41 @@ async def get_forecast(symbol: str = "BTC", horizon: int = 3):
     atr_series = _ta.volatility.AverageTrueRange(df["high"], df["low"], df["close"], 14).average_true_range()
     atr = float(atr_series.iloc[-1]) if not atr_series.empty else None
 
+    # Funding rate covariate (same source as execution engine)
+    try:
+        df_fund = await hl.get_funding_history(symbol, hours=512 * 4)
+        funding_series = df_fund["funding"].reindex(df.index, method="ffill").values if not df_fund.empty else None
+    except Exception:
+        funding_series = None
+
+    # OI covariate (Coinglass → Coinalyze fallback)
+    try:
+        _today  = date.today().isoformat()
+        _from_d = (date.today() - timedelta(days=90)).isoformat()
+        df_oi  = await get_best_oi(symbol, start_date=_from_d, end_date=_today)
+        oi_series = df_oi["oi"].reindex(df.index, method="ffill").values if not df_oi.empty else None
+    except Exception:
+        oi_series = None
+
+    # CVD covariate — Haas approximation from OHLCV (no external API required)
+    import numpy as _np
+    try:
+        _hl      = (df["high"] - df["low"]).replace(0, float("nan"))
+        _buy_vol = df["volume"] * (df["close"] - df["low"]) / _hl
+        cvd_series: Optional[_np.ndarray] = (_buy_vol - (df["volume"] - _buy_vol)).values
+    except Exception:
+        cvd_series = None
+
     forecaster = ChronosForecaster()
-    result = forecaster.forecast(df["close"].values, horizon=horizon, atr=atr)
+    result = forecaster.forecast(
+        df["close"].values,
+        horizon=horizon,
+        atr=atr,
+        volume_series=df["volume"].values if "volume" in df.columns else None,
+        funding_series=funding_series,
+        oi_series=oi_series,
+        cvd_series=cvd_series,
+    )
 
     return {
         "symbol":          symbol,
@@ -308,7 +344,7 @@ async def get_forecast(symbol: str = "BTC", horizon: int = 3):
         "current_price":   float(df["close"].iloc[-1]),
         "last_candle_time": df.index[-1].isoformat(),
         "atr":             atr,
-        **result,   # includes all c2_* keys + fan dict
+        **result,   # includes all c2_* keys + fan dict + cov_used
     }
 
 

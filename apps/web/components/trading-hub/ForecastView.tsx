@@ -26,6 +26,7 @@ interface ForecastData {
   c2_p50_vs_atr: number;
   fan: FanData;
   latency_ms: number;
+  cov_used: string[];
 }
 
 export const ForecastView: React.FC<{ apiBase: string }> = ({ apiBase }) => {
@@ -56,7 +57,7 @@ export const ForecastView: React.FC<{ apiBase: string }> = ({ apiBase }) => {
         <div>
           <h2 className="text-xl font-bold text-slate-900 dark:text-white tracking-tight uppercase">Forecast Probabilistico</h2>
           <p className="text-xs font-medium text-slate-500 dark:text-slate-400 mt-1">
-            Chronos-2 Base · Orizzonte 12h (3×4h) · 200 campioni Monte Carlo
+            amazon/chronos-2 · Orizzonte 12h (3×4h) · Regressione Quantile Deterministica
           </p>
         </div>
         <button
@@ -80,8 +81,8 @@ export const ForecastView: React.FC<{ apiBase: string }> = ({ apiBase }) => {
       {loading && !data && (
         <div className="elegant-card p-16 text-center bg-white dark:bg-[#151E32]">
           <div className="inline-block w-10 h-10 border-2 border-indigo-500/30 border-t-indigo-500 rounded-full animate-spin mb-6" />
-          <p className="text-slate-500 dark:text-slate-400 text-sm font-medium">Caricamento Chronos-2 Intelligence (~800MB)…</p>
-          <p className="text-[10px] text-slate-400 dark:text-slate-500 mt-2">La prima esecuzione può richiedere fino a 30s per il caricamento in memoria</p>
+          <p className="text-slate-500 dark:text-slate-400 text-sm font-medium">Caricamento amazon/chronos-2 in memoria…</p>
+          <p className="text-[10px] text-slate-400 dark:text-slate-500 mt-2">La prima richiesta può richiedere fino a 30s — il modello rimane in memoria per le successive</p>
         </div>
       )}
 
@@ -90,19 +91,25 @@ export const ForecastView: React.FC<{ apiBase: string }> = ({ apiBase }) => {
           {/* Price header */}
           <div className="elegant-card p-6 bg-white dark:bg-[#151E32]">
             <div className="flex items-start justify-between mb-8">
-              <div className="flex items-center gap-4">
-                 <div className="p-3 bg-indigo-50 dark:bg-indigo-500/10 rounded-xl">
-                    <svg className="w-6 h-6 text-indigo-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" /></svg>
-                 </div>
-                 <div>
-                    <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest">BTC Market Price</p>
-                    <p className="text-4xl font-bold font-mono text-slate-900 dark:text-white tracking-tighter mt-0.5">
-                      ${data.current_price.toLocaleString('en-US', { minimumFractionDigits: 2 })}
-                    </p>
-                    <p className="text-xs font-medium text-slate-500 dark:text-slate-400 mt-1">
-                      Ultima candela 4h: {new Date(data.last_candle_time).toLocaleString('it-IT')}
-                    </p>
-                 </div>
+              <div>
+                <div className="flex items-center gap-4">
+                   <div className="p-3 bg-indigo-50 dark:bg-indigo-500/10 rounded-xl">
+                      <svg className="w-6 h-6 text-indigo-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" /></svg>
+                   </div>
+                   <div>
+                      <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest">BTC Market Price</p>
+                      <p className="text-4xl font-bold font-mono text-slate-900 dark:text-white tracking-tighter mt-0.5">
+                        ${data.current_price.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                      </p>
+                      <p className="text-xs font-medium text-slate-500 dark:text-slate-400 mt-1">
+                        Ultima candela 4h: {new Date(data.last_candle_time).toLocaleString('it-IT')}
+                      </p>
+                   </div>
+                </div>
+                {/* Covariate badges — horizontal row, indented to align with price text */}
+                <div className="flex items-center gap-2 mt-3 ml-[3.75rem]">
+                  <CovariatesBadges covUsed={data.cov_used ?? []} />
+                </div>
               </div>
               <div className="text-right">
                 <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-1">Inferenza AI</p>
@@ -111,7 +118,7 @@ export const ForecastView: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                    <p className="text-sm font-bold font-mono text-slate-700 dark:text-slate-300">{data.latency_ms.toFixed(0)}ms</p>
                 </div>
                 {data.atr && (
-                  <div className="mt-4">
+                  <div className="mt-3">
                     <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-1">ATR (14)</p>
                     <p className="text-sm font-bold font-mono text-slate-600 dark:text-slate-400">${data.atr.toFixed(0)}</p>
                   </div>
@@ -130,13 +137,13 @@ export const ForecastView: React.FC<{ apiBase: string }> = ({ apiBase }) => {
 
             {/* Quantile strip */}
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-              <Tooltip text="Scenario pessimistico: il 90% delle simulazioni prevede un prezzo finale sopra questo livello. Solo il 10% va peggio." pos="bottom">
+              <Tooltip text="Decimo percentile della distribuzione quantile. Il 90% della distribuzione prevede un prezzo finale sopra questo livello." pos="bottom">
                 <QuantileCard label="p10 — Pessimista" value={data.c2_p10} current={data.current_price} />
               </Tooltip>
-              <Tooltip text="Scenario mediano: prezzo più probabile previsto da Chronos-2. Metà simulazioni va sopra, metà sotto." pos="bottom">
+              <Tooltip text="Mediana della distribuzione quantile — il prezzo centrale più probabile previsto da Chronos-2. Metà della distribuzione è sopra, metà sotto." pos="bottom">
                 <QuantileCard label="p50 — Mediana" value={data.c2_p50} current={data.current_price} highlight />
               </Tooltip>
-              <Tooltip text="Scenario ottimistico: solo il 10% delle simulazioni prevede un prezzo finale sopra questo livello." pos="bottom">
+              <Tooltip text="Novantesimo percentile della distribuzione quantile. Solo il 10% della distribuzione prevede un prezzo finale sopra questo livello." pos="bottom">
                 <QuantileCard label="p90 — Ottimista" value={data.c2_p90} current={data.current_price} />
               </Tooltip>
             </div>
@@ -144,7 +151,7 @@ export const ForecastView: React.FC<{ apiBase: string }> = ({ apiBase }) => {
 
           {/* 3 probabilità */}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            <Tooltip text="Probabilità Direzionale: percentuale di simulazioni Chronos-2 in cui BTC chiude più in alto tra 12h. Contribuisce al 40% dell'ensemble (LGBM 60% + C2 40%) — il gate reale è sull'ensemble a 62%, non su questo valore da solo." width="wide" pos="bottom">
+            <Tooltip text="Probabilità Direzionale: P(prezzo finale > prezzo attuale) stimata interpolando la CDF sui 21 quantili nativi di Chronos-2. Contribuisce al 40% dell'ensemble (LGBM 60% + C2 40%) — il gate reale è sull'ensemble a 62%, non su questo valore da solo." width="wide" pos="bottom">
               <ProbCard
                 label="Directional Prob"
                 description="P(prezzo sale entro 12h)"
@@ -154,7 +161,7 @@ export const ForecastView: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                 gateType="ensemble"
               />
             </Tooltip>
-            <Tooltip text="Probabilità di Volatilità: percentuale di simulazioni in cui BTC si muove di oltre il 3% (≈$2.400 su BTC) nelle prossime 12h. Indicatore informativo — non blocca né attiva trade. Mercato attualmente sopra soglia = volatilità attesa." width="wide" pos="bottom">
+            <Tooltip text="Probabilità di Volatilità: P(|ritorno| > 3%) stimata come P(prezzo > +3%) + P(prezzo < -3%) interpolando la distribuzione quantile. Indicatore informativo — non blocca né attiva trade." width="wide" pos="bottom">
               <ProbCard
                 label="Volatility Prob"
                 description="P(range > 3% in 12h)"
@@ -164,12 +171,12 @@ export const ForecastView: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                 gateType="display"
               />
             </Tooltip>
-            <Tooltip text="Probabilità di Continuazione: percentuale di simulazioni in cui tutti i passi vanno nella stessa direzione (trend coerente). Gate opzionale attivabile in Bot Config — soglia calibrata al 25% per BTC (mercato ranging = 10-20%, trending = 30-50%)." width="wide" pos="bottom">
+            <Tooltip text="Probabilità di Continuazione: imbalance netto tra bande quantili rialziste e ribassiste — le bande opposte si cancellano. Un fan simmetrico (metà su, metà giù) dà 0%; tutte le bande nella stessa direzione dà 100%. Soglia consigliata: 10%." width="wide" pos="bottom">
               <ProbCard
                 label="Continuation Prob"
-                description="P(trend coerente passo-passo)"
+                description="P(bande quantili direzionali)"
                 value={data.c2_cont_prob}
-                threshold={0.25}
+                threshold={0.10}
                 color="emerald"
                 gateType="gate"
               />
@@ -346,6 +353,39 @@ const FanChartSVG: React.FC<{
         {fmtPrice(p10[n])}
       </text>
     </svg>
+  );
+};
+
+// ── Covariates badge row ───────────────────────────────────────────────────────
+
+const COV_META: Record<string, { label: string; tooltip: string }> = {
+  volume:  { label: "Volume",  tooltip: "Volume 4h da Hyperliquid — segnala forza o debolezza del movimento di prezzo" },
+  funding: { label: "Funding", tooltip: "Tasso di funding 8h da Hyperliquid — indica sentiment e leva del mercato futures" },
+  oi:      { label: "OI",      tooltip: "Open Interest aggregato multi-exchange da Coinalyze — crescita = trend in forza, calo = distribuzione" },
+  cvd:     { label: "CVD",     tooltip: "Cumulative Volume Delta (approssimazione Haas) — misura pressione netta acquisti/vendite sulle candele 4h" },
+};
+
+const CovariatesBadges: React.FC<{ covUsed: string[] }> = ({ covUsed }) => {
+  const all = ['volume', 'funding', 'oi', 'cvd'];
+  return (
+    <>
+      {all.map(k => {
+        const active = covUsed.includes(k);
+        const meta   = COV_META[k];
+        return (
+          <Tooltip key={k} text={active ? meta.tooltip : `${meta.label} non disponibile — Chronos opera senza questo covariate`} pos="bottom">
+            <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider cursor-default ${
+              active
+                ? 'bg-indigo-100 dark:bg-indigo-500/20 text-indigo-600 dark:text-indigo-400'
+                : 'bg-slate-100 dark:bg-white/5 text-slate-400 dark:text-slate-600 line-through'
+            }`}>
+              <span className={`w-1 h-1 rounded-full ${active ? 'bg-indigo-500' : 'bg-slate-400'}`} />
+              {meta.label}
+            </span>
+          </Tooltip>
+        );
+      })}
+    </>
   );
 };
 

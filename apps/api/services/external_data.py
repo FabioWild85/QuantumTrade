@@ -174,10 +174,10 @@ async def get_coinalyze_oi(
 
 
 async def get_best_oi(symbol: str = "BTC", start_date: Optional[str] = None, end_date: Optional[str] = None) -> pd.DataFrame:
-    """Try Coinglass first, fall back to Coinalyze, then empty."""
-    df = await get_coinglass_oi(symbol, start_date=start_date, end_date=end_date)
+    """Coinalyze is primary (reliable); Coinglass as fallback."""
+    df = await get_coinalyze_oi(symbol, start_date=start_date, end_date=end_date)
     if df.empty:
-        df = await get_coinalyze_oi(symbol, start_date=start_date, end_date=end_date)
+        df = await get_coinglass_oi(symbol, start_date=start_date, end_date=end_date)
     return df
 
 
