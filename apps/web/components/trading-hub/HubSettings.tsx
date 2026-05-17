@@ -12,6 +12,7 @@ interface FeatureFlags {
   lgbm_exit_threshold: number;
   lgbm_exit_min_hold_bars: number;
   lgbm_exit_confirm_bars: number;
+  enhanced_exit_enabled: boolean;
   // Base gates
   confluence_gate: number;
   adx_gate: number;
@@ -44,6 +45,7 @@ export const HubSettings: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     lgbm_exit_threshold:     0.30,
     lgbm_exit_min_hold_bars: 6,
     lgbm_exit_confirm_bars:  2,
+    enhanced_exit_enabled:   false,
     confluence_gate:         60.0,
     adx_gate:                20.0,
     directional_threshold:   0.62,
@@ -330,16 +332,24 @@ export const HubSettings: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                 onChange={v => setFlag('lgbm_exit_enabled', v)}
               >
                 {flags.lgbm_exit_enabled && (
-                  <div className="flex gap-4 flex-wrap">
-                    <Tooltip text="Se la probabilità LightGBM scende sotto questo valore per N barre consecutive, il trade viene chiuso." pos="top" width="wide">
-                      <NumInput label="Soglia (p <)" value={flags.lgbm_exit_threshold} onChange={v => setFlag('lgbm_exit_threshold', v)} step={0.01} min={0.15} max={0.50} />
-                    </Tooltip>
-                    <Tooltip text="Il bot non può uscire prima di aver tenuto la posizione per almeno questo numero di candele 4h." pos="top" width="wide">
-                      <NumInput label="Hold minimo (barre)" value={flags.lgbm_exit_min_hold_bars} onChange={v => setFlag('lgbm_exit_min_hold_bars', v)} step={1} min={1} max={48} />
-                    </Tooltip>
-                    <Tooltip text="Numero di barre consecutive in cui la probabilità deve essere bassa prima di chiudere. Evita uscite premature su segnali rumorosi." pos="top" width="wide">
-                      <NumInput label="Conferma (barre consec.)" value={flags.lgbm_exit_confirm_bars} onChange={v => setFlag('lgbm_exit_confirm_bars', v)} step={1} min={1} max={6} />
-                    </Tooltip>
+                  <div className="flex flex-col gap-4">
+                    <div className="flex gap-4 flex-wrap">
+                      <Tooltip text="Se la probabilità LightGBM scende sotto questo valore per N barre consecutive, il trade viene chiuso." pos="top" width="wide">
+                        <NumInput label="Soglia (p <)" value={flags.lgbm_exit_threshold} onChange={v => setFlag('lgbm_exit_threshold', v)} step={0.01} min={0.15} max={0.50} />
+                      </Tooltip>
+                      <Tooltip text="Il bot non può uscire prima di aver tenuto la posizione per almeno questo numero di candele 4h." pos="top" width="wide">
+                        <NumInput label="Hold minimo (barre)" value={flags.lgbm_exit_min_hold_bars} onChange={v => setFlag('lgbm_exit_min_hold_bars', v)} step={1} min={1} max={48} />
+                      </Tooltip>
+                      <Tooltip text="Numero di barre consecutive in cui la probabilità deve essere bassa prima di chiudere. Evita uscite premature su segnali rumorosi." pos="top" width="wide">
+                        <NumInput label="Conferma (barre consec.)" value={flags.lgbm_exit_confirm_bars} onChange={v => setFlag('lgbm_exit_confirm_bars', v)} step={1} min={1} max={6} />
+                      </Tooltip>
+                    </div>
+                    <ToggleRow
+                      label="Enhanced Exit (Chronos p50 confirm)"
+                      desc="Richiede che anche il p50 di Chronos abbia attraversato il prezzo di entrata prima di uscire — riduce i falsi segnali di uscita da rumore LGBM."
+                      checked={flags.enhanced_exit_enabled}
+                      onChange={v => setFlag('enhanced_exit_enabled', v)}
+                    />
                   </div>
                 )}
               </ToggleRow>

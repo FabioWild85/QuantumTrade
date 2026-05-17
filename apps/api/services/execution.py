@@ -70,6 +70,7 @@ class BotConfig:
         self.lgbm_exit_threshold     = kw.get("lgbm_exit_threshold",     0.30)
         self.lgbm_exit_min_hold_bars = kw.get("lgbm_exit_min_hold_bars", 6)
         self.lgbm_exit_confirm_bars  = kw.get("lgbm_exit_confirm_bars",  2)
+        self.enhanced_exit_enabled   = kw.get("enhanced_exit_enabled",   False)
         # ── Advanced signal controls ──────────────────────────────────────────
         self.chronos_enabled         = kw.get("chronos_enabled",         True)
         self.chronos_weight          = kw.get("chronos_weight",          0.40)
@@ -589,7 +590,7 @@ class ExecutionEngine:
 
         # 9. Manage existing position (SL/TP + optional LightGBM mid-trade exit)
         if self._position:
-            await self._manage_position(snap["mark_price"], df_feat)
+            await self._manage_position(snap["mark_price"], df_feat, c2_out)
 
         # 10. Heartbeat
         await self._risk.write_heartbeat()
@@ -815,7 +816,7 @@ class ExecutionEngine:
         except Exception as exc:
             log.debug("trade_event insert skipped: %s", exc)
 
-    async def _manage_position(self, current_price: float, df_feat: pd.DataFrame):
+    async def _manage_position(self, current_price: float, df_feat: pd.DataFrame, c2_out: dict = None):
         if not self._position:
             return
 
@@ -947,9 +948,25 @@ class ExecutionEngine:
         # ── 4. LightGBM mid-trade exit ────────────────────────────────────────
         if (self.config.lgbm_exit_enabled and self._lgbm_model is not None
                 and self._position["bars_held"] >= self.config.lgbm_exit_min_hold_bars):
-            lgbm_p     = self._get_lgbm_prob(df_feat)
-            flip_long  = side == "long"  and lgbm_p < self.config.lgbm_exit_threshold
-            flip_short = side == "short" and lgbm_p > (1.0 - self.config.lgbm_exit_threshold)
+            lgbm_p   = self._get_lgbm_prob(df_feat)
+            entry_px = self._position["entry_price"]
+
+            if self.config.enhanced_exit_enabled and c2_out:
+                c2_p50 = c2_out.get("c2_p50", 0.0)
+                # Guard: only use c2_p50 when it's not trivially equal to current price
+                c2_available = c2_p50 > 0.0 and abs(c2_p50 - current_price) > (0.001 * current_price)
+                if c2_available:
+                    # Both LGBM signal flip AND c2_p50 must confirm direction
+                    flip_long  = side == "long"  and lgbm_p < self.config.lgbm_exit_threshold and c2_p50 < entry_px
+                    flip_short = side == "short" and lgbm_p > (1.0 - self.config.lgbm_exit_threshold) and c2_p50 > entry_px
+                else:
+                    # c2_p50 unavailable — fall back to LGBM-only
+                    flip_long  = side == "long"  and lgbm_p < self.config.lgbm_exit_threshold
+                    flip_short = side == "short" and lgbm_p > (1.0 - self.config.lgbm_exit_threshold)
+            else:
+                flip_long  = side == "long"  and lgbm_p < self.config.lgbm_exit_threshold
+                flip_short = side == "short" and lgbm_p > (1.0 - self.config.lgbm_exit_threshold)
+
             if flip_long or flip_short:
                 self._position["lgbm_strikes"] = self._position.get("lgbm_strikes", 0) + 1
             else:

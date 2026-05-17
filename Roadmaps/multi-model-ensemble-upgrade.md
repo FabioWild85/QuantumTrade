@@ -66,6 +66,22 @@ composite_threshold: float = Field(0.55, ge=0.40, le=0.75)
 # Adaptive sizing range (usato solo se adaptive_sizing_enabled = True)
 adaptive_size_min_mult: float = Field(0.5, ge=0.2, le=1.0)
 adaptive_size_max_mult: float = Field(1.5, ge=1.0, le=2.5)
+
+# FIX B4: validatore che impedisce somma pesi = 0 (bot che non apre mai trade)
+@validator("composite_uncertainty_weight", always=True)
+def _composite_weights_nonzero(cls, v, values):
+    total = (
+        values.get("composite_regime_weight", 0.0)
+        + values.get("composite_timing_weight", 0.0)
+        + values.get("composite_liquidity_weight", 0.0)
+        + v
+    )
+    if total < 0.05:
+        raise ValueError(
+            "La somma dei pesi del composite score deve essere > 0.05 — "
+            "con tutti i pesi a zero il bot non aprirà mai trade."
+        )
+    return v
 ```
 
 ### File: `apps/api/services/execution.py` — BotConfig dataclass
@@ -136,7 +152,7 @@ def _compute_composite_score(
     fvg_bull    = features.get("fvg_bull", 0.0)
     dir_prob    = c2_output.get("c2_dir_prob", 0.5)
     c2_unc      = c2_output.get("c2_uncertainty", 0.0)
-    c2_cont     = c2_output.get("c2_cont_prob", 1.0)
+    c2_cont     = c2_output.get("c2_cont_prob", 0.0)  # FIX A3: 0.0 = conservativo (assenza dati ≠ coerenza massima)
 
     # Regime score: ADX normalizzato + conferma daily regime
     adx_norm      = min(adx / 50.0, 1.0)
@@ -326,16 +342,22 @@ def __init__(
 Modificare `calculate_trade_params` per accettare e usare il signal score:
 
 ```python
+# FIX A2: dynamic_sl_tp_enabled e dynamic_sl_tp_blend erano stati rimossi dalla firma
+# ma sono usati nel corpo del metodo — NameError garantito. Firma corretta:
 def calculate_trade_params(
     self,
     side: Side,
     entry_price: float,
     atr: float,
     equity_usd: float,
-    signal_score: float = 0.5,        # composite_score o confidence dal DecisionResult
-    c2_uncertainty: float = 0.0,
     c2_p10: Optional[float] = None,
     c2_p90: Optional[float] = None,
+    c2_uncertainty: Optional[float] = None,
+    dynamic_sl_tp_enabled: bool = False,
+    dynamic_sl_tp_blend: float = 0.50,
+    recalibrated_uncertainty_thresholds: bool = True,
+    signal_score: float = 0.5,
+    p10_sl_floor_enabled: bool = False,
 ) -> TradeParams:
 
     if self.adaptive_sizing_enabled:
@@ -613,41 +635,57 @@ Da inserire dopo la sezione "Impostazioni Chronos-2", seguendo esattamente il pa
           <NumInput label="Peso Uncertainty" value={config.composite_uncertainty_weight} min={0} max={1} step={0.05} onChange={upd('composite_uncertainty_weight')} />
         </div>
 
-        {/* ⚠️ Warning somma pesi */}
+        {/* ⚠️ Warning somma pesi — FIX B4: copre anche somma vicino a zero */}
         {(() => {
           const wsum = config.composite_regime_weight + config.composite_timing_weight +
                        config.composite_liquidity_weight + config.composite_uncertainty_weight;
-          return Math.abs(wsum - 1.0) > 0.05 ? (
-            <div className="flex items-start gap-3 bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/30 rounded-xl px-4 py-3">
-              <svg className="w-4 h-4 text-amber-500 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          const isZero = wsum < 0.05;
+          const isUnbalanced = !isZero && Math.abs(wsum - 1.0) > 0.05;
+          if (!isZero && !isUnbalanced) return null;
+          return (
+            <div className={`flex items-start gap-3 rounded-xl px-4 py-3 border ${isZero ? 'bg-red-50 dark:bg-red-500/10 border-red-300 dark:border-red-500/30' : 'bg-amber-50 dark:bg-amber-500/10 border-amber-200 dark:border-amber-500/30'}`}>
+              <svg className={`w-4 h-4 flex-shrink-0 mt-0.5 ${isZero ? 'text-red-500' : 'text-amber-500'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
               </svg>
               <div>
-                <p className="text-[11px] font-bold text-amber-700 dark:text-amber-400 uppercase tracking-wide">
-                  Somma pesi: {wsum.toFixed(2)} (consigliato: 1.00)
+                <p className={`text-[11px] font-bold uppercase tracking-wide ${isZero ? 'text-red-700 dark:text-red-400' : 'text-amber-700 dark:text-amber-400'}`}>
+                  {isZero ? `ERRORE — Somma pesi: ${wsum.toFixed(2)} — il bot non aprirà mai trade` : `Somma pesi: ${wsum.toFixed(2)} (consigliato: 1.00)`}
                 </p>
-                <p className="text-[11px] text-amber-600 dark:text-amber-500 leading-snug mt-0.5">
-                  Il composite score viene normalizzato automaticamente, ma pesi molto sbilanciati riducono la leggibilità del reasoning nel log.
+                <p className={`text-[11px] leading-snug mt-0.5 ${isZero ? 'text-red-600 dark:text-red-500' : 'text-amber-600 dark:text-amber-500'}`}>
+                  {isZero
+                    ? 'Con tutti i pesi a zero il composite score è sempre 0 → nessun segnale supera mai la soglia. Imposta almeno un peso > 0.'
+                    : 'Il composite score viene normalizzato automaticamente, ma pesi molto sbilanciati riducono la leggibilità del reasoning nel log.'}
                 </p>
               </div>
             </div>
           ) : null;
         })()}
 
-        {/* ── Dynamic Threshold sub-toggle ── */}
-        <label className="flex items-center gap-3 cursor-pointer group mt-2">
+        {/* ── Dynamic Threshold sub-toggle — FIX B3: disabilitato senza composite ── */}
+        <label className={`flex items-center gap-3 mt-2 ${config.composite_scoring_enabled ? 'cursor-pointer group' : 'cursor-not-allowed opacity-50'}`}>
           <div className="relative">
             <input type="checkbox" className="sr-only"
               checked={config.dynamic_threshold_enabled}
-              onChange={e => setConfig(c => ({ ...c, dynamic_threshold_enabled: e.target.checked }))}
+              disabled={!config.composite_scoring_enabled}
+              onChange={e => {
+                if (!config.composite_scoring_enabled) return;
+                setConfig(c => ({ ...c, dynamic_threshold_enabled: e.target.checked }));
+              }}
             />
-            <div className={`w-8 h-4 rounded-full transition-all duration-300 ${config.dynamic_threshold_enabled ? 'bg-indigo-500' : 'bg-slate-200 dark:bg-white/10'}`} />
-            <div className={`absolute top-0.5 left-0.5 w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.dynamic_threshold_enabled ? 'translate-x-4' : ''}`} />
+            <div className={`w-8 h-4 rounded-full transition-all duration-300 ${config.dynamic_threshold_enabled && config.composite_scoring_enabled ? 'bg-indigo-500' : 'bg-slate-200 dark:bg-white/10'}`} />
+            <div className={`absolute top-0.5 left-0.5 w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.dynamic_threshold_enabled && config.composite_scoring_enabled ? 'translate-x-4' : ''}`} />
           </div>
-          <p className="text-[11px] font-bold text-slate-600 dark:text-slate-400">
-            Threshold dinamico per regime
-            <span className="ml-1 font-normal text-slate-400">(abbassa in trend, alza in caos)</span>
-          </p>
+          <div>
+            <p className="text-[11px] font-bold text-slate-600 dark:text-slate-400">
+              Threshold dinamico per regime
+              <span className="ml-1 font-normal text-slate-400">(abbassa in trend, alza in caos)</span>
+            </p>
+            {!config.composite_scoring_enabled && (
+              <p className="text-[10px] text-amber-500 dark:text-amber-400 mt-0.5">
+                Richiede Composite Score attivo
+              </p>
+            )}
+          </div>
         </label>
       </div>
     )}

@@ -49,6 +49,7 @@ async def run_backtest(req) -> dict:
     lgbm_exit_threshold      = getattr(cfg, "lgbm_exit_threshold",      0.30)
     lgbm_exit_min_hold_bars  = getattr(cfg, "lgbm_exit_min_hold_bars",  6)
     lgbm_exit_confirm_bars   = getattr(cfg, "lgbm_exit_confirm_bars",   2)
+    enhanced_exit_enabled    = getattr(cfg, "enhanced_exit_enabled",    False)
     use_binance              = getattr(req,  "use_binance",              True)
     use_chronos              = getattr(req,  "use_chronos",              False)
     # Advanced signal controls
@@ -264,8 +265,14 @@ async def run_backtest(req) -> dict:
             if lgbm_exit_enabled and bars_held >= lgbm_exit_min_hold_bars:
                 row_x          = X_all.iloc[[i]]
                 lgbm_p_current = float(lgbm_model.predict_proba(row_x)[0, 1])
-                flip_long      = side == "long"  and lgbm_p_current < lgbm_exit_threshold
-                flip_short     = side == "short" and lgbm_p_current > (1.0 - lgbm_exit_threshold)
+                if enhanced_exit_enabled and use_chronos:
+                    # Chronos runs only at entry in backtest; use close_price as c2_p50 proxy.
+                    # This is conservative: both LGBM flip and price-crossed-entry must hold.
+                    flip_long  = side == "long"  and lgbm_p_current < lgbm_exit_threshold  and close_price < entry
+                    flip_short = side == "short" and lgbm_p_current > (1.0 - lgbm_exit_threshold) and close_price > entry
+                else:
+                    flip_long  = side == "long"  and lgbm_p_current < lgbm_exit_threshold
+                    flip_short = side == "short" and lgbm_p_current > (1.0 - lgbm_exit_threshold)
                 if flip_long or flip_short:
                     position["lgbm_strikes"] = position.get("lgbm_strikes", 0) + 1
                 else:

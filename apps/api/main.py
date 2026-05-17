@@ -156,6 +156,7 @@ class BotConfig(BaseModel):
     lgbm_exit_threshold: float = Field(0.30, ge=0.15, le=0.50)
     lgbm_exit_min_hold_bars: int = Field(6, ge=1, le=48)
     lgbm_exit_confirm_bars: int = Field(2, ge=1, le=6)
+    enhanced_exit_enabled: bool = Field(False)
     # Advanced signal controls
     chronos_enabled: bool = Field(True)
     chronos_weight: float = Field(0.40, ge=0.0, le=0.9)
@@ -297,7 +298,7 @@ async def force_retrain():
     result = await engine.retrain_manual()
     _log_event(
         "lgbm_retrain_manual",
-        f"Retrain manuale: status={result.get('status')} acc={result.get('oos_accuracy', 'N/A')}",
+        f"Retrain manuale: status={result.get('status')} oos_acc={result.get('oos_accuracy', 'N/A')} wf_acc={result.get('wf_avg_accuracy', 'N/A')}",
         "info",
         result,
     )

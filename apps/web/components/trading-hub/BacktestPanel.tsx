@@ -965,6 +965,7 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   const [lgbmThresh,    setLgbmThresh]    = useState('0.30');
   const [lgbmMinHold,   setLgbmMinHold]   = useState('6');
   const [lgbmConfirm,   setLgbmConfirm]   = useState('2');
+  const [enhancedExit,  setEnhancedExit]  = useState(false);
   const [useChronos,          setUseChronos]          = useState(false);
   const [c2UncertaintyGate,   setC2UncertaintyGate]   = useState(false);
   const [c2UncertaintyThresh, setC2UncertaintyThresh] = useState('0.05');
@@ -1018,6 +1019,7 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     if (p.lgbm_exit_threshold   !== undefined) setLgbmThresh(String(p.lgbm_exit_threshold));
     if (p.lgbm_exit_min_hold_bars!== undefined) setLgbmMinHold(String(p.lgbm_exit_min_hold_bars));
     if (p.lgbm_exit_confirm_bars !== undefined) setLgbmConfirm(String(p.lgbm_exit_confirm_bars));
+    if (p.enhanced_exit_enabled  !== undefined) setEnhancedExit(!!p.enhanced_exit_enabled);
     // Drawer (advanced)
     if (p.directional_threshold !== undefined) setAdvDirThresh(String(p.directional_threshold));
     if (p.adx_gate              !== undefined) setAdvAdxGate(String(p.adx_gate));
@@ -1101,6 +1103,7 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     lgbm_exit_threshold:      parseFloat(lgbmThresh),
     lgbm_exit_min_hold_bars:  parseInt(lgbmMinHold),
     lgbm_exit_confirm_bars:   parseInt(lgbmConfirm),
+    enhanced_exit_enabled:    withAdvanced && lgbmExit && enhancedExit,
     // Advanced signal controls (always active — drawer only)
     chronos_enabled:               false,
     chronos_weight:                parseFloat(advChronosWeight),
@@ -1648,6 +1651,12 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                       <NumInput label="Hold min (barre)" value={lgbmMinHold} onChange={setLgbmMinHold} step="1" min="1" max="48" />
                       <NumInput label="Conferma barre" value={lgbmConfirm} onChange={setLgbmConfirm} step="1" min="1" max="6" />
                     </div>
+                    <Toggle
+                      label="Enhanced Exit (Chronos p50 confirm)"
+                      desc="Richiede che il p50 di Chronos abbia attraversato il prezzo di entrata per confermare l'uscita — riduce falsi segnali da rumore LGBM."
+                      checked={enhancedExit}
+                      onChange={setEnhancedExit}
+                    />
                   </div>
                 )}
               </section>
