@@ -177,6 +177,7 @@ class BotConfig(BaseModel):
     dynamic_sl_tp_enabled: bool = Field(False)
     dynamic_sl_tp_blend: float = Field(0.50, ge=0.0, le=1.0)
     recalibrated_uncertainty_thresholds: bool = Field(True)
+    p10_sl_floor_enabled: bool = Field(False)
 
 
 class StartBotRequest(BaseModel):

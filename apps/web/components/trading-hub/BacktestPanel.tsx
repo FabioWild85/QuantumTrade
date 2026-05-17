@@ -588,6 +588,8 @@ const ConfigSummary: React.FC<{ config: Record<string, any> }> = ({ config: c })
   if (c.chronos_enabled)               activeBadges.push(badge(`Chronos ${Math.round((c.chronos_weight ?? 0.4) * 100)}%`, 'bg-cyan-50 dark:bg-cyan-500/10 text-cyan-600 dark:text-cyan-400 border-cyan-100 dark:border-cyan-500/20'));
   if (c.c2_uncertainty_gate_enabled)   activeBadges.push(badge(`C2 Gate <${c.c2_uncertainty_threshold ?? 0.05}`, 'bg-cyan-50 dark:bg-cyan-500/10 text-cyan-600 dark:text-cyan-400 border-cyan-100 dark:border-cyan-500/20'));
   if (c.dynamic_sl_tp_enabled)         activeBadges.push(badge(`Adaptive SL/TP ${Math.round((c.dynamic_sl_tp_blend ?? 0.5) * 100)}% C2`, 'bg-violet-50 dark:bg-violet-500/10 text-violet-600 dark:text-violet-400 border-violet-100 dark:border-violet-500/20'));
+  if (c.p10_sl_floor_enabled)          activeBadges.push(badge('P10 SL Floor', 'bg-violet-50 dark:bg-violet-500/10 text-violet-600 dark:text-violet-400 border-violet-100 dark:border-violet-500/20'));
+  if (c.enhanced_exit_enabled)         activeBadges.push(badge('Enhanced Exit', 'bg-purple-50 dark:bg-purple-500/10 text-purple-600 dark:text-purple-400 border-purple-100 dark:border-purple-500/20'));
 
   const disabledFilters: string[] = [];
   if (c.adx_gate_enabled      === false) disabledFilters.push('ADX OFF');
@@ -974,6 +976,7 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   const [dynamicSlTp,              setDynamicSlTp]              = useState(false);
   const [dynamicSlTpBlend,         setDynamicSlTpBlend]         = useState('0.50');
   const [recalibratedUncertainty,  setRecalibratedUncertainty]  = useState(true);
+  const [p10SlFloor,               setP10SlFloor]               = useState(false);
   const [compareMode,         setCompareMode]         = useState(false);
 
   // ── Advanced settings drawer ─────────────────────────────────────────────────
@@ -1036,6 +1039,7 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     if (p.dynamic_sl_tp_enabled                   !== undefined) setDynamicSlTp(!!p.dynamic_sl_tp_enabled);
     if (p.dynamic_sl_tp_blend                     !== undefined) setDynamicSlTpBlend(String(p.dynamic_sl_tp_blend));
     if (p.recalibrated_uncertainty_thresholds     !== undefined) setRecalibratedUncertainty(!!p.recalibrated_uncertainty_thresholds);
+    if (p.p10_sl_floor_enabled                    !== undefined) setP10SlFloor(!!p.p10_sl_floor_enabled);
     if (p.be_sl_enabled                 !== undefined) setAdvBeSL(!!p.be_sl_enabled);
     if (p.be_sl_activation      !== undefined) setAdvBeSLAct(String(p.be_sl_activation));
     if (p.max_hold_bars_enabled !== undefined) setAdvMaxHold(!!p.max_hold_bars_enabled);
@@ -1119,6 +1123,7 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     dynamic_sl_tp_enabled:                  dynamicSlTp,
     dynamic_sl_tp_blend:                    parseFloat(dynamicSlTpBlend),
     recalibrated_uncertainty_thresholds:    recalibratedUncertainty,
+    p10_sl_floor_enabled:                   withAdvanced && p10SlFloor && useChronos,
     // Advanced position management
     be_sl_enabled:                 advBeSL,
     be_sl_activation:              parseFloat(advBeSLAct),
@@ -1344,6 +1349,36 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                   </div>
                 </div>
               )}
+
+              {/* ── P10 SL Floor ── */}
+              <div className="pt-5 border-t border-slate-100 dark:border-white/5 space-y-3">
+                <Toggle
+                  label="P10 SL Floor (Chronos)"
+                  desc="Usa il p10 di Chronos come floor per lo Stop Loss: se il forecast p10 è più vicino all'entry dell'ATR-SL, tighten SL a p10 → miglior R:R con Chronos confidenti."
+                  checked={p10SlFloor}
+                  onChange={setP10SlFloor}
+                />
+                {p10SlFloor && !useChronos && (
+                  <div className="flex items-start gap-2.5 bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/30 rounded-xl px-3.5 py-2.5">
+                    <svg className="w-3.5 h-3.5 text-amber-500 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+                    </svg>
+                    <p className="text-[10px] font-bold text-amber-600 dark:text-amber-400 leading-snug uppercase tracking-wide">
+                      Richiede Chronos-2 — il P10 floor sarà ignorato senza Chronos attivo
+                    </p>
+                  </div>
+                )}
+                {p10SlFloor && dynamicSlTp && (
+                  <div className="flex items-start gap-2.5 bg-violet-50 dark:bg-violet-500/10 border border-violet-200 dark:border-violet-500/30 rounded-xl px-3.5 py-2.5">
+                    <svg className="w-3.5 h-3.5 text-violet-500 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                    <p className="text-[10px] font-bold text-violet-600 dark:text-violet-400 leading-snug uppercase tracking-wide">
+                      Guard B1: P10 Floor + SL/TP Adattivi attivi — se l'uncertainty è bassa (size_mult &gt; 1×) il log segnalerà la combinazione. Monitora la size USD nel report.
+                    </p>
+                  </div>
+                )}
+              </div>
             </div>
 
             {/* Active strategy badges */}

@@ -60,10 +60,107 @@ Trovare **configurazioni robuste per regime** è più realistico e più onesto c
 - Apr 2026 (+20% mensile: $66k→$79k) è una mini-ripresa, non abbastanza sostenuta per classificarla come uptrend pulito
 
 **Setup tendenzialmente efficaci in questo regime:**
-- Dir Threshold basso (0.58–0.62) per catturare più segnali long
-- ADX Gate moderato (15–20) — non troppo restrittivo
-- Trailing SL utile per cavalcare la tendenza
-- Chronos blend basso (20–30%) — in trend forte l'LGBM è più affidabile
+- Dir Threshold basso (0.58–0.62) — cattura più segnali nel verso del trend
+- ADX Gate moderato (15–20) — non troppo restrittivo, il trend è già confermato
+- Trailing SL **essenziale** (attivazione 1.5–2.0×ATR) — il valore centrale del regime è "cavalcare" il trend
+- TP alto (4.0–5.0×ATR) + Partial TP basso (25–35% @ 2.0–2.5×ATR) — incassa una parte, lascia correre il resto
+- SL stretto (1.5–1.8×ATR) — in uptrend forte i pullback sono contenuti; SL largo spreca P&L
+- BE SL attivo dopo il Partial TP (attivazione 2.5–3.0×ATR) — protegge il residuo senza tagliarlo prematuramente
+- Chronos blend basso (20–25%) + `dynamic_sl_tp_blend 0.25` — l'LGBM domina in trend, Chronos è solo filtro secondario
+- LGBM Exit ON con conferma lunga (3 barre, min_hold 8) — evita uscite su rimbalzi; solo se il flip è sostenuto
+- Enhanced Exit ON — Chronos p50 sotto entry_price come seconda conferma del flip di direzione
+- `c2_cont_prob_gate` opzionale con soglia bassa (0.20) — filtra solo i segnali con continuazione quasi nulla
+- **P10 SL Floor: OFF** — in uptrend le bande Chronos sono larghe; il floor tirerebbe lo SL troppo vicino all'ingresso con rischio di esplosione del size
+- **Max Hold Bars: OFF** — non troncare artificialmente il trade nel regime con più upside potenziale
+- `max_consecutive_losses: 3` — soglia più bassa; tre stop in trend forte = regime probabilmente finito
+
+---
+
+### Setup Consigliati — Regime 1 (Uptrend Forte)
+
+#### Setup A — "Trend Rider" *(aggressivo, massimizza il rendimento sul trend)*
+
+> Filosofia: pochi trade, size piena, trailing SL per catturare l'intera gamba. LGBM + Chronos confermano l'uscita solo quando la tendenza è strutturalmente invertita.
+
+| Parametro | Valore | Motivazione |
+|-----------|--------|-------------|
+| `directional_threshold` | **0.58** | Bassa soglia — in trend LGBM segnala spesso >0.80, serve poco filtro |
+| `adx_gate` | **18** | Permette l'ingresso quando il trend si sta ancora formando |
+| `adx_gate_enabled` | true | |
+| `confluence_gate` | **50.0** | Non servono 4 conferme — il trend è già evidente |
+| `sl_atr_mult` | **1.5** | SL stretto: pullback in uptrend sono shallow, SL largo brucia P&L |
+| `tp_atr_mult` | **5.0** | TP aggressivo — il trend forte sposta il prezzo 4–6×ATR prima di invertire |
+| `position_size_pct` | **1.8** | Regime ad alta affidabilità — size leggermente sopra la norma |
+| `trailing_sl_enabled` | true | Nucleo del setup: cavalcare il trend fino alla fine |
+| `trailing_sl_activation` | **2.0** | Attivazione a 2×ATR — evita di scattare sul primo impulso, poi segue fedelmente |
+| `partial_tp_enabled` | true | |
+| `partial_tp_atr_mult` | **2.5** | Incassa il 30% a 2.5×ATR — il trend in genere continua oltre |
+| `partial_tp_pct` | **30** | Solo 30% chiuso — lascia il 70% correre col trailing |
+| `be_sl_enabled` | true | |
+| `be_sl_activation` | **3.0** | Attivo solo dopo che il prezzo ha già mosso 3×ATR — non disturba il trailing |
+| `lgbm_exit_enabled` | true | |
+| `lgbm_exit_threshold` | **0.25** | Threshold basso: uscita solo su flip netto, non su oscillazioni |
+| `lgbm_exit_min_hold_bars` | **8** | Non uscire prima di 32h (8×4h) — filtra l'inizio del trend |
+| `lgbm_exit_confirm_bars` | **3** | 3 barre consecutive di flip = 12h — segnale robusto, non rumore |
+| `enhanced_exit_enabled` | true | Chronos p50 sotto entry_price = conferma che il trend si è invertito |
+| `chronos_enabled` | true | |
+| `chronos_weight` | **0.20** | LGBM domina in trend — Chronos pesa poco sul segnale di entrata |
+| `dynamic_sl_tp_enabled` | true | |
+| `dynamic_sl_tp_blend` | **0.25** | 25% Chronos, 75% ATR — i range Chronos in trend sono instabili |
+| `recalibrated_uncertainty_thresholds` | true | |
+| `p10_sl_floor_enabled` | **false** | Bande larghe in uptrend → floor aggraverebbe il size e il rischio |
+| `sweep_gate_enabled` | true | Entra dopo sweep di liquidità (common in trend continuations) |
+| `fvg_filter_enabled` | true | Ingresso su FVG fill nella direzione del trend |
+| `mtf_alignment_enabled` | true | Conferma direzionale su 1D |
+| `c2_uncertainty_gate_enabled` | false | Non filtrare in trend forte — l'incertezza Chronos è strutturalmente alta |
+| `c2_cont_prob_gate_enabled` | true | |
+| `c2_cont_prob_threshold` | **0.20** | Filtra solo se la prob. di continuazione è quasi zero |
+| `max_hold_bars_enabled` | **false** | Non troncare il trend artificialmente |
+| `max_daily_dd_pct` | **3.5** | Leggermente più largo — il regime richiede di "sopportare" i rimbalzi |
+| `max_consecutive_losses` | **3** | 3 stop = forse il trend si è esaurito, pausa obbligatoria |
+
+---
+
+#### Setup B — "Trend Conservative" *(bilanciato, per chi preferisce più protezione sul capitale)*
+
+> Filosofia: partecipa al trend, ma con più filtri e size ridotta. Meno rendimento massimo, meno volatilità dei risultati. Preferibile nella prima settimana del trend quando non è ancora certo.
+
+| Parametro | Valore | Motivazione |
+|-----------|--------|-------------|
+| `directional_threshold` | **0.60** | Un po' più selettivo — aspetta segnali più netti |
+| `adx_gate` | **20** | Solo trend già confermati dall'ADX |
+| `adx_gate_enabled` | true | |
+| `confluence_gate` | **55.0** | Un filtro aggiuntivo rispetto a Setup A |
+| `sl_atr_mult` | **1.8** | Leggermente più largo — meno stop su rimbalzi intermedi |
+| `tp_atr_mult` | **4.0** | TP realistico su trend di media intensità |
+| `position_size_pct` | **1.5** | Size standard — non si espone eccessivamente |
+| `trailing_sl_enabled` | true | |
+| `trailing_sl_activation` | **1.5** | Attivazione più rapida — inizia a proteggere prima |
+| `partial_tp_enabled` | true | |
+| `partial_tp_atr_mult` | **2.0** | Incassa il 50% già a 2×ATR — recupera subito le commissioni |
+| `partial_tp_pct` | **50** | 50% chiuso a 2×ATR, 50% con trailing SL |
+| `be_sl_enabled` | true | |
+| `be_sl_activation` | **2.5** | Dopo che il prezzo ha mosso 2.5×ATR — prima del TP completo |
+| `lgbm_exit_enabled` | true | |
+| `lgbm_exit_threshold` | **0.28** | Leggermente più sensibile di Setup A |
+| `lgbm_exit_min_hold_bars` | **6** | 24h minimo prima di considerare l'uscita LGBM |
+| `lgbm_exit_confirm_bars` | **2** | 2 barre di conferma (8h) — più reattivo di Setup A |
+| `enhanced_exit_enabled` | true | |
+| `chronos_enabled` | true | |
+| `chronos_weight` | **0.25** | Peso leggermente più alto — conferma il segnale LGBM |
+| `dynamic_sl_tp_enabled` | true | |
+| `dynamic_sl_tp_blend` | **0.30** | Più ATR-centrico, piccola influenza Chronos |
+| `recalibrated_uncertainty_thresholds` | true | |
+| `p10_sl_floor_enabled` | **false** | |
+| `sweep_gate_enabled` | true | |
+| `fvg_filter_enabled` | true | |
+| `mtf_alignment_enabled` | true | |
+| `c2_uncertainty_gate_enabled` | false | |
+| `c2_cont_prob_gate_enabled` | true | |
+| `c2_cont_prob_threshold` | **0.22** | Filtra i segnali con continuazione quasi assente |
+| `max_hold_bars_enabled` | **false** | |
+| `max_daily_dd_pct` | **3.0** | |
+| `max_consecutive_losses` | **4** | |
 
 ---
 
@@ -94,10 +191,108 @@ Trovare **configurazioni robuste per regime** è più realistico e più onesto c
 - **D3 e D4** sono black-swan (Terra/Luna, FTX) — stress test, non usare per ottimizzare parametri "normali"
 
 **Setup tendenzialmente efficaci in questo regime:**
-- ADX Gate 20–25 obbligatorio — filtra i rimbalzi finti
-- Short signal attivi (dir threshold asimmetrico)
-- SL stretto (1.5×ATR) — i rimbalzi contro-trend sono violenti
-- Chronos adaptive SL/TP utile per comprimere i target in mercati veloci
+- ADX Gate 22–25 **obbligatorio** — ogni settimana di downtrend include almeno un bounce del 5–10%, filtrarlo è critico
+- Short signal attivi; Dir Threshold 0.63–0.65 — serve una conferma solida perché entrare short tardi è devastante
+- SL stretto (1.5–1.8×ATR) — i bounce contro-trend in downtrend sono veloci e violenti (spesso 2–3×ATR in 1–2 candele 4H)
+- **Trailing SL: OFF** — i downtrend hanno rimbalzi a V; il trailing viene colpito sistematicamente
+- Partial TP aggressivo (50–60% @ 1.5×ATR) — incassa il profitto prima che il bounce controtrend si mangi il guadagno
+- BE SL rapido (1.0–1.5×ATR) — dopo il partial TP, protegge il residuo dai rimbalzi violenti
+- Chronos Adaptive SL/TP utile (blend 0.40–0.50) — in downtrend il Chronos comprime bene i target short
+- **P10 SL Floor utile per gli short** — `p10_sl_floor` usa `p90` come SL floor per i short, tira lo SL sopra lo swing high Chronos → riduce l'esposizione sui bounce
+- LGBM Exit con soglia bassa (min_hold 3–4 barre) — segnale di inversione = bounce in arrivo, esci prima
+- Enhanced Exit ON — Chronos p50 sopra entry_price per gli short conferma il regime change
+- `c2_uncertainty_gate` ON (threshold 0.06) — non entrare short durante bounce con incertezza alta
+- Max Hold Bars 24–36 (6–9 giorni) — i downtrend hanno squeezes periodicali; non restare esposto troppo a lungo
+- `max_consecutive_losses: 3` — tre stop in downtrend = probabile regime di capitolazione/inversione
+
+---
+
+### Setup Consigliati — Regime 2 (Downtrend Forte)
+
+#### Setup A — "Bear Rider" *(aggressivo, cattura la gamba ribassista completa)*
+
+> Filosofia: short dopo conferma ADX + sweep di liquidità, incassa 50% velocemente, BE SL e LGBM Exit gestiscono il residuo. Chronos P10 Floor tira lo SL sopra il recente swing high.
+
+| Parametro | Valore | Motivazione |
+|-----------|--------|-------------|
+| `directional_threshold` | **0.63** | Selettivo: in downtrend LGBM short segnala >0.78, il threshold filtra i falsi segnali di rimbalzo |
+| `adx_gate` | **22** | Obbligatorio in downtrend — filtra i periodi di squeeze/consolidazione |
+| `adx_gate_enabled` | true | |
+| `confluence_gate` | **58.0** | Richiede convergenza decente — evita di shortare in oversold estremo senza conferme |
+| `sl_atr_mult` | **1.5** | Stretto: i bounce durano 1–2 candele 4H, non di più. SL largo = stop garantito su bounce |
+| `tp_atr_mult` | **3.0** | Realistico: le gambe short si esauriscono spesso a 2.5–3.5×ATR prima del bounce |
+| `position_size_pct` | **1.2** | Leggermente ridotto vs uptrend — volatilità più alta, errori più costosi |
+| `trailing_sl_enabled` | **false** | Bounce a V colpiscono sempre il trailing in downtrend |
+| `partial_tp_enabled` | true | |
+| `partial_tp_atr_mult` | **1.5** | Incassa il 50% a 1.5×ATR — il bounce può arrivare da un momento all'altro |
+| `partial_tp_pct` | **50** | Metà posizione chiusa velocemente, l'altra metà gestita da BE SL |
+| `be_sl_enabled` | true | |
+| `be_sl_activation` | **1.5** | BE SL dopo 1.5×ATR — si attiva dopo o in concomitanza del partial TP |
+| `lgbm_exit_enabled` | true | |
+| `lgbm_exit_threshold` | **0.30** | Soglia standard — uscita quando LGBM vede inversione |
+| `lgbm_exit_min_hold_bars` | **4** | 16h minimo — evita di uscire sui micropullback iniziali |
+| `lgbm_exit_confirm_bars` | **2** | 2 barre (8h) di conferma — più reattivo che in uptrend |
+| `enhanced_exit_enabled` | true | Chronos p50 > entry_price per short = segnale che il downtrend si è esaurito |
+| `chronos_enabled` | true | |
+| `chronos_weight` | **0.35** | Più peso al Chronos vs uptrend — utile per leggere la struttura delle bande in downtrend |
+| `dynamic_sl_tp_enabled` | true | |
+| `dynamic_sl_tp_blend` | **0.40** | 40% Chronos blend — comprime i target nei downtrend veloci |
+| `recalibrated_uncertainty_thresholds` | true | |
+| `p10_sl_floor_enabled` | **true** | Per i short: usa `p90` come SL floor → SL posizionato sopra lo swing high Chronos |
+| `sweep_gate_enabled` | true | Short ideale dopo sweep di liquidità sui massimi precedenti |
+| `fvg_filter_enabled` | true | Conferma strutturale — FVG ribassisti nella direzione del downtrend |
+| `mtf_alignment_enabled` | true | Il daily deve essere allineato short — fondamentale in downtrend |
+| `c2_uncertainty_gate_enabled` | true | |
+| `c2_uncertainty_threshold` | **0.06** | Non shortare durante bounce ad alta incertezza (Chronos vede indecisione) |
+| `c2_cont_prob_gate_enabled` | false | Il cont_prob è orientato ai long — in short è meno calibrato |
+| `max_hold_bars_enabled` | true | |
+| `max_hold_bars` | **36** | 9 giorni max — dopo 9 giorni in short il rischio di squeeze aumenta significativamente |
+| `max_daily_dd_pct` | **3.0** | |
+| `max_consecutive_losses` | **3** | Tre stop = probabile fase di distribuzione/inversione |
+
+---
+
+#### Setup B — "Bear Conservative" *(pochi trade ma precisi, priorità alla protezione del capitale)*
+
+> Filosofia: ADX gate più alto, soglie più stringenti. Meno trade, meno esposizione alle trappole. Preferibile quando il downtrend mostra segnali di rallentamento (ADX in calo da >35) o nella fase finale del bear.
+
+| Parametro | Valore | Motivazione |
+|-----------|--------|-------------|
+| `directional_threshold` | **0.65** | Solo i segnali short molto netti |
+| `adx_gate` | **25** | Solo downtrend con momentum forte confermato |
+| `adx_gate_enabled` | true | |
+| `confluence_gate` | **62.0** | Alta convergenza richiesta — filtra i segnali marginali |
+| `sl_atr_mult` | **1.8** | Leggermente più largo — meno stop su spike intracandle |
+| `tp_atr_mult` | **2.5** | TP conservativo — prendi il profitto sicuro prima del bounce |
+| `position_size_pct` | **1.0** | Size ridotta — in regime incerto meglio ridurre l'esposizione |
+| `trailing_sl_enabled` | **false** | |
+| `partial_tp_enabled` | true | |
+| `partial_tp_atr_mult` | **1.5** | |
+| `partial_tp_pct` | **60** | Incassa il 60% subito — il residuo è quasi un free trade |
+| `be_sl_enabled` | true | |
+| `be_sl_activation` | **1.0** | BE SL molto rapido — appena il prezzo si muove a favore, proteggi |
+| `lgbm_exit_enabled` | true | |
+| `lgbm_exit_threshold` | **0.25** | Più sensibile — esci prima in caso di potenziale inversione |
+| `lgbm_exit_min_hold_bars` | **3** | Solo 12h minimo — in downtrend le cose cambiano velocemente |
+| `lgbm_exit_confirm_bars` | **2** | |
+| `enhanced_exit_enabled` | **false** | Più conservativo — non usare Chronos per l'uscita (rischio falsi positivi in downtrend accelerato) |
+| `chronos_enabled` | true | |
+| `chronos_weight` | **0.30** | |
+| `dynamic_sl_tp_enabled` | true | |
+| `dynamic_sl_tp_blend` | **0.45** | |
+| `recalibrated_uncertainty_thresholds` | true | |
+| `p10_sl_floor_enabled` | **false** | Approccio conservativo — non aggiungere complessità in setup già stretto |
+| `sweep_gate_enabled` | true | |
+| `fvg_filter_enabled` | true | |
+| `mtf_alignment_enabled` | true | |
+| `c2_uncertainty_gate_enabled` | true | |
+| `c2_uncertainty_threshold` | **0.07** | Ancora più restrittivo — filtra più situazioni ambigue |
+| `c2_cont_prob_gate_enabled` | true | |
+| `c2_cont_prob_threshold` | **0.30** | Richiede prob. di continuazione — evita di shortare all'oversold estremo |
+| `max_hold_bars_enabled` | true | |
+| `max_hold_bars` | **24** | 6 giorni max — uscita forzata; in downtrend i bounce settimanali sono frequenti |
+| `max_daily_dd_pct` | **2.5** | DD giornaliero più stretto — protezione capital in regime ad alto rischio |
+| `max_consecutive_losses` | **3** | |
 
 ---
 
@@ -133,11 +328,111 @@ Trovare **configurazioni robuste per regime** è più realistico e più onesto c
 - **S12** è il pavimento dopo D9 (bottom $60k) — recovery pause prima della ripresa di aprile
 
 **Setup tendenzialmente efficaci in questo regime:**
-- ADX Gate alto (22–25) — filtra la maggior parte dei falsi segnali in range
-- Confluence Score alto (60–70) — richiede convergenza multipla prima di entrare
-- Partial TP aggressivo (50% @ 1.5×ATR) — il prezzo torna spesso al punto di ingresso
-- Trailing SL off — in sideways il trailing viene spesso colpito dai rimbalzi
-- Chronos cont_prob Gate utile — bassa coerenza delle bande = non entrare
+- ADX Gate 22–25 **obbligatorio** — in sideways l'ADX oscilla tra 12 e 20; sopra 22 ci sono solo i falsi breakout iniziali (entry migliori) o l'inizio di un regime change
+- Confluence Gate 65–70 — richiedere convergenza forte: in un range ristretto i segnali deboli non raggiungono mai il TP
+- Partial TP aggressivo (50–60% @ 1.5×ATR) — in un range il prezzo tocca resistance/support e **ritorna**; l'incasso rapido è l'unico modo per essere profittevoli
+- **Trailing SL: OFF** — i rimbalzi in sideways colpiscono sistematicamente il trailing; il prezzo si muove avanti-indietro per definizione
+- TP stretto (2.0–2.5×ATR) — il prezzo raramente supera l'ampiezza del range prima di invertire
+- SL moderato (1.8–2.0×ATR) — l'ATR in sideways è già più basso; lo SL in dollari è contenuto
+- BE SL rapido (1.5×ATR) — dopo il partial TP, porta subito lo SL in pareggio: non vuoi che un range trade si trasformi in una perdita
+- **P10 SL Floor: ON** — in sideways il Chronos ha bande strette (p10/p90 sono vicini al prezzo); il floor comprime lo SL senza colpire la 0.5×ATR safety cap → riduce le perdite sui falsi breakout
+- Chronos Adaptive SL/TP (blend 0.55–0.65) — in sideways Chronos è più calibrato del puro ATR: le bande riflettono i confini del range
+- LGBM Exit **essenziale** (min_hold 3–4 barre, confirm 2) — quando il segnale si inverte in un range, è molto probabile che il prezzo torni contro; esci prima
+- Enhanced Exit ON — doppia conferma Chronos + LGBM per uscire velocemente quando il range si "rifiuta" della direzione scelta
+- `c2_uncertainty_gate` ON (threshold 0.04–0.05) — incertezza alta in sideways = Chronos vede indecisione = non entrare; è il filtro più potente per questo regime
+- `c2_cont_prob_gate` ON (threshold 0.30–0.35) — bassa probabilità di continuazione = il range sta per invertire = non entrare
+- Max Hold Bars 18–24 (4.5–6 giorni) — in un range non esiste "trend da aspettare"; se non raggiungi TP entro 6 giorni, probabilmente il trade è bloccato nel range → esci
+- Dir Threshold 0.65–0.68 — non basta un segnale vago per entrare in sideways; richiedi segnali netti
+
+---
+
+### Setup Consigliati — Regime 3 (Sideways / Ranging)
+
+#### Setup A — "Range Trader" *(ottimizzato per range trading attivo con rotazioni frequenti)*
+
+> Filosofia: entra solo quando tutti i filtri sono allineati, incassa subito il 50%, BE SL protegge il residuo, LGBM + Chronos eseguono l'uscita rapida se il trade si blocca. Il P10 Floor comprime lo SL per i falsi breakout.
+
+| Parametro | Valore | Motivazione |
+|-----------|--------|-------------|
+| `directional_threshold` | **0.65** | Range richiede segnali più netti — LGBM in sideways produce più rumore |
+| `adx_gate` | **22** | Filtra la fase centrale del range (ADX <20), permette l'ingresso ai bordi (ADX 20–24) |
+| `adx_gate_enabled` | true | |
+| `confluence_gate` | **65.0** | Alta convergenza — in sideways solo le setup con 3–4 conferme sono affidabili |
+| `sl_atr_mult` | **2.0** | Moderato — ATR già basso in ranging; lo SL in $ è contenuto |
+| `tp_atr_mult` | **2.0** | TP stretto uguale a SL: RR 1:1 compensato dall'alto partial TP early |
+| `position_size_pct` | **1.0** | Regime a bassa affidabilità — size ridotta per limitare i danni sui falsi breakout |
+| `trailing_sl_enabled` | **false** | |
+| `partial_tp_enabled` | true | |
+| `partial_tp_atr_mult` | **1.5** | Incassa a 1.5×ATR — metà del TP finale, ma con probabilità molto alta |
+| `partial_tp_pct` | **50** | |
+| `be_sl_enabled` | true | |
+| `be_sl_activation` | **1.5** | Contemporaneo al partial TP — appena tocca 1.5×ATR, sia incasso che protezione |
+| `lgbm_exit_enabled` | true | |
+| `lgbm_exit_threshold` | **0.35** | Threshold alto: in sideways i segnali oscillano — vuoi solo i flip netti |
+| `lgbm_exit_min_hold_bars` | **4** | 16h minimo — evita di uscire su fakeout del range |
+| `lgbm_exit_confirm_bars` | **2** | 2 barre (8h) — reattivo ma non impulsivo |
+| `enhanced_exit_enabled` | true | Chronos + LGBM entrambi confermano il rifiuto della direzione → uscita immediata |
+| `chronos_enabled` | true | |
+| `chronos_weight` | **0.45** | Chronos più utile in sideways — le bande definiscono i confini del range |
+| `dynamic_sl_tp_enabled` | true | |
+| `dynamic_sl_tp_blend` | **0.60** | Blend alto verso Chronos — le bande p10/p90 mappano meglio i limiti del range rispetto all'ATR puro |
+| `recalibrated_uncertainty_thresholds` | true | |
+| `p10_sl_floor_enabled` | **true** | In sideways le bande sono strette → p10/p90 vicini → floor tighten lo SL efficacemente |
+| `sweep_gate_enabled` | true | In sideways i fake sweep ai bordi del range sono frequenti — li filtra |
+| `fvg_filter_enabled` | true | FVG ai bordi del range = setup di alta qualità |
+| `mtf_alignment_enabled` | true | Assicura che il segnale sia allineato con il daily — evita segnali contro il trend di fondo |
+| `c2_uncertainty_gate_enabled` | true | |
+| `c2_uncertainty_threshold` | **0.05** | Incertezza alta in sideways = non entrare; le bande larghe segnalano confusione |
+| `c2_cont_prob_gate_enabled` | true | |
+| `c2_cont_prob_threshold` | **0.30** | Bassa continuazione = il range sta invertendo → non entrare |
+| `max_hold_bars_enabled` | true | |
+| `max_hold_bars` | **24** | 6 giorni max — se in 6 giorni il trade è ancora aperto in range, esci |
+| `max_daily_dd_pct` | **2.5** | Più stretto del trend — sideways genera più stop piccoli, limitare il DD totale |
+| `max_consecutive_losses` | **3** | In sideways 3 stop consecutivi = setup non funziona su questo range specifico |
+
+---
+
+#### Setup B — "Range Sniper" *(ultra-selettivo, pochi trade ma solo ai confini del range con alta probabilità)*
+
+> Filosofia: aspetta i setup perfetti — bordi del range + sweep + FVG + Chronos bande strette + alta cont_prob. Pochissimi trade, win rate molto alto. Adatto a range molto definiti come S6, S8.
+
+| Parametro | Valore | Motivazione |
+|-----------|--------|-------------|
+| `directional_threshold` | **0.68** | Solo i segnali molto forti ai bordi del range |
+| `adx_gate` | **25** | Solo quando l'ADX è momentaneamente alto (breakout falso o bordo netto) |
+| `adx_gate_enabled` | true | |
+| `confluence_gate` | **68.0** | Tutti i filtri devono essere allineati — nessun compromesso |
+| `sl_atr_mult` | **2.0** | |
+| `tp_atr_mult` | **2.5** | TP leggermente più largo — entra solo ai bordi del range, il centro è il TP naturale |
+| `position_size_pct` | **0.8** | Ancora più conservativo — pochissimi trade, ogni errore è costoso |
+| `trailing_sl_enabled` | **false** | |
+| `partial_tp_enabled` | true | |
+| `partial_tp_atr_mult` | **1.5** | |
+| `partial_tp_pct` | **60** | 60% chiuso immediatamente — lascia solo 40% esposto verso il TP finale |
+| `be_sl_enabled` | true | |
+| `be_sl_activation` | **2.0** | Attivazione dopo il partial TP — copre il residuo |
+| `lgbm_exit_enabled` | true | |
+| `lgbm_exit_threshold` | **0.28** | Più sensibile — esci appena il segnale si indebolisce significativamente |
+| `lgbm_exit_min_hold_bars` | **3** | 12h minimo |
+| `lgbm_exit_confirm_bars` | **2** | |
+| `enhanced_exit_enabled` | true | |
+| `chronos_enabled` | true | |
+| `chronos_weight` | **0.50** | Chronos ha peso uguale a LGBM — in range stretto è altrettanto affidabile |
+| `dynamic_sl_tp_enabled` | true | |
+| `dynamic_sl_tp_blend` | **0.65** | Le bande Chronos in sideways definiscono meglio i target dei puri multipli ATR |
+| `recalibrated_uncertainty_thresholds` | true | |
+| `p10_sl_floor_enabled` | **true** | |
+| `sweep_gate_enabled` | true | Criterio di qualità — setup solo su sweep ai bordi del range |
+| `fvg_filter_enabled` | true | |
+| `mtf_alignment_enabled` | true | |
+| `c2_uncertainty_gate_enabled` | true | |
+| `c2_uncertainty_threshold` | **0.04** | Ancora più restrittivo — solo quando Chronos è molto sicuro sulla direzione |
+| `c2_cont_prob_gate_enabled` | true | |
+| `c2_cont_prob_threshold` | **0.35** | Alta certezza di continuazione — solo ai bordi netti del range |
+| `max_hold_bars_enabled` | true | |
+| `max_hold_bars` | **18** | 4.5 giorni max — in range stretto, se non si muove in 4.5 giorni, esci |
+| `max_daily_dd_pct` | **2.0** | DD giornaliero stretto — questo setup deve avere alta precision |
+| `max_consecutive_losses` | **2** | Due stop consecutivi = range non è tradabile, pausa |
 
 ---
 
@@ -159,6 +454,112 @@ Trovare **configurazioni robuste per regime** è più realistico e più onesto c
 | F5 | **1 – 17 Mag 2026** | ~2.5 settimane | $76k – $83k | Mercato più quieto del dataset (8.5%) | 📊 dataset |
 
 > ⚠️ In periodi flat il bot non dovrebbe quasi mai tradare. ADX Gate 20–25 + Confluence Gate 65+ già escludono la maggior parte di questi periodi automaticamente. Il pericolo principale è aprire posizioni su falsi breakout con spread elevato.
+
+**Setup tendenzialmente efficaci in questo regime:**
+- **L'obiettivo primario è non tradare** — ogni trade in flat è un costo certo (commissioni + spread) in cambio di un profitto quasi certo molto piccolo
+- ADX Gate 25–28 — in flat l'ADX raramente supera 15–17; fissarlo a 25–28 significa che si aprirà un trade solo se c'è un impulso reale (possibile inizio di un regime change)
+- Confluence Gate 70–72 — quasi tutto deve essere allineato per entrare; in flat i segnali LGBM oscillano intorno al 0.50 e sono inaffidabili
+- `c2_uncertainty_gate` ON con threshold 0.035–0.04 — in flat il Chronos mostra incertezza alta (bande strette = mercato indeciso); questo filtro da solo esclude il 70–80% dei periodi flat
+- `c2_cont_prob_gate` ON con threshold 0.40 — richiede alta probabilità di continuazione; in flat quasi mai presente
+- SL moderato (1.8–2.0×ATR) — con ATR basso lo SL in $ è già strettissimo; evita di abbassarlo ulteriormente
+- TP stretto (2.0–2.5×ATR) — il prezzo in flat raramente si muove più di 1.5–2× l'ATR prima di tornare
+- BE SL **molto rapido** (0.8–1.0×ATR) — in flat ogni guadagno va protetto immediatamente
+- Partial TP aggressivo (60% @ 1.2–1.5×ATR) — prendi quasi tutto subito; il residuo è quasi un loteria
+- **Max Hold Bars 12** (3 giorni) — il limit temporale più stretto di tutti i regimi; in flat il trade si blocca e non si muove
+- LGBM Exit con conferma 1 sola barra — reagire velocissimo al primo segnale di inversione
+- **P10 SL Floor: ON** — in flat le bande Chronos sono ancora più strette; p10/p90 sono molto vicini al prezzo → il floor tighten lo SL in modo chirurgico
+- **Trailing SL: OFF**, **Enhanced Exit: OFF** — in flat non c'è un trend da seguire; ogni sofisticazione aggiuntiva è rumore
+- `max_consecutive_losses: 2` — due stop = il flat sta diventando volatile o è un breakout in arrivo; fermarsi
+
+---
+
+### Setup Consigliati — Regime 4 (Flat / Low Volatility)
+
+#### Setup A — "Flat Survival" *(protezione massima, trade rari, uscita fulminea)*
+
+> Filosofia: l'obiettivo è sopravvivere al periodo flat senza perdite significative. Se un setup passa tutti i filtri (raro), entra piccolo, incassa velocemente, esci al primo segnale di debolezza. Ogni trade in flat deve chiudersi entro 3 giorni.
+
+| Parametro | Valore | Motivazione |
+|-----------|--------|-------------|
+| `directional_threshold` | **0.68** | Solo i segnali nettissimi — in flat LGBM è ai limiti dell'affidabilità |
+| `adx_gate` | **25** | Filtra il 90% dei periodi flat (ADX tipicamente <17) |
+| `adx_gate_enabled` | true | |
+| `confluence_gate` | **70.0** | Quasi tutto deve essere allineato — la barra è altissima |
+| `sl_atr_mult` | **2.0** | ATR basso → SL in $ contenuto anche a 2×ATR; non ridurre ulteriormente |
+| `tp_atr_mult` | **2.5** | Il massimo ragionevole in flat — raramente il prezzo si muove oltre |
+| `position_size_pct` | **0.8** | Minima esposizione — in flat l'expected value è vicino a zero |
+| `trailing_sl_enabled` | **false** | In flat non c'è trend da seguire |
+| `partial_tp_enabled` | true | |
+| `partial_tp_atr_mult` | **1.5** | Incassa il 60% a 1.5×ATR — in flat è già un ottimo risultato |
+| `partial_tp_pct` | **60** | Prendi la maggior parte subito |
+| `be_sl_enabled` | true | |
+| `be_sl_activation` | **1.0** | BE SL rapidissimo — appena sei in profitto di 1×ATR, proteggi tutto |
+| `lgbm_exit_enabled` | true | |
+| `lgbm_exit_threshold` | **0.35** | Threshold alto — esce solo su segnale di inversione netto |
+| `lgbm_exit_min_hold_bars` | **2** | Solo 8h minimo — in flat il prezzo può invertire in 2 candele |
+| `lgbm_exit_confirm_bars` | **1** | **1 sola barra** — reazione immediata al flip in flat |
+| `enhanced_exit_enabled` | **false** | In flat la doppia conferma è controproducente: rallenta l'uscita |
+| `chronos_enabled` | true | |
+| `chronos_weight` | **0.50** | Chronos e LGBM hanno peso uguale — in flat nessuno dei due è chiaramente superiore |
+| `dynamic_sl_tp_enabled` | true | |
+| `dynamic_sl_tp_blend` | **0.55** | Leggermente orientato Chronos — le bande strette calibrano meglio i target in flat |
+| `recalibrated_uncertainty_thresholds` | true | |
+| `p10_sl_floor_enabled` | **true** | Bande Chronos strettissime in flat → floor comprime lo SL chirurgicamente |
+| `sweep_gate_enabled` | true | In flat i falsi sweep sono comuni — filtrarli è essenziale |
+| `fvg_filter_enabled` | true | |
+| `mtf_alignment_enabled` | true | Allineamento daily — se il daily non è chiaro, non entrare |
+| `c2_uncertainty_gate_enabled` | true | |
+| `c2_uncertainty_threshold` | **0.04** | Soglia bassa — in flat la maggior parte dei segnali hanno incertezza >4%; questo filtro esclude il grosso |
+| `c2_cont_prob_gate_enabled` | true | |
+| `c2_cont_prob_threshold` | **0.35** | Alta continuazione richiesta — in flat raramente presente |
+| `max_hold_bars_enabled` | true | |
+| `max_hold_bars` | **12** | 3 giorni assoluti — nessun trade flat deve sopravvivere oltre 3 giorni |
+| `max_daily_dd_pct` | **2.0** | DD giornaliero strettissimo — priorità assoluta alla protezione capital |
+| `max_consecutive_losses` | **2** | Due stop = flat è diventato volatile o breakout imminente; fermati |
+
+---
+
+#### Setup B — "Flat Stealth" *(ancora più conservativo — praticamente non tradare, registra solo i breakout iniziali)*
+
+> Filosofia: fissa le soglie così alte che il bot praticamente si ferma da solo in flat. Se qualcosa passa tutti i filtri, probabilmente è l'inizio di un regime change (breakout) — entra piccolo e proteggiti velocemente.
+
+| Parametro | Valore | Motivazione |
+|-----------|--------|-------------|
+| `directional_threshold` | **0.70** | Soglia quasi al limite — solo segnali eccezionali |
+| `adx_gate` | **28** | In pieno flat (ADX ~13–15) non passerà quasi nulla; se supera 28 è già un regime change |
+| `adx_gate_enabled` | true | |
+| `confluence_gate` | **72.0** | Barra altissima — accetta solo 1–2 trade a settimana al massimo |
+| `sl_atr_mult` | **1.8** | Leggermente ridotto — ATR così basso che anche 1.8× è sufficiente come protezione |
+| `tp_atr_mult` | **2.0** | Molto stretto — in flat non sperare in grandi movimenti |
+| `position_size_pct` | **0.6** | Il minimo sensato — se entra qualcosa, entra piano |
+| `trailing_sl_enabled` | **false** | |
+| `partial_tp_enabled` | true | |
+| `partial_tp_atr_mult` | **1.2** | TP parziale quasi immediato — a 1.2×ATR in flat è già un successo |
+| `partial_tp_pct` | **60** | |
+| `be_sl_enabled` | true | |
+| `be_sl_activation` | **0.8** | BE SL quasi immediato — appena il prezzo si muove a favore, è protetto |
+| `lgbm_exit_enabled` | true | |
+| `lgbm_exit_threshold` | **0.35** | |
+| `lgbm_exit_min_hold_bars` | **2** | |
+| `lgbm_exit_confirm_bars` | **1** | |
+| `enhanced_exit_enabled` | **false** | |
+| `chronos_enabled` | true | |
+| `chronos_weight` | **0.55** | Chronos ha il peso leggermente maggiore — in flat è più stabile di LGBM |
+| `dynamic_sl_tp_enabled` | true | |
+| `dynamic_sl_tp_blend` | **0.60** | |
+| `recalibrated_uncertainty_thresholds` | true | |
+| `p10_sl_floor_enabled` | **true** | |
+| `sweep_gate_enabled` | true | |
+| `fvg_filter_enabled` | true | |
+| `mtf_alignment_enabled` | true | |
+| `c2_uncertainty_gate_enabled` | true | |
+| `c2_uncertainty_threshold` | **0.035** | Soglia più bassa — esclude ancora più situazioni |
+| `c2_cont_prob_gate_enabled` | true | |
+| `c2_cont_prob_threshold` | **0.40** | Alta certezza di continuazione — quasi mai presente in flat |
+| `max_hold_bars_enabled` | true | |
+| `max_hold_bars` | **12** | |
+| `max_daily_dd_pct` | **1.5** | Limita i danni al minimo assoluto |
+| `max_consecutive_losses` | **2** | |
 
 ---
 
@@ -595,5 +996,6 @@ Prima di attivare in live:
 ---
 
 *Documento creato: 17 maggio 2026*  
+*Aggiornato: 17 maggio 2026 — Setup per regime aggiornati con tutti i parametri disponibili (P10 SL Floor, Enhanced Exit, recalibrated thresholds, c2 gates); aggiunti 2 setup dettagliati per ciascuno dei 4 regimi*  
 *Dati verificati su `poc/data_ohlcv.parquet` — 4.381 candele 4H BTC, mag 2024 – mag 2026*  
 *Periodi pre-maggio 2024 basati su training (dati certi fino ad agosto 2025)*

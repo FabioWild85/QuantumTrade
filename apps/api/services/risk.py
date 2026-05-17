@@ -77,6 +77,7 @@ class RiskManager:
         dynamic_sl_tp_enabled: bool = False,
         dynamic_sl_tp_blend: float = 0.50,
         recalibrated_uncertainty_thresholds: bool = True,
+        p10_sl_floor_enabled: bool = False,
     ) -> TradeParams:
         atr_sl_dist = self.sl_atr_mult * atr
         atr_tp_dist = self.tp_atr_mult * atr
@@ -100,6 +101,26 @@ class RiskManager:
         else:
             sl_dist = atr_sl_dist
             tp_dist = atr_tp_dist
+
+        # ── P10 SL Floor (Fase 5) ─────────────────────────────────────────────
+        # Tighten SL using Chronos quantile as a probabilistic floor.
+        # For long: if p10 > ATR-based SL, use p10 (Chronos says 90% of outcomes above p10).
+        # For short: if p90 < ATR-based SL, use p90.
+        # Safety cap: sl_dist never < 0.5×ATR to prevent position-size explosion.
+        p10_floor_applied = False
+        if p10_sl_floor_enabled and c2_p10 is not None and c2_p90 is not None:
+            if side == "long":
+                p10_sl = entry_price - sl_dist          # current SL price
+                if c2_p10 > p10_sl and c2_p10 < entry_price:
+                    candidate_dist = entry_price - c2_p10
+                    sl_dist = max(candidate_dist, 0.5 * atr)
+                    p10_floor_applied = True
+            else:
+                p90_sl = entry_price + sl_dist          # current SL price
+                if c2_p90 < p90_sl and c2_p90 > entry_price:
+                    candidate_dist = c2_p90 - entry_price
+                    sl_dist = max(candidate_dist, 0.5 * atr)
+                    p10_floor_applied = True
 
         # Uncertainty-based size scaling (only when real Chronos data is present).
         # Two calibrations selectable at runtime:
@@ -128,6 +149,18 @@ class RiskManager:
                 else:
                     size_mult = 0.50
 
+        # ── Guard B1: P10 floor + uncertainty size boost interaction ─────────
+        # When P10 tightens the SL and size_mult > 1.0 (low uncertainty boost),
+        # risk-based sizing automatically increases position size (smaller sl_pct).
+        # These two amplify each other — log a warning for transparency.
+        if p10_floor_applied and size_mult > 1.0:
+            log.warning(
+                "Guard B1: P10 SL floor tightened SL (sl_dist=%.4f atr=%.4f) "
+                "AND uncertainty size_mult=%.2f — position may be larger than expected. "
+                "Consider disabling one or using conservative settings.",
+                sl_dist, atr, size_mult,
+            )
+
         if side == "long":
             stop_loss   = entry_price - sl_dist
             take_profit = entry_price + tp_dist
@@ -149,6 +182,7 @@ class RiskManager:
             f"size=${size_usd:.0f} ({size_contracts:.4f} BTC) R:R={rr_ratio:.2f}"
             + (f" [adaptive: uncertainty={c2_uncertainty:.3f} size_mult={size_mult:.2f}]"
                if dynamic_sl_tp_enabled and c2_uncertainty is not None else "")
+            + (" [P10 SL floor applied]" if p10_floor_applied else "")
         )
         return TradeParams(
             side=side,

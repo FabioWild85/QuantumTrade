@@ -29,6 +29,7 @@ interface FeatureFlags {
   be_sl_activation: number;
   max_hold_bars_enabled: boolean;
   max_hold_bars: number;
+  p10_sl_floor_enabled: boolean;
 }
 
 export const HubSettings: React.FC<{ apiBase: string }> = ({ apiBase }) => {
@@ -60,6 +61,7 @@ export const HubSettings: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     be_sl_activation:        1.0,
     max_hold_bars_enabled:   false,
     max_hold_bars:           48,
+    p10_sl_floor_enabled:    false,
   });
   const [saving, setSaving]     = useState(false);
   const [saveMsg, setSaveMsg]   = useState<string | null>(null);
@@ -284,6 +286,13 @@ export const HubSettings: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                   </Tooltip>
                 )}
               </ToggleRow>
+
+              <ToggleRow
+                label="P10 SL Floor (Chronos)"
+                desc="Usa il 10° percentile di Chronos come floor per lo Stop Loss: se il p10 è più vicino all'entry dell'ATR-SL, tighten SL a p10. Migliora R:R nei trade con forecast Chronos confidenti. Richiede Chronos attivo."
+                checked={flags.p10_sl_floor_enabled}
+                onChange={v => setFlag('p10_sl_floor_enabled', v)}
+              />
             </div>
           </div>
 

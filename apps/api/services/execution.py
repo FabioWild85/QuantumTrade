@@ -90,6 +90,7 @@ class BotConfig:
         self.c2_cont_prob_threshold      = kw.get("c2_cont_prob_threshold",      0.25)
         self.dynamic_sl_tp_enabled       = kw.get("dynamic_sl_tp_enabled",       False)
         self.dynamic_sl_tp_blend         = kw.get("dynamic_sl_tp_blend",         0.50)
+        self.p10_sl_floor_enabled        = kw.get("p10_sl_floor_enabled",        False)
 
     def model_dump(self) -> dict:
         return self.__dict__
@@ -236,12 +237,12 @@ class ExecutionEngine:
             log.info("Reconciliation: no open position on HL")
             return
 
-        # Restore in-memory position from HL state
+        # Restore in-memory position from HL state (HL is authoritative for size/entry)
         self._position = {
             "side":               hl_pos["side"],
             "entry_price":        hl_pos["entry_price"],
-            "stop_loss":          0.0,   # unknown — will be managed conservatively
-            "take_profit":        0.0,   # unknown
+            "stop_loss":          0.0,   # overwritten below if we have saved state
+            "take_profit":        0.0,   # overwritten below if we have saved state
             "size_usd":           hl_pos["size_contracts"] * hl_pos["entry_price"],
             "size_contracts":     hl_pos["size_contracts"],
             "entry_atr":          None,
@@ -254,13 +255,55 @@ class ExecutionEngine:
             "sl_trailing_active": False,
             "high_water":         hl_pos["entry_price"],
             "partial_done":       False,
-            "reconciled":         True,   # flag: SL/TP are unknown, use caution
+            "reconciled":         True,   # flag: position was re-read from HL on restart
         }
+
+        # Merge saved in-flight state from DB (trailing SL progress, partial TP status, etc.)
+        try:
+            db = get_supabase()
+            cfg_row = db.table("bot_configs").select("params").eq("name", "default").execute()
+            saved_state = (cfg_row.data[0].get("params") or {}).get("_live_position_state") if cfg_row.data else None
+            if saved_state and saved_state.get("stop_loss", 0.0) > 0.0:
+                self._position.update({
+                    "stop_loss":               saved_state.get("stop_loss", 0.0),
+                    "take_profit":             saved_state.get("take_profit", 0.0),
+                    "bars_held":               saved_state.get("bars_held", 0),
+                    "lgbm_strikes":            saved_state.get("lgbm_strikes", 0),
+                    "be_sl_applied":           saved_state.get("be_sl_applied", False),
+                    "sl_trailing_active":      saved_state.get("sl_trailing_active", False),
+                    "high_water":              saved_state.get("high_water") or hl_pos["entry_price"],
+                    "partial_done":            saved_state.get("partial_done", False),
+                    "sl_original":             saved_state.get("sl_original"),
+                    "entry_atr":               saved_state.get("entry_atr"),
+                    "inference_id":            saved_state.get("inference_id"),
+                    "hl_order_id":             saved_state.get("hl_order_id"),
+                    "opened_at":               saved_state.get("opened_at") or self._position["opened_at"],
+                    "partial_tp_price":        saved_state.get("partial_tp_price"),
+                    "trailing_sl_activation_price": saved_state.get("trailing_sl_activation_price"),
+                    "trailing_sl_dist":        saved_state.get("trailing_sl_dist"),
+                    "trade_id":                saved_state.get("trade_id"),
+                    # Use HL-authoritative values for size (partial TP may have updated on exchange)
+                    "size_usd":                saved_state.get("size_usd") or self._position["size_usd"],
+                    "size_contracts":          saved_state.get("size_contracts") or self._position["size_contracts"],
+                })
+                log.info(
+                    "Reconciliation: restored in-flight state from DB — "
+                    "bars_held=%d sl=%.2f partial_done=%s trailing=%s",
+                    self._position["bars_held"], self._position["stop_loss"],
+                    self._position["partial_done"], self._position["sl_trailing_active"],
+                )
+        except Exception as exc:
+            log.warning("Could not restore live position state from DB: %s", exc)
+
+        sl_tp_note = (
+            f"SL={self._position['stop_loss']:.2f} TP={self._position['take_profit']:.2f}"
+            if self._position["stop_loss"] > 0.0
+            else "SL/TP non noti — verificare manualmente"
+        )
         log.warning(
-            "Reconciliation: restored %s position %.4f BTC @ %.2f (unrealized PnL: $%.2f). "
-            "SL/TP unknown — position will be managed without stops until next cycle.",
+            "Reconciliation: restored %s position %.4f BTC @ %.2f (unrealized PnL: $%.2f). %s",
             hl_pos["side"].upper(), hl_pos["size_contracts"],
-            hl_pos["entry_price"], hl_pos["unrealized_pnl"],
+            hl_pos["entry_price"], hl_pos["unrealized_pnl"], sl_tp_note,
         )
         try:
             db = get_supabase()
@@ -278,7 +321,7 @@ class ExecutionEngine:
         await self._notifier.send_error(
             f"⚠️ Posizione esistente rilevata su HL al restart: "
             f"{hl_pos['side'].upper()} {hl_pos['size_contracts']} BTC @ {hl_pos['entry_price']:.2f}. "
-            "SL/TP non noti — verificare manualmente.",
+            f"{sl_tp_note}",
             "reconciliation"
         )
 
@@ -347,6 +390,48 @@ class ExecutionEngine:
             db.table("bot_configs").update({"params": existing}).eq("name", "default").execute()
         except Exception as exc:
             log.warning("Could not save paper position: %s", exc)
+
+    def _persist_position_state(self):
+        """
+        Persist in-flight position state (trailing SL, partial_done, be_sl_applied, etc.)
+        so that bot restarts can fully restore mid-trade state.
+
+        Paper mode: reuses _paper_position (same key, same restore path).
+        Live mode:  saves to _live_position_state (restored in _reconcile_position).
+        """
+        if not self._position:
+            return
+        try:
+            db = get_supabase()
+            row = db.table("bot_configs").select("params").eq("name", "default").execute()
+            existing = (row.data[0].get("params") or {}) if row.data else {}
+            if self.mode == "paper":
+                existing["_paper_position"] = self._position
+            else:
+                existing["_live_position_state"] = {
+                    "bars_held":               self._position.get("bars_held", 0),
+                    "lgbm_strikes":            self._position.get("lgbm_strikes", 0),
+                    "be_sl_applied":           self._position.get("be_sl_applied", False),
+                    "sl_trailing_active":      self._position.get("sl_trailing_active", False),
+                    "high_water":              self._position.get("high_water"),
+                    "partial_done":            self._position.get("partial_done", False),
+                    "stop_loss":               self._position.get("stop_loss", 0.0),
+                    "take_profit":             self._position.get("take_profit", 0.0),
+                    "sl_original":             self._position.get("sl_original"),
+                    "size_usd":                self._position.get("size_usd"),
+                    "size_contracts":          self._position.get("size_contracts"),
+                    "entry_atr":               self._position.get("entry_atr"),
+                    "inference_id":            self._position.get("inference_id"),
+                    "hl_order_id":             self._position.get("hl_order_id"),
+                    "opened_at":               self._position.get("opened_at"),
+                    "partial_tp_price":        self._position.get("partial_tp_price"),
+                    "trailing_sl_activation_price": self._position.get("trailing_sl_activation_price"),
+                    "trailing_sl_dist":        self._position.get("trailing_sl_dist"),
+                    "trade_id":                self._position.get("trade_id"),
+                }
+            db.table("bot_configs").update({"params": existing}).eq("name", "default").execute()
+        except Exception as exc:
+            log.warning("Could not persist position state: %s", exc)
 
     async def get_status(self) -> dict:
         return {
@@ -680,17 +765,22 @@ class ExecutionEngine:
         price = snap["mark_price"]
         atr   = atr or price * 0.01  # fallback 1% ATR
 
-        _use_dynamic = self.config.dynamic_sl_tp_enabled and self.config.chronos_enabled
+        _use_dynamic   = self.config.dynamic_sl_tp_enabled and self.config.chronos_enabled
+        _p10_available = self.config.chronos_enabled and result.forecast_p10 > 0
+        # Pass c2 quantiles when EITHER adaptive SL/TP or P10 floor needs them
+        _needs_quantiles = _use_dynamic or (self.config.p10_sl_floor_enabled and _p10_available)
         params = self._risk.calculate_trade_params(
             side=result.action,
             entry_price=price,
             atr=atr,
             equity_usd=self._equity,
-            c2_p10=result.forecast_p10 if _use_dynamic else None,
-            c2_p90=result.forecast_p90 if _use_dynamic else None,
+            c2_p10=result.forecast_p10 if _needs_quantiles else None,
+            c2_p90=result.forecast_p90 if _needs_quantiles else None,
             c2_uncertainty=result.forecast_uncertainty if (_use_dynamic and result.forecast_uncertainty > 0) else None,
             dynamic_sl_tp_enabled=_use_dynamic,
             dynamic_sl_tp_blend=self.config.dynamic_sl_tp_blend,
+            recalibrated_uncertainty_thresholds=self.config.recalibrated_uncertainty_thresholds,
+            p10_sl_floor_enabled=self.config.p10_sl_floor_enabled and _p10_available,
         )
         # Round to 4 decimal places (HL BTC min size = 0.001)
         size = max(round(params.size_contracts, 4), 0.001)
@@ -1001,6 +1091,10 @@ class ExecutionEngine:
 
         if reason:
             await self._close_position(current_price, reason)
+        else:
+            # Position is still open — persist any in-flight state changes (trailing SL,
+            # partial_done, be_sl_applied, lgbm_strikes, bars_held, high_water, etc.)
+            self._persist_position_state()
 
     async def _close_position(self, exit_price: float, reason: str):
         if not self._position:
@@ -1069,9 +1163,20 @@ class ExecutionEngine:
 
         self._position = None
 
-        # Clear persisted paper position now that the trade is closed
+        # Clear persisted position state now that the trade is closed
         if self.mode == "paper":
             self._save_paper_position()
+        else:
+            # Live mode: clear saved in-flight state so a future restart doesn't
+            # re-apply stale state from the closed trade to a new position.
+            try:
+                db = get_supabase()
+                row = db.table("bot_configs").select("params").eq("name", "default").execute()
+                existing = (row.data[0].get("params") or {}) if row.data else {}
+                existing.pop("_live_position_state", None)
+                db.table("bot_configs").update({"params": existing}).eq("name", "default").execute()
+            except Exception as exc:
+                log.warning("Could not clear live position state: %s", exc)
 
     # ── Live order submission (Hyperliquid SDK) ───────────────────────────────
 

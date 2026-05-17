@@ -72,6 +72,7 @@ async def run_backtest(req) -> dict:
     dynamic_sl_tp_enabled               = getattr(cfg, "dynamic_sl_tp_enabled",               False)
     dynamic_sl_tp_blend                 = getattr(cfg, "dynamic_sl_tp_blend",                 0.50)
     recalibrated_uncertainty_thresholds = getattr(cfg, "recalibrated_uncertainty_thresholds", True)
+    p10_sl_floor_enabled                = getattr(cfg, "p10_sl_floor_enabled",                False)
 
     hl = HyperliquidData()
 
@@ -410,17 +411,21 @@ async def run_backtest(req) -> dict:
             if result.action != "no_trade":
                 close_price = float(row["close"])
                 _use_dynamic = dynamic_sl_tp_enabled and use_chronos
+                _p10_available = use_chronos
+                # Pass c2 quantiles when EITHER adaptive SL/TP or P10 floor needs them
+                _needs_quantiles = _use_dynamic or (p10_sl_floor_enabled and _p10_available)
                 params = risk.calculate_trade_params(
                     side=result.action,
                     entry_price=close_price,
                     atr=atr,
                     equity_usd=equity,
-                    c2_p10=c2_out.get("c2_p10") if _use_dynamic else None,
-                    c2_p90=c2_out.get("c2_p90") if _use_dynamic else None,
+                    c2_p10=c2_out.get("c2_p10") if _needs_quantiles else None,
+                    c2_p90=c2_out.get("c2_p90") if _needs_quantiles else None,
                     c2_uncertainty=c2_out.get("c2_uncertainty") if _use_dynamic else None,
                     dynamic_sl_tp_enabled=_use_dynamic,
                     dynamic_sl_tp_blend=dynamic_sl_tp_blend,
                     recalibrated_uncertainty_thresholds=recalibrated_uncertainty_thresholds,
+                    p10_sl_floor_enabled=p10_sl_floor_enabled and _p10_available,
                 )
                 fee_entry = params.size_usd * HL_TAKER_FEE
                 equity   -= fee_entry
