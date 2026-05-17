@@ -151,10 +151,11 @@ class DecisionEngine:
             if self.fvg_filter_enabled and fvg_bear == 1.0:
                 reasoning.append("FILTER: Bearish FVG detected overhead — skipping long entry")
                 return self._no_trade(reasoning, dir_prob, p10, p50, p90, features, c2_uncertainty)
-            # C2 directional confirmation: median forecast must be bullish
+            # C2 p50 note: logged for transparency but does NOT veto the trade.
+            # A hard p50 veto was found to cancel valid LGBM signals whenever Chronos
+            # was slightly off, costing ~8% performance versus Chronos-off in backtests.
             if p50 > 0 and p50 < current_price:
-                reasoning.append(f"FILTER: C2 median ({p50:.1f}) below entry — C2 bearish, skipping long")
-                return self._no_trade(reasoning, dir_prob, p10, p50, p90, features, c2_uncertainty)
+                reasoning.append(f"NOTE: C2 median ({p50:.1f}) below entry — minor bearish bias in forecast")
 
             reasoning.append(f"LONG: P(up)={ensemble_prob:.3f} > {effective_threshold:.2f}, C2_p50={p50:.1f}")
             return DecisionResult(
@@ -175,10 +176,9 @@ class DecisionEngine:
             if self.fvg_filter_enabled and fvg_bull == 1.0:
                 reasoning.append("FILTER: Bullish FVG detected below — skipping short entry")
                 return self._no_trade(reasoning, dir_prob, p10, p50, p90, features, c2_uncertainty)
-            # C2 directional confirmation: median forecast must be bearish
+            # C2 p50 note: same reasoning as above — logged but does not veto.
             if p50 > 0 and p50 > current_price:
-                reasoning.append(f"FILTER: C2 median ({p50:.1f}) above entry — C2 bullish, skipping short")
-                return self._no_trade(reasoning, dir_prob, p10, p50, p90, features, c2_uncertainty)
+                reasoning.append(f"NOTE: C2 median ({p50:.1f}) above entry — minor bullish bias in forecast")
 
             reasoning.append(f"SHORT: P(down)={short_prob:.3f} > {effective_threshold:.2f}, C2_p50={p50:.1f}")
             return DecisionResult(

@@ -24,6 +24,8 @@ interface BacktestTrade {
   exit: number;
   pnl_pct: number;
   pnl_usd: number;
+  fee_entry?: number;
+  funding_paid?: number;
   reason: string;
   holding_bars: number;
   bar: number;
@@ -202,26 +204,39 @@ const StatsGrid: React.FC<{ stats: BacktestStats; compare?: BacktestStats; label
   );
 };
 
+const PAGE_SIZE = 50;
+
 const TradeTable: React.FC<{ trades: BacktestTrade[]; showLevEquity?: boolean; initialCapital?: number }> = ({ trades, showLevEquity, initialCapital }) => {
+  const [page, setPage] = useState(0);
+
   const numColor = (v: number) => v > 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400';
   const eqColor  = (v: number) => {
     if (!initialCapital) return 'text-slate-600 dark:text-slate-300';
     return v >= initialCapital ? 'text-emerald-600 dark:text-emerald-400' : v <= 0 ? 'text-rose-600 dark:text-rose-400' : 'text-amber-500 dark:text-amber-400';
   };
   const reasonStyle: Record<string, string> = {
-    take_profit: 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-100 dark:border-emerald-500/20',
-    partial_tp:  'bg-teal-50 dark:bg-teal-500/10 text-teal-600 dark:text-teal-400 border-teal-100 dark:border-teal-500/20',
-    stop_loss:   'bg-rose-50 dark:bg-rose-500/10 text-rose-600 dark:text-rose-400 border-rose-100 dark:border-rose-500/20',
+    take_profit:   'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-100 dark:border-emerald-500/20',
+    partial_tp:    'bg-teal-50 dark:bg-teal-500/10 text-teal-600 dark:text-teal-400 border-teal-100 dark:border-teal-500/20',
+    stop_loss:     'bg-rose-50 dark:bg-rose-500/10 text-rose-600 dark:text-rose-400 border-rose-100 dark:border-rose-500/20',
     end_of_period: 'bg-slate-50 dark:bg-white/5 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-white/10',
+    lgbm_exit:     'bg-violet-50 dark:bg-violet-500/10 text-violet-600 dark:text-violet-400 border-violet-100 dark:border-violet-500/20',
+    max_hold:      'bg-amber-50 dark:bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-100 dark:border-amber-500/20',
   };
-  // Table is shown newest-first; build reversed list and insert liquidation sentinel after the bankrupt trade
+
+  // Newest-first
   const reversed = [...trades].reverse();
-  const colSpan = showLevEquity ? 9 : 8;
+  const totalPages = Math.ceil(reversed.length / PAGE_SIZE);
+  const pageSlice  = reversed.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+  const colSpan    = showLevEquity ? 11 : 10;
+
+  // Reset to page 0 when trades list changes (new backtest result)
+  React.useEffect(() => { setPage(0); }, [trades.length]);
 
   const rows: React.ReactNode[] = [];
-  reversed.forEach((t, i) => {
+  pageSlice.forEach((t, i) => {
+    const globalIdx = page * PAGE_SIZE + i;
     rows.push(
-      <tr key={`t-${i}`} className={`hover:bg-slate-50/50 dark:hover:bg-white/[0.02] transition-colors group ${t._bankrupt ? 'bg-rose-50/30 dark:bg-rose-500/5' : ''}`}>
+      <tr key={`t-${globalIdx}`} className={`hover:bg-slate-50/50 dark:hover:bg-white/[0.02] transition-colors group ${t._bankrupt ? 'bg-rose-50/30 dark:bg-rose-500/5' : ''}`}>
         <td className="px-4 py-2 text-slate-400 font-mono">{t.bar}</td>
         <td className="px-4 py-2">
           <span className={`px-2 py-0.5 rounded text-[10px] font-bold tracking-wider ${t.side === 'long' ? 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-100 dark:border-emerald-500/20' : 'bg-rose-50 dark:bg-rose-500/10 text-rose-600 dark:text-rose-400 border border-rose-100 dark:border-rose-500/20'}`}>
@@ -241,6 +256,12 @@ const TradeTable: React.FC<{ trades: BacktestTrade[]; showLevEquity?: boolean; i
             {t._levEq !== undefined ? `$${t._levEq.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : '—'}
           </td>
         )}
+        <td className="px-4 py-2 text-right font-mono text-slate-400 dark:text-slate-500">
+          {t.fee_entry !== undefined ? `$${t.fee_entry.toFixed(1)}` : '—'}
+        </td>
+        <td className={`px-4 py-2 text-right font-mono ${t.funding_paid !== undefined && t.funding_paid < 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-400 dark:text-slate-500'}`}>
+          {t.funding_paid !== undefined ? (t.funding_paid < 0 ? `+$${Math.abs(t.funding_paid).toFixed(1)}` : `$${t.funding_paid.toFixed(1)}`) : '—'}
+        </td>
         <td className="px-4 py-2">
           <span className={`px-2 py-0.5 rounded-lg text-[9px] font-bold uppercase tracking-wider border ${reasonStyle[t.reason] ?? 'bg-slate-50 dark:bg-white/5 text-slate-500 border-slate-200 dark:border-white/10'}`}>
             {t.reason.replace(/_/g, ' ')}
@@ -251,7 +272,7 @@ const TradeTable: React.FC<{ trades: BacktestTrade[]; showLevEquity?: boolean; i
     );
     if (t._bankrupt) {
       rows.push(
-        <tr key={`liq-${i}`} className="bg-rose-50 dark:bg-rose-500/10">
+        <tr key={`liq-${globalIdx}`} className="bg-rose-50 dark:bg-rose-500/10">
           <td colSpan={colSpan} className="px-4 py-2.5 text-center">
             <span className="inline-flex items-center gap-2 text-[10px] font-bold text-rose-600 dark:text-rose-400 uppercase tracking-widest">
               <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -266,25 +287,81 @@ const TradeTable: React.FC<{ trades: BacktestTrade[]; showLevEquity?: boolean; i
   });
 
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-[11px]">
-        <thead>
-          <tr className="border-b border-slate-100 dark:border-white/5 text-[10px] text-slate-400 dark:text-slate-500 font-bold uppercase tracking-widest bg-slate-50/50 dark:bg-white/[0.02]">
-            <th className="px-4 py-3 text-left">Bar</th>
-            <th className="px-4 py-3 text-left">Side</th>
-            <th className="px-4 py-3 text-right">Entry</th>
-            <th className="px-4 py-3 text-right">Exit</th>
-            <th className="px-4 py-3 text-right">PnL %</th>
-            <th className="px-4 py-3 text-right">PnL $</th>
-            {showLevEquity && <th className="px-4 py-3 text-right">Equity</th>}
-            <th className="px-4 py-3 text-left">Reason</th>
-            <th className="px-4 py-3 text-right">Hold</th>
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-slate-50 dark:divide-white/5">
-          {rows}
-        </tbody>
-      </table>
+    <div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-[11px]">
+          <thead>
+            <tr className="border-b border-slate-100 dark:border-white/5 text-[10px] text-slate-400 dark:text-slate-500 font-bold uppercase tracking-widest bg-slate-50/50 dark:bg-white/[0.02]">
+              <th className="px-4 py-3 text-left">Bar</th>
+              <th className="px-4 py-3 text-left">Side</th>
+              <th className="px-4 py-3 text-right">Entry</th>
+              <th className="px-4 py-3 text-right">Exit</th>
+              <th className="px-4 py-3 text-right">PnL %</th>
+              <th className="px-4 py-3 text-right">PnL $</th>
+              {showLevEquity && <th className="px-4 py-3 text-right">Equity</th>}
+              <th className="px-4 py-3 text-right">Fee Ent.</th>
+              <th className="px-4 py-3 text-right">Funding</th>
+              <th className="px-4 py-3 text-left">Reason</th>
+              <th className="px-4 py-3 text-right">Hold</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-50 dark:divide-white/5">
+            {rows}
+          </tbody>
+        </table>
+      </div>
+      {/* Pagination */}
+      {totalPages > 1 && (
+        <div className="flex items-center justify-between px-4 py-3 border-t border-slate-100 dark:border-white/5">
+          <span className="text-[10px] text-slate-400 dark:text-slate-500">
+            Pagina {page + 1} di {totalPages} &nbsp;·&nbsp; {reversed.length} trade totali
+          </span>
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => setPage(0)}
+              disabled={page === 0}
+              className="px-2 py-1 text-[10px] rounded border border-slate-200 dark:border-white/10 text-slate-500 dark:text-slate-400 disabled:opacity-30 hover:bg-slate-50 dark:hover:bg-white/5 transition-colors"
+            >«</button>
+            <button
+              onClick={() => setPage(p => Math.max(0, p - 1))}
+              disabled={page === 0}
+              className="px-2 py-1 text-[10px] rounded border border-slate-200 dark:border-white/10 text-slate-500 dark:text-slate-400 disabled:opacity-30 hover:bg-slate-50 dark:hover:bg-white/5 transition-colors"
+            >‹ Prec</button>
+            {/* Page number pills — show up to 5 around current */}
+            {Array.from({ length: totalPages }, (_, idx) => idx)
+              .filter(idx => idx === 0 || idx === totalPages - 1 || Math.abs(idx - page) <= 2)
+              .reduce<(number | 'gap')[]>((acc, idx, i, arr) => {
+                if (i > 0 && idx - (arr[i - 1] as number) > 1) acc.push('gap');
+                acc.push(idx);
+                return acc;
+              }, [])
+              .map((item, i) =>
+                item === 'gap'
+                  ? <span key={`gap-${i}`} className="px-1 text-[10px] text-slate-400">…</span>
+                  : <button
+                      key={item}
+                      onClick={() => setPage(item as number)}
+                      className={`px-2.5 py-1 text-[10px] rounded border transition-colors ${
+                        item === page
+                          ? 'border-violet-500 bg-violet-50 dark:bg-violet-500/10 text-violet-600 dark:text-violet-400 font-bold'
+                          : 'border-slate-200 dark:border-white/10 text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-white/5'
+                      }`}
+                    >{(item as number) + 1}</button>
+              )
+            }
+            <button
+              onClick={() => setPage(p => Math.min(totalPages - 1, p + 1))}
+              disabled={page === totalPages - 1}
+              className="px-2 py-1 text-[10px] rounded border border-slate-200 dark:border-white/10 text-slate-500 dark:text-slate-400 disabled:opacity-30 hover:bg-slate-50 dark:hover:bg-white/5 transition-colors"
+            >Succ ›</button>
+            <button
+              onClick={() => setPage(totalPages - 1)}
+              disabled={page === totalPages - 1}
+              className="px-2 py-1 text-[10px] rounded border border-slate-200 dark:border-white/10 text-slate-500 dark:text-slate-400 disabled:opacity-30 hover:bg-slate-50 dark:hover:bg-white/5 transition-colors"
+            >»</button>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
@@ -891,8 +968,11 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   const [useChronos,          setUseChronos]          = useState(false);
   const [c2UncertaintyGate,   setC2UncertaintyGate]   = useState(false);
   const [c2UncertaintyThresh, setC2UncertaintyThresh] = useState('0.05');
-  const [dynamicSlTp,         setDynamicSlTp]         = useState(false);
-  const [dynamicSlTpBlend,    setDynamicSlTpBlend]    = useState('0.50');
+  const [c2ContProbGate,      setC2ContProbGate]      = useState(false);
+  const [c2ContProbThresh,    setC2ContProbThresh]    = useState('0.10');
+  const [dynamicSlTp,              setDynamicSlTp]              = useState(false);
+  const [dynamicSlTpBlend,         setDynamicSlTpBlend]         = useState('0.50');
+  const [recalibratedUncertainty,  setRecalibratedUncertainty]  = useState(true);
   const [compareMode,         setCompareMode]         = useState(false);
 
   // ── Advanced settings drawer ─────────────────────────────────────────────────
@@ -949,8 +1029,11 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     if (p.chronos_weight                !== undefined) setAdvChronosWeight(String(p.chronos_weight));
     if (p.c2_uncertainty_gate_enabled   !== undefined) setC2UncertaintyGate(!!p.c2_uncertainty_gate_enabled);
     if (p.c2_uncertainty_threshold      !== undefined) setC2UncertaintyThresh(String(p.c2_uncertainty_threshold));
-    if (p.dynamic_sl_tp_enabled         !== undefined) setDynamicSlTp(!!p.dynamic_sl_tp_enabled);
-    if (p.dynamic_sl_tp_blend           !== undefined) setDynamicSlTpBlend(String(p.dynamic_sl_tp_blend));
+    if (p.c2_cont_prob_gate_enabled     !== undefined) setC2ContProbGate(!!p.c2_cont_prob_gate_enabled);
+    if (p.c2_cont_prob_threshold        !== undefined) setC2ContProbThresh(String(p.c2_cont_prob_threshold));
+    if (p.dynamic_sl_tp_enabled                   !== undefined) setDynamicSlTp(!!p.dynamic_sl_tp_enabled);
+    if (p.dynamic_sl_tp_blend                     !== undefined) setDynamicSlTpBlend(String(p.dynamic_sl_tp_blend));
+    if (p.recalibrated_uncertainty_thresholds     !== undefined) setRecalibratedUncertainty(!!p.recalibrated_uncertainty_thresholds);
     if (p.be_sl_enabled                 !== undefined) setAdvBeSL(!!p.be_sl_enabled);
     if (p.be_sl_activation      !== undefined) setAdvBeSLAct(String(p.be_sl_activation));
     if (p.max_hold_bars_enabled !== undefined) setAdvMaxHold(!!p.max_hold_bars_enabled);
@@ -1028,8 +1111,11 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     // Chronos-2 adaptive features
     c2_uncertainty_gate_enabled:   c2UncertaintyGate,
     c2_uncertainty_threshold:      parseFloat(c2UncertaintyThresh),
-    dynamic_sl_tp_enabled:         dynamicSlTp,
-    dynamic_sl_tp_blend:           parseFloat(dynamicSlTpBlend),
+    c2_cont_prob_gate_enabled:     c2ContProbGate,
+    c2_cont_prob_threshold:        parseFloat(c2ContProbThresh),
+    dynamic_sl_tp_enabled:                  dynamicSlTp,
+    dynamic_sl_tp_blend:                    parseFloat(dynamicSlTpBlend),
+    recalibrated_uncertainty_thresholds:    recalibratedUncertainty,
     // Advanced position management
     be_sl_enabled:                 advBeSL,
     be_sl_activation:              parseFloat(advBeSLAct),
@@ -1072,7 +1158,7 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   const advancedActive = trailingSL || partialTP;
   const drawerHasCustom = trailingSL || partialTP || lgbmExit || useChronos || advBeSL || advMaxHold
     || !advAdxEnabled || !advSweepEnabled || !advFvgEnabled || !advMtfEnabled
-    || c2UncertaintyGate;
+    || c2UncertaintyGate || c2ContProbGate;
 
   return (
     <div className="space-y-5">
@@ -1219,6 +1305,27 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                 </div>
               )}
 
+              {/* ── Calibrazione soglie uncertainty ── */}
+              {dynamicSlTp && (
+                <div className="flex items-center justify-between gap-3 pl-12 pr-1">
+                  <div>
+                    <p className="text-[11px] font-bold text-slate-600 dark:text-slate-300">Soglie uncertainty ricalibrate</p>
+                    <p className="text-[10px] text-slate-400 dark:text-slate-500 leading-tight mt-0.5">
+                      {recalibratedUncertainty
+                        ? 'Distribuzione reale BTC 4h — +20% attivo da 3%, −25% da 4.2%'
+                        : 'Soglie originali teoriche — +20% sotto 2%, −25% sopra 4%'}
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => setRecalibratedUncertainty(v => !v)}
+                    className={`relative flex-shrink-0 w-10 h-5 rounded-full transition-all duration-300 focus:outline-none ${recalibratedUncertainty ? 'bg-violet-600' : 'bg-slate-200 dark:bg-white/10'}`}
+                    title={recalibratedUncertainty ? 'Passa alle soglie originali' : 'Passa alle soglie ricalibrate'}
+                  >
+                    <span className={`absolute top-1 left-1 w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${recalibratedUncertainty ? 'translate-x-5' : ''}`} />
+                  </button>
+                </div>
+              )}
+
               {/* ── Warning: Chronos OFF con dynamic ON ── */}
               {dynamicSlTp && !useChronos && (
                 <div className="flex items-start gap-3 bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/30 rounded-xl px-4 py-3 animate-in fade-in slide-in-from-top-1">
@@ -1243,7 +1350,9 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                 {partialTP    && <span className="px-3 py-1 rounded-lg text-[9px] font-bold uppercase tracking-wider bg-indigo-50 dark:bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border border-indigo-100 dark:border-indigo-500/20">Partial TP {partialPct}%</span>}
                 {lgbmExit     && <span className="px-3 py-1 rounded-lg text-[9px] font-bold uppercase tracking-wider bg-purple-50 dark:bg-purple-500/10 text-purple-600 dark:text-purple-400 border border-purple-100 dark:border-purple-500/20">LGBM Exit</span>}
                 {useChronos          && <span className="px-3 py-1 rounded-lg text-[9px] font-bold uppercase tracking-wider bg-cyan-50 dark:bg-cyan-500/10 text-cyan-600 dark:text-cyan-400 border border-cyan-100 dark:border-cyan-500/20">Chronos-2 {Math.round(parseFloat(advChronosWeight)*100)}%</span>}
-                {c2UncertaintyGate   && <span className="px-3 py-1 rounded-lg text-[9px] font-bold uppercase tracking-wider bg-cyan-50 dark:bg-cyan-500/10 text-cyan-600 dark:text-cyan-400 border border-cyan-100 dark:border-cyan-500/20">C2 Gate &lt;{c2UncertaintyThresh}</span>}
+                {c2UncertaintyGate   && <span className="px-3 py-1 rounded-lg text-[9px] font-bold uppercase tracking-wider bg-cyan-50 dark:bg-cyan-500/10 text-cyan-600 dark:text-cyan-400 border border-cyan-100 dark:border-cyan-500/20">C2 Uncertainty &lt;{c2UncertaintyThresh}</span>}
+                {dynamicSlTp && !recalibratedUncertainty && <span className="px-3 py-1 rounded-lg text-[9px] font-bold uppercase tracking-wider bg-orange-50 dark:bg-orange-500/10 text-orange-600 dark:text-orange-400 border border-orange-100 dark:border-orange-500/20">Soglie Originali</span>}
+                {c2ContProbGate      && <span className="px-3 py-1 rounded-lg text-[9px] font-bold uppercase tracking-wider bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-100 dark:border-emerald-500/20">C2 Cont &gt;{c2ContProbThresh}</span>}
                 {advBeSL             && <span className="px-3 py-1 rounded-lg text-[9px] font-bold uppercase tracking-wider bg-amber-50 dark:bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-100 dark:border-amber-500/20">BE SL</span>}
                 {advMaxHold          && <span className="px-3 py-1 rounded-lg text-[9px] font-bold uppercase tracking-wider bg-slate-50 dark:bg-white/10 text-slate-600 dark:text-slate-400 border border-slate-200 dark:border-white/20">Max {advMaxHoldBars}b</span>}
               </div>
@@ -1604,6 +1713,41 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                           onChange={setC2UncertaintyThresh}
                           step="0.005" min="0.01" max="0.15"
                           unit="(p90−p10)/p50"
+                        />
+                      </Tooltip>
+                    </div>
+                  )}
+                </div>
+
+                {/* ── Continuation Gate ── */}
+                <div className="space-y-3 pt-5 border-t border-slate-100 dark:border-white/5">
+                  <Tooltip text="Blocca il trade quando le bande quantile di Chronos non concordano sulla direzione. cont_prob misura quante delle 21 bande si muovono tutte nello stesso verso (0 = caos totale, 1 = accordo perfetto)." pos="top" width="wide">
+                    <Toggle
+                      label="Continuation Gate"
+                      desc="No-trade se le bande di Chronos non sono coerenti direzionalmente (cont_prob basso)"
+                      checked={c2ContProbGate}
+                      onChange={setC2ContProbGate}
+                    />
+                  </Tooltip>
+                  {c2ContProbGate && !useChronos && (
+                    <div className="flex items-start gap-2.5 bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/30 rounded-xl px-3.5 py-2.5">
+                      <svg className="w-3.5 h-3.5 text-amber-500 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+                      </svg>
+                      <p className="text-[10px] font-bold text-amber-600 dark:text-amber-400 leading-snug uppercase tracking-wide">
+                        Richiede Chronos-2 — il gate sarà ignorato senza Chronos attivo
+                      </p>
+                    </div>
+                  )}
+                  {c2ContProbGate && (
+                    <div className="pl-12">
+                      <Tooltip text="Soglia minima di coerenza direzionale. 0.10 = almeno il 60% delle bande concordano. 0.30 = circa il 65% concordano. Valori alti filtrano più aggressivamente." pos="top" width="wide">
+                        <NumInput
+                          label="Min coerenza direzionale"
+                          value={c2ContProbThresh}
+                          onChange={setC2ContProbThresh}
+                          step="0.05" min="0.05" max="0.80"
+                          unit="cont_prob"
                         />
                       </Tooltip>
                     </div>

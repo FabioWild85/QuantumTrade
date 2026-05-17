@@ -68,8 +68,9 @@ async def run_backtest(req) -> dict:
     c2_uncertainty_threshold    = getattr(cfg, "c2_uncertainty_threshold",    0.05)
     c2_cont_prob_gate_enabled   = getattr(cfg, "c2_cont_prob_gate_enabled",   False)
     c2_cont_prob_threshold      = getattr(cfg, "c2_cont_prob_threshold",      0.25)
-    dynamic_sl_tp_enabled       = getattr(cfg, "dynamic_sl_tp_enabled",       False)
-    dynamic_sl_tp_blend         = getattr(cfg, "dynamic_sl_tp_blend",         0.50)
+    dynamic_sl_tp_enabled               = getattr(cfg, "dynamic_sl_tp_enabled",               False)
+    dynamic_sl_tp_blend                 = getattr(cfg, "dynamic_sl_tp_blend",                 0.50)
+    recalibrated_uncertainty_thresholds = getattr(cfg, "recalibrated_uncertainty_thresholds", True)
 
     hl = HyperliquidData()
 
@@ -169,8 +170,17 @@ async def run_backtest(req) -> dict:
         if position and i % FUNDING_INTERVAL_BARS == 0 and funding_col:
             fund_val = df_feat.iloc[i].get("funding")
             if fund_val is not None and pd.notna(fund_val):
-                funding_cost = position["size_usd"] * abs(float(fund_val))
-                equity -= funding_cost
+                # Positive funding rate → longs pay shorts; negative → shorts pay longs.
+                # funding_impact > 0 means this position pays; < 0 means it receives.
+                rate  = float(fund_val)
+                sign  = 1.0 if position["side"] == "long" else -1.0
+                funding_impact = position["size_usd"] * rate * sign
+                if funding_impact > 0:
+                    equity -= funding_impact
+                    position["funding_paid"] = position.get("funding_paid", 0.0) + funding_impact
+                else:
+                    equity += abs(funding_impact)
+                    position["funding_paid"] = position.get("funding_paid", 0.0) + funding_impact  # negative = received
 
         # ── Manage existing position ──────────────────────────────────────────
         if position:
@@ -230,12 +240,19 @@ async def run_backtest(req) -> dict:
                     pnl_usd_p = partial_size * pnl_pct_p / 100
                     fee_p     = partial_size * HL_TAKER_FEE
                     equity   += pnl_usd_p - fee_p
+                    # Assign all entry fee + funding accrued so far to this first close leg
+                    entry_fee_used   = position.get("fee_entry", 0.0)
+                    funding_used     = position.get("funding_paid", 0.0)
+                    position["fee_entry"]    = 0.0  # consumed — don't double-count on final close
+                    position["funding_paid"] = 0.0  # reset after assignment
                     position["size_usd"]   *= (1.0 - partial_frac)
                     position["partial_done"] = True
                     trades.append({
                         "side": side, "entry": entry, "exit": partial_exit_price,
                         "pnl_pct": round(pnl_pct_p, 4),
-                        "pnl_usd": round(pnl_usd_p - fee_p, 2),
+                        "pnl_usd": round(pnl_usd_p - fee_p - entry_fee_used - funding_used, 2),
+                        "fee_entry": round(entry_fee_used, 2),
+                        "funding_paid": round(funding_used, 2),
                         "reason": "partial_tp", "holding_bars": i - position["bar_idx"], "bar": i,
                     })
                     equity_curve.append({"bar": i, "equity": round(equity, 2)})
@@ -259,10 +276,14 @@ async def run_backtest(req) -> dict:
                     pnl_usd_e  = position["size_usd"] * pnl_pct_e / 100
                     fee_e      = position["size_usd"] * HL_TAKER_FEE
                     equity    += pnl_usd_e - fee_e
+                    entry_fee_used = position.get("fee_entry", 0.0)
+                    funding_used   = position.get("funding_paid", 0.0)
                     trades.append({
                         "side": side, "entry": entry, "exit": close_price,
                         "pnl_pct":     round(pnl_pct_e, 4),
-                        "pnl_usd":     round(pnl_usd_e - fee_e, 2),
+                        "pnl_usd":     round(pnl_usd_e - fee_e - entry_fee_used - funding_used, 2),
+                        "fee_entry":   round(entry_fee_used, 2),
+                        "funding_paid": round(funding_used, 2),
                         "reason":      "lgbm_exit",
                         "holding_bars": bars_held,
                         "bar":         i,
@@ -278,10 +299,14 @@ async def run_backtest(req) -> dict:
                 pnl_usd_m  = position["size_usd"] * pnl_pct_m / 100
                 fee_m      = position["size_usd"] * HL_TAKER_FEE
                 equity    += pnl_usd_m - fee_m
+                entry_fee_used = position.get("fee_entry", 0.0)
+                funding_used   = position.get("funding_paid", 0.0)
                 trades.append({
                     "side": side, "entry": entry, "exit": close_price,
                     "pnl_pct":     round(pnl_pct_m, 4),
-                    "pnl_usd":     round(pnl_usd_m - fee_m, 2),
+                    "pnl_usd":     round(pnl_usd_m - fee_m - entry_fee_used - funding_used, 2),
+                    "fee_entry":   round(entry_fee_used, 2),
+                    "funding_paid": round(funding_used, 2),
                     "reason":      "max_hold",
                     "holding_bars": bars_held,
                     "bar":         i,
@@ -311,12 +336,16 @@ async def run_backtest(req) -> dict:
                              else (entry - exit_price) / entry * 100
                 pnl_usd    = position["size_usd"] * pnl_pct / 100
                 fee_exit   = position["size_usd"] * HL_TAKER_FEE
+                entry_fee_used = position.get("fee_entry", 0.0)
+                funding_used   = position.get("funding_paid", 0.0)
 
                 equity += pnl_usd - fee_exit
                 trades.append({
                     "side": side, "entry": entry, "exit": exit_price,
                     "pnl_pct":    round(pnl_pct, 4),
-                    "pnl_usd":    round(pnl_usd - fee_exit, 2),
+                    "pnl_usd":    round(pnl_usd - fee_exit - entry_fee_used - funding_used, 2),
+                    "fee_entry":  round(entry_fee_used, 2),
+                    "funding_paid": round(funding_used, 2),
                     "reason":     reason,
                     "holding_bars": i - position["bar_idx"],
                     "bar":        i,
@@ -384,6 +413,7 @@ async def run_backtest(req) -> dict:
                     c2_uncertainty=c2_out.get("c2_uncertainty") if _use_dynamic else None,
                     dynamic_sl_tp_enabled=_use_dynamic,
                     dynamic_sl_tp_blend=dynamic_sl_tp_blend,
+                    recalibrated_uncertainty_thresholds=recalibrated_uncertainty_thresholds,
                 )
                 fee_entry = params.size_usd * HL_TAKER_FEE
                 equity   -= fee_entry
@@ -400,6 +430,8 @@ async def run_backtest(req) -> dict:
                     "high_water":        close_price,
                     "be_sl_applied":     False,
                     "lgbm_strikes":      0,
+                    "fee_entry":         fee_entry,   # tracked for accurate trade record
+                    "funding_paid":      0.0,          # accumulated funding costs
                 }
 
     # ── 6. Close any open position at last price ──────────────────────────────
@@ -410,11 +442,18 @@ async def run_backtest(req) -> dict:
             (last_price - position["entry"]) / position["entry"] * 100 if side == "long"
             else (position["entry"] - last_price) / position["entry"] * 100
         )
-        pnl_usd = position["size_usd"] * pnl_pct / 100 - position["size_usd"] * HL_TAKER_FEE
-        equity += pnl_usd
+        fee_last       = position["size_usd"] * HL_TAKER_FEE
+        entry_fee_used = position.get("fee_entry", 0.0)
+        funding_used   = position.get("funding_paid", 0.0)
+        gross_pnl      = position["size_usd"] * pnl_pct / 100
+        pnl_usd        = gross_pnl - fee_last
+        equity        += pnl_usd
         trades.append({
             "side": side, "entry": position["entry"], "exit": last_price,
-            "pnl_pct": round(pnl_pct, 4), "pnl_usd": round(pnl_usd, 2),
+            "pnl_pct": round(pnl_pct, 4),
+            "pnl_usd": round(gross_pnl - fee_last - entry_fee_used - funding_used, 2),
+            "fee_entry": round(entry_fee_used, 2),
+            "funding_paid": round(funding_used, 2),
             "reason": "end_of_period", "holding_bars": len(df_feat) - position["bar_idx"],
             "bar": len(df_feat) - 1,
         })
@@ -434,7 +473,7 @@ async def run_backtest(req) -> dict:
         "final_equity":    round(equity, 2),
         "total_bars":      len(df_feat),
         "stats":           stats,
-        "trades":          trades[-50:],
+        "trades":          trades,
         "equity_curve":    equity_curve,
     }
     clean = _sanitize(result)

@@ -76,6 +76,7 @@ class RiskManager:
         c2_uncertainty: Optional[float] = None,
         dynamic_sl_tp_enabled: bool = False,
         dynamic_sl_tp_blend: float = 0.50,
+        recalibrated_uncertainty_thresholds: bool = True,
     ) -> TradeParams:
         atr_sl_dist = self.sl_atr_mult * atr
         atr_tp_dist = self.tp_atr_mult * atr
@@ -100,17 +101,32 @@ class RiskManager:
             sl_dist = atr_sl_dist
             tp_dist = atr_tp_dist
 
-        # Uncertainty-based size scaling (only when real Chronos data is present)
+        # Uncertainty-based size scaling (only when real Chronos data is present).
+        # Two calibrations selectable at runtime:
+        #   recalibrated=True  → thresholds fitted on real BTC 4h data (2.5%–4.6% range)
+        #   recalibrated=False → original theoretical thresholds (for comparison / backtest)
         size_mult = 1.0
         if dynamic_sl_tp_enabled and c2_uncertainty is not None and c2_uncertainty > 0:
-            if c2_uncertainty < 0.02:
-                size_mult = 1.20   # tight band → high confidence
-            elif c2_uncertainty < 0.04:
-                size_mult = 1.00
-            elif c2_uncertainty < 0.06:
-                size_mult = 0.75
+            if recalibrated_uncertainty_thresholds:
+                # Calibrated on observed distribution — all four buckets reachable
+                if c2_uncertainty < 0.030:
+                    size_mult = 1.20
+                elif c2_uncertainty < 0.042:
+                    size_mult = 1.00
+                elif c2_uncertainty < 0.055:
+                    size_mult = 0.75
+                else:
+                    size_mult = 0.50
             else:
-                size_mult = 0.50   # wide band → high uncertainty
+                # Original theoretical thresholds (kept for backtest comparison)
+                if c2_uncertainty < 0.02:
+                    size_mult = 1.20
+                elif c2_uncertainty < 0.04:
+                    size_mult = 1.00
+                elif c2_uncertainty < 0.06:
+                    size_mult = 0.75
+                else:
+                    size_mult = 0.50
 
         if side == "long":
             stop_loss   = entry_price - sl_dist
