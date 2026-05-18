@@ -190,15 +190,15 @@ const StatsGrid: React.FC<{ stats: BacktestStats; compare?: BacktestStats; label
         {tipStat('Trades',        <Stat label="Trades"       value={String(s.total_trades)} delta={delta(s.total_trades, c?.total_trades)} />)}
         {tipStat('Win Rate',      <Stat label="Win Rate"     value={`${s.win_rate}%`} color={s.win_rate >= 50 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'} delta={delta(s.win_rate, c?.win_rate)} />)}
         {tipStat('PnL %',         <Stat label="PnL %"        value={`${s.total_pnl_pct > 0 ? '+' : ''}${s.total_pnl_pct}%`} color={pnlColor(s.total_pnl_pct)} delta={delta(s.total_pnl_pct, c?.total_pnl_pct)} />)}
-        {tipStat('Profit Factor', <Stat label="Profit Factor" value={s.profit_factor >= 99 ? '∞' : s.profit_factor.toFixed(2)} color={s.profit_factor >= 1.5 ? 'text-emerald-600 dark:text-emerald-400' : s.profit_factor >= 1 ? 'text-amber-500' : 'text-rose-600 dark:text-rose-400'} delta={delta(s.profit_factor, c?.profit_factor)} />)}
-        {tipStat('Sharpe',        <Stat label="Sharpe"       value={s.sharpe.toFixed(3)} color={s.sharpe >= 0.7 ? 'text-emerald-600 dark:text-emerald-400' : s.sharpe >= 0 ? 'text-amber-500' : 'text-rose-600 dark:text-rose-400'} delta={delta(s.sharpe, c?.sharpe)} />)}
-        {tipStat('Sortino',       <Stat label="Sortino"      value={s.sortino.toFixed(3)} color={s.sortino >= 1 ? 'text-emerald-600 dark:text-emerald-400' : s.sortino >= 0 ? 'text-amber-500' : 'text-rose-600 dark:text-rose-400'} delta={delta(s.sortino, c?.sortino)} />)}
-        {tipStat('Calmar',        <Stat label="Calmar"       value={s.calmar.toFixed(3)} color={s.calmar >= 0.5 ? 'text-emerald-600 dark:text-emerald-400' : s.calmar >= 0 ? 'text-amber-500' : 'text-rose-600 dark:text-rose-400'} delta={delta(s.calmar, c?.calmar)} />)}
-        {tipStat('Max DD',        <Stat label="Max DD"       value={`-${s.max_drawdown_pct}%`} color="text-rose-600 dark:text-rose-400" delta={c ? -(s.max_drawdown_pct - c.max_drawdown_pct) : undefined} />)}
-        {tipStat('Avg Win',       <Stat label="Avg Win"      value={`+${s.avg_win_pct}%`} color="text-emerald-600 dark:text-emerald-400" delta={delta(s.avg_win_pct, c?.avg_win_pct)} />)}
-        {tipStat('Avg Loss',      <Stat label="Avg Loss"     value={`${s.avg_loss_pct}%`} color="text-rose-600 dark:text-rose-400" delta={delta(s.avg_loss_pct, c?.avg_loss_pct)} />)}
-        {tipStat('Best',          <Stat label="Best"         value={`+${s.best_trade_pct}%`} color="text-emerald-600 dark:text-emerald-400" delta={delta(s.best_trade_pct, c?.best_trade_pct)} />)}
-        {tipStat('Avg Hold',       <Stat label="Avg Hold"     value={`${s.avg_holding_h.toFixed(1)}h`} delta={delta(s.avg_holding_h, c?.avg_holding_h)} />)}
+        {tipStat('Profit Factor', <Stat label="Profit Factor" value={(s.profit_factor ?? 0) >= 99 ? '∞' : (s.profit_factor ?? 0).toFixed(2)} color={(s.profit_factor ?? 0) >= 1.5 ? 'text-emerald-600 dark:text-emerald-400' : (s.profit_factor ?? 0) >= 1 ? 'text-amber-500' : 'text-rose-600 dark:text-rose-400'} delta={delta(s.profit_factor, c?.profit_factor)} />)}
+        {tipStat('Sharpe',        <Stat label="Sharpe"       value={(s.sharpe ?? 0).toFixed(3)} color={(s.sharpe ?? 0) >= 0.7 ? 'text-emerald-600 dark:text-emerald-400' : (s.sharpe ?? 0) >= 0 ? 'text-amber-500' : 'text-rose-600 dark:text-rose-400'} delta={delta(s.sharpe, c?.sharpe)} />)}
+        {tipStat('Sortino',       <Stat label="Sortino"      value={(s.sortino ?? 0).toFixed(3)} color={(s.sortino ?? 0) >= 1 ? 'text-emerald-600 dark:text-emerald-400' : (s.sortino ?? 0) >= 0 ? 'text-amber-500' : 'text-rose-600 dark:text-rose-400'} delta={delta(s.sortino, c?.sortino)} />)}
+        {tipStat('Calmar',        <Stat label="Calmar"       value={(s.calmar ?? 0).toFixed(3)} color={(s.calmar ?? 0) >= 0.5 ? 'text-emerald-600 dark:text-emerald-400' : (s.calmar ?? 0) >= 0 ? 'text-amber-500' : 'text-rose-600 dark:text-rose-400'} delta={delta(s.calmar, c?.calmar)} />)}
+        {tipStat('Max DD',        <Stat label="Max DD"       value={`-${s.max_drawdown_pct ?? 0}%`} color="text-rose-600 dark:text-rose-400" delta={c ? -((s.max_drawdown_pct ?? 0) - (c.max_drawdown_pct ?? 0)) : undefined} />)}
+        {tipStat('Avg Win',       <Stat label="Avg Win"      value={`+${s.avg_win_pct ?? 0}%`} color="text-emerald-600 dark:text-emerald-400" delta={delta(s.avg_win_pct, c?.avg_win_pct)} />)}
+        {tipStat('Avg Loss',      <Stat label="Avg Loss"     value={`${s.avg_loss_pct ?? 0}%`} color="text-rose-600 dark:text-rose-400" delta={delta(s.avg_loss_pct, c?.avg_loss_pct)} />)}
+        {tipStat('Best',          <Stat label="Best"         value={`+${s.best_trade_pct ?? 0}%`} color="text-emerald-600 dark:text-emerald-400" delta={delta(s.best_trade_pct, c?.best_trade_pct)} />)}
+        {tipStat('Avg Hold',       <Stat label="Avg Hold"     value={`${(s.avg_holding_h ?? 0).toFixed(1)}h`} delta={delta(s.avg_holding_h, c?.avg_holding_h)} />)}
       </div>
     </div>
   );
@@ -659,7 +659,7 @@ const HistoryResultCard: React.FC<{ result: BacktestResult; config?: Record<stri
         <div className="bg-white dark:bg-[#151E32] rounded-2xl p-5 border border-slate-100 dark:border-white/5 shadow-sm">
           <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest block mb-2">PnL Netto</span>
           <p className={`font-bold text-lg tracking-tighter ${disp.stats.total_pnl_usd >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>
-            {disp.stats.total_pnl_usd >= 0 ? '+' : ''}${disp.stats.total_pnl_usd.toFixed(2)} <span className="text-[10px] font-bold ml-1">({disp.stats.total_pnl_pct > 0 ? '+' : ''}{disp.stats.total_pnl_pct}%)</span>
+            {(disp.stats.total_pnl_usd ?? 0) >= 0 ? '+' : ''}${(disp.stats.total_pnl_usd ?? 0).toFixed(2)} <span className="text-[10px] font-bold ml-1">({disp.stats.total_pnl_pct > 0 ? '+' : ''}{disp.stats.total_pnl_pct}%)</span>
           </p>
         </div>
       </div>
@@ -942,6 +942,295 @@ const NumInput: React.FC<{
   </label>
 );
 
+// ── Regime period data ────────────────────────────────────────────────────────
+type RegimeKey = 'uptrend' | 'downtrend' | 'sideways' | 'flat';
+
+interface RegimePeriodEntry {
+  id: string;
+  shortLabel: string;
+  fullLabel: string;
+  from: string;
+  to: string;
+  change: string;
+  duration: string;
+  range: string;
+  isRef?: boolean;
+}
+
+const REGIME_META: Record<RegimeKey, {
+  label: string; icon: string;
+  dot: string; bg: string; border: string; text: string;
+  dropBg: string; hoverBg: string; activeBg: string; activeBorder: string;
+}> = {
+  uptrend: {
+    label: 'Bull Market', icon: '↗',
+    dot: 'bg-emerald-500', bg: 'bg-emerald-50 dark:bg-emerald-500/10',
+    border: 'border-emerald-200 dark:border-emerald-500/30',
+    text: 'text-emerald-700 dark:text-emerald-400',
+    dropBg: 'bg-white dark:bg-[#151E32]',
+    hoverBg: 'hover:bg-emerald-50 dark:hover:bg-emerald-500/10',
+    activeBg: 'bg-emerald-50 dark:bg-emerald-500/10',
+    activeBorder: 'border-emerald-400 dark:border-emerald-500',
+  },
+  downtrend: {
+    label: 'Bear Market', icon: '↘',
+    dot: 'bg-rose-500', bg: 'bg-rose-50 dark:bg-rose-500/10',
+    border: 'border-rose-200 dark:border-rose-500/30',
+    text: 'text-rose-700 dark:text-rose-400',
+    dropBg: 'bg-white dark:bg-[#151E32]',
+    hoverBg: 'hover:bg-rose-50 dark:hover:bg-rose-500/10',
+    activeBg: 'bg-rose-50 dark:bg-rose-500/10',
+    activeBorder: 'border-rose-400 dark:border-rose-500',
+  },
+  sideways: {
+    label: 'Sideways', icon: '↔',
+    dot: 'bg-amber-500', bg: 'bg-amber-50 dark:bg-amber-500/10',
+    border: 'border-amber-200 dark:border-amber-500/30',
+    text: 'text-amber-700 dark:text-amber-400',
+    dropBg: 'bg-white dark:bg-[#151E32]',
+    hoverBg: 'hover:bg-amber-50 dark:hover:bg-amber-500/10',
+    activeBg: 'bg-amber-50 dark:bg-amber-500/10',
+    activeBorder: 'border-amber-400 dark:border-amber-500',
+  },
+  flat: {
+    label: 'Flat / Low Vol', icon: '—',
+    dot: 'bg-slate-400', bg: 'bg-slate-50 dark:bg-white/5',
+    border: 'border-slate-200 dark:border-white/15',
+    text: 'text-slate-600 dark:text-slate-400',
+    dropBg: 'bg-white dark:bg-[#151E32]',
+    hoverBg: 'hover:bg-slate-50 dark:hover:bg-white/5',
+    activeBg: 'bg-slate-50 dark:bg-white/5',
+    activeBorder: 'border-slate-400 dark:border-slate-500',
+  },
+};
+
+const REGIME_PERIODS: Record<RegimeKey, RegimePeriodEntry[]> = {
+  uptrend: [
+    { id: 'U1', shortLabel: 'U1 · Gen→Apr 2021', fullLabel: '1 Gen – 13 Apr 2021', from: '2021-01-01', to: '2021-04-13', change: '+121%', duration: '3.5 mesi', range: '$29k → $64k', isRef: false },
+    { id: 'U2', shortLabel: 'U2 · Lug→Nov 2021', fullLabel: '20 Lug – 10 Nov 2021', from: '2021-07-20', to: '2021-11-10', change: '+130%', duration: '3.7 mesi', range: '$30k → $69k', isRef: true },
+    { id: 'U3', shortLabel: 'U3 · Gen→Feb 2023', fullLabel: '1 Gen – 16 Feb 2023', from: '2023-01-01', to: '2023-02-16', change: '+52%', duration: '6 settimane', range: '$16.5k → $25k', isRef: false },
+    { id: 'U4', shortLabel: 'U4 · Set→Dic 2023', fullLabel: '11 Set – 8 Dic 2023', from: '2023-09-11', to: '2023-12-08', change: '+76%', duration: '3 mesi', range: '$25k → $44k', isRef: false },
+    { id: 'U5', shortLabel: 'U5 · Gen→Mar 2024', fullLabel: '3 Gen – 14 Mar 2024', from: '2024-01-03', to: '2024-03-14', change: '+74%', duration: '2.5 mesi', range: '$42k → $73k', isRef: false },
+    { id: 'U6', shortLabel: 'U6 · Ott→Nov 2024', fullLabel: '1 Ott – 22 Nov 2024', from: '2024-10-01', to: '2024-11-22', change: '+57%', duration: '7.5 settimane', range: '$63k → $99k', isRef: false },
+    { id: 'U7', shortLabel: 'U7 · Apr→Mag 2025', fullLabel: '7 Apr – 21 Mag 2025', from: '2025-04-07', to: '2025-05-21', change: '+51%', duration: '6.5 settimane', range: '$74k → $112k', isRef: false },
+    { id: 'U8', shortLabel: 'U8 · Lug→Ago 2025', fullLabel: '1 Lug – 10 Ago 2025', from: '2025-07-01', to: '2025-08-10', change: '+18%', duration: '5.5 settimane', range: '$105k → $124k', isRef: false },
+  ],
+  downtrend: [
+    { id: 'D1', shortLabel: 'D1 · Apr→Giu 2021', fullLabel: '13 Apr – 22 Giu 2021', from: '2021-04-13', to: '2021-06-22', change: '-56%', duration: '2.3 mesi', range: '$64k → $28k', isRef: true },
+    { id: 'D2', shortLabel: 'D2 · Nov 2021→Gen 2022', fullLabel: '10 Nov 2021 – 22 Gen 2022', from: '2021-11-10', to: '2022-01-22', change: '-52%', duration: '2.5 mesi', range: '$69k → $33k', isRef: false },
+    { id: 'D3', shortLabel: 'D3 · Apr→Giu 2022 ⚠', fullLabel: '5 Apr – 18 Giu 2022', from: '2022-04-05', to: '2022-06-18', change: '-62%', duration: '2.5 mesi', range: '$46k → $17.6k', isRef: false },
+    { id: 'D4', shortLabel: 'D4 · Nov 2022 ⚠', fullLabel: '3 – 22 Nov 2022', from: '2022-11-03', to: '2022-11-22', change: '-26%', duration: '3 settimane', range: '$21k → $15.5k', isRef: false },
+    { id: 'D5', shortLabel: 'D5 · Ago→Set 2023', fullLabel: '15 Ago – 11 Set 2023', from: '2023-08-15', to: '2023-09-11', change: '-19%', duration: '4 settimane', range: '$31k → $25k', isRef: false },
+    { id: 'D6', shortLabel: 'D6 · Giu→Ago 2024 ⚠', fullLabel: '5 Giu – 5 Ago 2024', from: '2024-06-05', to: '2024-08-05', change: '-32%', duration: '9 settimane', range: '$72k → $49k', isRef: false },
+    { id: 'D7', shortLabel: 'D7 · Feb→Apr 2025', fullLabel: '1 Feb – 7 Apr 2025', from: '2025-02-01', to: '2025-04-07', change: '-28%', duration: '9 settimane', range: '$103k → $74k', isRef: false },
+    { id: 'D8', shortLabel: 'D8 · Nov 2025', fullLabel: '1 – 28 Nov 2025', from: '2025-11-01', to: '2025-11-28', change: '-27%', duration: '4 settimane', range: '$110k → $80k', isRef: false },
+    { id: 'D9', shortLabel: 'D9 · Gen→Feb 2026', fullLabel: '15 Gen – 7 Feb 2026', from: '2026-01-15', to: '2026-02-07', change: '-38%', duration: '3.5 settimane', range: '$97k → $60k', isRef: false },
+  ],
+  sideways: [
+    { id: 'S1', shortLabel: 'S1 · Giu→Lug 2021', fullLabel: '22 Giu – 20 Lug 2021', from: '2021-06-22', to: '2021-07-20', change: '±24%', duration: '4 settimane', range: '$29k – $36k', isRef: false },
+    { id: 'S2', shortLabel: 'S2 · Set→Ott 2021', fullLabel: '7 Set – 4 Ott 2021', from: '2021-09-07', to: '2021-10-04', change: '±24%', duration: '4 settimane', range: '$42k – $52k', isRef: false },
+    { id: 'S3', shortLabel: 'S3 · Feb→Apr 2022', fullLabel: '16 Feb – 4 Apr 2022', from: '2022-02-16', to: '2022-04-04', change: '±21%', duration: '7 settimane', range: '$37k – $45k', isRef: false },
+    { id: 'S4', shortLabel: 'S4 · Lug→Ago 2022', fullLabel: '26 Lug – 17 Ago 2022', from: '2022-07-26', to: '2022-08-17', change: '±14%', duration: '3 settimane', range: '$22k – $25k', isRef: false },
+    { id: 'S5', shortLabel: 'S5 · Ott→Nov 2022', fullLabel: '1 Ott – 3 Nov 2022', from: '2022-10-01', to: '2022-11-03', change: '±13%', duration: '5 settimane', range: '$18.5k – $21k', isRef: false },
+    { id: 'S6', shortLabel: 'S6 · Mar→Giu 2023', fullLabel: '1 Mar – 15 Giu 2023', from: '2023-03-01', to: '2023-06-15', change: '±24%', duration: '3.5 mesi', range: '$25k – $31k', isRef: true },
+    { id: 'S7', shortLabel: 'S7 · Set 2024', fullLabel: '1 – 30 Set 2024', from: '2024-09-01', to: '2024-09-30', change: '±26%', duration: '4 settimane', range: '$53k – $67k', isRef: false },
+    { id: 'S8', shortLabel: 'S8 · Dic 2024', fullLabel: '1 – 31 Dic 2024', from: '2024-12-01', to: '2024-12-31', change: '±20%', duration: '4 settimane', range: '$91k – $109k', isRef: false },
+    { id: 'S9', shortLabel: 'S9 · Feb→Apr 2025', fullLabel: '15 Feb – 6 Apr 2025', from: '2025-02-15', to: '2025-04-06', change: '±25%', duration: '7 settimane', range: '$76k – $95k', isRef: false },
+    { id: 'S10', shortLabel: 'S10 · Giu 2025', fullLabel: '1 – 30 Giu 2025', from: '2025-06-01', to: '2025-06-30', change: '±13%', duration: '4 settimane', range: '$98k – $111k', isRef: false },
+    { id: 'S11', shortLabel: 'S11 · Dic 2025', fullLabel: '1 – 31 Dic 2025', from: '2025-12-01', to: '2025-12-31', change: '±13%', duration: '4 settimane', range: '$84k – $95k', isRef: false },
+    { id: 'S12', shortLabel: 'S12 · Mar→Apr 2026', fullLabel: '1 Mar – 6 Apr 2026', from: '2026-03-01', to: '2026-04-06', change: '±17%', duration: '5 settimane', range: '$65k – $76k', isRef: false },
+  ],
+  flat: [
+    { id: 'F1', shortLabel: 'F1 · Dic 2022→Gen 2023', fullLabel: '1 Dic 2022 – 12 Gen 2023', from: '2022-12-01', to: '2023-01-12', change: '±8%', duration: '6 settimane', range: '$16k – $17.2k', isRef: true },
+    { id: 'F2', shortLabel: 'F2 · Set→Ott 2023', fullLabel: '15 Set – 14 Ott 2023', from: '2023-09-15', to: '2023-10-14', change: '±10%', duration: '4 settimane', range: '$25k – $27.5k', isRef: false },
+    { id: 'F3', shortLabel: 'F3 · Apr 2024', fullLabel: '15 – 30 Apr 2024', from: '2024-04-15', to: '2024-04-30', change: '±8%', duration: '2.5 settimane', range: '$60k – $65k', isRef: false },
+    { id: 'F4', shortLabel: 'F4 · Giu→Lug 2024', fullLabel: '10 Giu – 5 Lug 2024', from: '2024-06-10', to: '2024-07-05', change: '±13%', duration: '3.5 settimane', range: '$60k – $68k', isRef: false },
+    { id: 'F5', shortLabel: 'F5 · Mag 2026', fullLabel: '1 – 17 Mag 2026', from: '2026-05-01', to: '2026-05-17', change: '±8.5%', duration: '~2.5 settimane', range: '$76k – $83k', isRef: false },
+  ],
+};
+
+// ── Preset types ──────────────────────────────────────────────────────────────
+interface Preset {
+  id: number;
+  name: string;
+  params: Record<string, any>;
+  created_at: string;
+  updated_at: string;
+}
+
+// ── SavePresetModal ────────────────────────────────────────────────────────────
+interface SavePresetModalProps {
+  mode: 'save' | 'rename';
+  preset?: Preset;
+  params: Record<string, any>;
+  apiBase: string;
+  onClose: () => void;
+  onSaved: () => void;
+}
+
+const SavePresetModal: React.FC<SavePresetModalProps> = ({ mode, preset, params, apiBase, onClose, onSaved }) => {
+  const [name, setName] = useState(mode === 'rename' ? (preset?.name ?? '') : '');
+  const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [error, setError] = useState('');
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => { inputRef.current?.focus(); }, []);
+
+  const handleSave = async () => {
+    const trimmed = name.trim();
+    if (!trimmed) { setError('Il nome è obbligatorio.'); return; }
+    setSaving(true);
+    setError('');
+    try {
+      if (mode === 'save') {
+        const res = await fetch(`${apiBase}/presets`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: trimmed, params }),
+        });
+        if (!res.ok) throw new Error(await res.text());
+      } else {
+        const res = await fetch(`${apiBase}/presets/${preset!.id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: trimmed }),
+        });
+        if (!res.ok) throw new Error(await res.text());
+      }
+      onSaved();
+      onClose();
+    } catch (e: any) {
+      setError(e.message || 'Errore nel salvataggio.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!preset) return;
+    setDeleting(true);
+    try {
+      await fetch(`${apiBase}/presets/${preset.id}`, { method: 'DELETE' });
+      onSaved();
+      onClose();
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  const paramKeys = Object.keys(params).slice(0, 8);
+
+  return (
+    <div className="fixed inset-0 z-[200] flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative w-full max-w-sm bg-white dark:bg-[#141c2b] rounded-2xl shadow-2xl shadow-black/40 border border-slate-100 dark:border-white/10 overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100 dark:border-white/8">
+          <div className="flex items-center gap-2.5">
+            <div className="w-7 h-7 rounded-xl bg-indigo-500/15 flex items-center justify-center">
+              <svg className="w-3.5 h-3.5 text-indigo-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" />
+              </svg>
+            </div>
+            <h3 className="text-sm font-bold text-slate-900 dark:text-white">
+              {mode === 'save' ? 'Salva Preset' : 'Rinomina Preset'}
+            </h3>
+          </div>
+          <button onClick={onClose} className="w-7 h-7 flex items-center justify-center rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-white/8 transition-colors">
+            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" /></svg>
+          </button>
+        </div>
+
+        <div className="px-5 py-4 space-y-4">
+          {/* Name input */}
+          <div>
+            <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest mb-1.5">Nome preset</label>
+            <input
+              ref={inputRef}
+              type="text"
+              value={name}
+              onChange={e => { setName(e.target.value); setError(''); }}
+              onKeyDown={e => { if (e.key === 'Enter') handleSave(); if (e.key === 'Escape') onClose(); }}
+              placeholder="es. Trend Aggressivo, Bear Conservative…"
+              maxLength={80}
+              className="w-full px-3 py-2.5 rounded-xl border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-white/[0.04] text-sm text-slate-900 dark:text-white placeholder-slate-300 dark:placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500/40 focus:border-indigo-400 dark:focus:border-indigo-500 transition-all"
+            />
+            {error && <p className="mt-1.5 text-[10px] font-medium text-rose-500">{error}</p>}
+          </div>
+
+          {/* Param summary (save mode only) */}
+          {mode === 'save' && (
+            <div className="rounded-xl border border-slate-100 dark:border-white/[0.06] bg-slate-50/50 dark:bg-white/[0.02] px-3.5 py-3">
+              <p className="text-[9px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-2">Parametri inclusi</p>
+              <div className="grid grid-cols-2 gap-x-4 gap-y-1">
+                {paramKeys.map(k => (
+                  <div key={k} className="flex items-center justify-between gap-2">
+                    <span className="text-[10px] text-slate-400 dark:text-slate-500 truncate">{k.replace(/_/g, ' ')}</span>
+                    <span className="text-[10px] font-mono font-bold text-slate-600 dark:text-slate-400 flex-shrink-0">{String(params[k])}</span>
+                  </div>
+                ))}
+                {Object.keys(params).length > 8 && (
+                  <p className="col-span-2 text-[9px] text-slate-400 dark:text-slate-500 mt-1">+{Object.keys(params).length - 8} altri parametri</p>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Delete confirm (rename mode) */}
+          {mode === 'rename' && preset && (
+            confirmDelete ? (
+              <div className="rounded-xl border border-rose-200 dark:border-rose-500/25 bg-rose-50/50 dark:bg-rose-500/[0.05] px-3.5 py-3 space-y-2.5">
+                <p className="text-[11px] font-semibold text-rose-700 dark:text-rose-400">Eliminare «{preset.name}»? L'azione è irreversibile.</p>
+                <div className="flex gap-2">
+                  <button
+                    onClick={handleDelete}
+                    disabled={deleting}
+                    className="flex-1 py-1.5 rounded-lg bg-rose-500 hover:bg-rose-600 text-white text-[11px] font-bold transition-colors disabled:opacity-50"
+                  >
+                    {deleting ? 'Eliminando…' : 'Sì, elimina'}
+                  </button>
+                  <button onClick={() => setConfirmDelete(false)} className="flex-1 py-1.5 rounded-lg bg-slate-100 dark:bg-white/8 text-slate-600 dark:text-slate-400 text-[11px] font-bold transition-colors hover:bg-slate-200 dark:hover:bg-white/12">
+                    Annulla
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <button
+                onClick={() => setConfirmDelete(true)}
+                className="w-full flex items-center justify-center gap-2 py-2 rounded-xl border border-rose-200 dark:border-rose-500/20 text-rose-500 dark:text-rose-400 text-[11px] font-bold hover:bg-rose-50 dark:hover:bg-rose-500/10 transition-colors"
+              >
+                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                Elimina preset
+              </button>
+            )
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="flex gap-2.5 px-5 py-4 border-t border-slate-100 dark:border-white/8 bg-slate-50/50 dark:bg-white/[0.01]">
+          <button
+            onClick={onClose}
+            className="flex-1 py-2 rounded-xl border border-slate-200 dark:border-white/10 text-sm font-bold text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-white/8 transition-colors"
+          >
+            Annulla
+          </button>
+          <button
+            onClick={handleSave}
+            disabled={saving || !name.trim()}
+            className="flex-1 py-2 rounded-xl bg-indigo-500 hover:bg-indigo-600 text-white text-sm font-bold transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+          >
+            {saving ? (
+              <><svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" /></svg>Salvando…</>
+            ) : mode === 'save' ? 'Salva Preset' : 'Rinomina'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 // ── Main component ─────────────────────────────────────────────────────────────
 export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   const today        = new Date().toISOString().slice(0, 10);
@@ -978,6 +1267,22 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   const [recalibratedUncertainty,  setRecalibratedUncertainty]  = useState(true);
   const [p10SlFloor,               setP10SlFloor]               = useState(false);
   const [compareMode,         setCompareMode]         = useState(false);
+
+  // ── Regime quick-selector ────────────────────────────────────────────────────
+  const [selectedRegime,  setSelectedRegime]  = useState<RegimeKey | ''>('');
+  const [selectedPeriod,  setSelectedPeriod]  = useState('');
+  const [regimeDropOpen,  setRegimeDropOpen]  = useState(false);
+  const [periodDropOpen,  setPeriodDropOpen]  = useState(false);
+  const regimeRef  = useRef<HTMLDivElement>(null);
+  const periodRef  = useRef<HTMLDivElement>(null);
+  // ── Presets ──────────────────────────────────────────────────────────────────
+  const [presets,         setPresets]         = useState<Preset[]>([]);
+  const [activePreset,    setActivePreset]    = useState<Preset | null>(null);
+  const [presetDropOpen,  setPresetDropOpen]  = useState(false);
+  const [showSaveModal,   setShowSaveModal]   = useState(false);
+  const [saveModalMode,   setSaveModalMode]   = useState<'save' | 'rename'>('save');
+  const [saveModalPreset, setSaveModalPreset] = useState<Preset | undefined>(undefined);
+  const presetDropRef = useRef<HTMLDivElement>(null);
 
   // ── Advanced settings drawer ─────────────────────────────────────────────────
   const [isDrawerOpen,  setIsDrawerOpen]  = useState(false);
@@ -1052,6 +1357,72 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
       .then(applyConfig)
       .catch(() => {/* silent — use defaults */});
   }, [apiBase, applyConfig]);
+
+  // Close dropdowns on outside click
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (regimeRef.current && !regimeRef.current.contains(e.target as Node)) setRegimeDropOpen(false);
+      if (periodRef.current && !periodRef.current.contains(e.target as Node)) setPeriodDropOpen(false);
+      if (presetDropRef.current && !presetDropRef.current.contains(e.target as Node)) setPresetDropOpen(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, []);
+
+  // Fetch presets on mount
+  useEffect(() => {
+    fetch(`${apiBase}/presets`)
+      .then(r => r.json())
+      .then(setPresets)
+      .catch(() => {});
+  }, [apiBase]);
+
+  const handleRegimeSelect = (regime: RegimeKey) => {
+    setSelectedRegime(regime);
+    setSelectedPeriod('');
+    setRegimeDropOpen(false);
+  };
+
+  const handlePeriodSelect = (periodId: string) => {
+    if (!selectedRegime) return;
+    const p = REGIME_PERIODS[selectedRegime].find(x => x.id === periodId);
+    if (!p) return;
+    setSelectedPeriod(periodId);
+    setFromDate(p.from);
+    setToDate(p.to);
+    setPeriodDropOpen(false);
+  };
+
+  const clearRegimeSelection = () => {
+    setSelectedRegime('');
+    setSelectedPeriod('');
+  };
+
+  const handleLoadPreset = (preset: Preset) => {
+    applyConfig(preset.params);
+    if (preset.params.chronos_enabled !== undefined) setUseChronos(!!preset.params.chronos_enabled);
+    setActivePreset(preset);
+    setPresetDropOpen(false);
+  };
+
+  const fetchPresets = useCallback(() => {
+    fetch(`${apiBase}/presets`)
+      .then(r => r.json())
+      .then(setPresets)
+      .catch(() => {});
+  }, [apiBase]);
+
+  const openSaveModal = () => {
+    setSaveModalMode('save');
+    setSaveModalPreset(undefined);
+    setShowSaveModal(true);
+  };
+
+  const openRenameModal = (preset: Preset) => {
+    setSaveModalMode('rename');
+    setSaveModalPreset(preset);
+    setShowSaveModal(true);
+  };
 
   const loadFromLive = async () => {
     setDrawerLoading(true);
@@ -1169,6 +1540,7 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     || c2UncertaintyGate || c2ContProbGate;
 
   return (
+    <>
     <div className="space-y-5">
       {/* ── Toast notification ─────────────────────────────────────────────── */}
       {toast && (
@@ -1240,6 +1612,93 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
               </h2>
             </div>
 
+            {/* ── Presets bar ── */}
+            <div className="flex items-center gap-2.5">
+              {/* Preset dropdown */}
+              <div className="relative flex-1 min-w-0" ref={presetDropRef}>
+                <button
+                  type="button"
+                  disabled={presets.length === 0}
+                  onClick={() => setPresetDropOpen(o => !o)}
+                  className={`w-full flex items-center gap-2 px-3 py-2 rounded-xl border text-sm transition-all text-left ${
+                    activePreset
+                      ? 'bg-indigo-50 dark:bg-indigo-500/10 border-indigo-200 dark:border-indigo-500/30 text-indigo-700 dark:text-indigo-400'
+                      : presets.length === 0
+                        ? 'bg-slate-50/50 dark:bg-white/[0.02] border-slate-100 dark:border-white/5 text-slate-300 dark:text-slate-600 cursor-not-allowed'
+                        : 'bg-slate-50 dark:bg-white/5 border-slate-200 dark:border-white/10 text-slate-400 dark:text-slate-500 hover:border-indigo-300 dark:hover:border-indigo-500/40'
+                  }`}
+                >
+                  <svg className="w-3.5 h-3.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" />
+                  </svg>
+                  <span className="truncate text-xs font-semibold flex-1">
+                    {activePreset ? activePreset.name : presets.length === 0 ? 'Nessun preset salvato' : 'Carica preset…'}
+                  </span>
+                  {activePreset && (
+                    <button
+                      type="button"
+                      onClick={e => { e.stopPropagation(); openRenameModal(activePreset); }}
+                      className="flex-shrink-0 w-5 h-5 flex items-center justify-center rounded-md text-indigo-400 hover:text-indigo-700 dark:hover:text-indigo-200 hover:bg-indigo-100 dark:hover:bg-indigo-500/20 transition-colors"
+                    >
+                      <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" /></svg>
+                    </button>
+                  )}
+                  {presets.length > 0 && (
+                    <svg className={`w-3 h-3 flex-shrink-0 transition-transform duration-200 ${presetDropOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 9l-7 7-7-7" /></svg>
+                  )}
+                </button>
+
+                {presetDropOpen && presets.length > 0 && (
+                  <div className="absolute z-50 top-full left-0 mt-1.5 w-full min-w-[260px] bg-white dark:bg-[#1a2436] border border-slate-100 dark:border-white/10 rounded-2xl shadow-xl shadow-slate-900/10 dark:shadow-black/30 overflow-hidden animate-in fade-in slide-in-from-top-1 duration-150">
+                    <div className="px-4 py-2 border-b border-slate-50 dark:border-white/[0.06] bg-slate-50/50 dark:bg-white/[0.02]">
+                      <span className="text-[9px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest">I tuoi preset</span>
+                    </div>
+                    <div className="max-h-56 overflow-y-auto">
+                      {presets.map(p => (
+                        <button
+                          key={p.id}
+                          type="button"
+                          onClick={() => handleLoadPreset(p)}
+                          className={`w-full flex items-center gap-3 px-4 py-3 text-left border-b border-slate-50 dark:border-white/[0.04] last:border-0 transition-colors ${
+                            activePreset?.id === p.id
+                              ? 'bg-indigo-50 dark:bg-indigo-500/10 text-indigo-700 dark:text-indigo-400'
+                              : 'text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-white/[0.04]'
+                          }`}
+                        >
+                          <svg className="w-3 h-3 flex-shrink-0 opacity-60" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" />
+                          </svg>
+                          <span className="flex-1 text-xs font-semibold truncate">{p.name}</span>
+                          {activePreset?.id === p.id && (
+                            <svg className="w-3.5 h-3.5 flex-shrink-0 text-indigo-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" /></svg>
+                          )}
+                          <button
+                            type="button"
+                            onClick={e => { e.stopPropagation(); openRenameModal(p); }}
+                            className="flex-shrink-0 w-5 h-5 flex items-center justify-center rounded-md text-slate-300 dark:text-slate-600 hover:text-slate-600 dark:hover:text-slate-300 hover:bg-slate-100 dark:hover:bg-white/8 transition-colors"
+                          >
+                            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" /></svg>
+                          </button>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Save button */}
+              <button
+                type="button"
+                onClick={openSaveModal}
+                className="flex-shrink-0 flex items-center gap-1.5 px-3 py-2 rounded-xl border border-indigo-200 dark:border-indigo-500/30 bg-indigo-50 dark:bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 text-xs font-bold hover:bg-indigo-100 dark:hover:bg-indigo-500/20 transition-colors whitespace-nowrap"
+              >
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4" />
+                </svg>
+                Salva preset
+              </button>
+            </div>
+
             {/* Base params */}
             <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
               {([
@@ -1264,6 +1723,188 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                   </Tooltip>
                 </div>
               ))}
+            </div>
+
+            {/* ── Regime / Period Quick Selector ───────────────────────────────── */}
+            <div className="pt-1">
+              {/* Section header */}
+              <div className="flex items-center gap-3 mb-3">
+                <div className="flex items-center gap-2">
+                  <span className="w-1 h-3 bg-indigo-400/60 rounded-full" />
+                  <span className="text-[9px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest">Selezione Rapida Periodo Storico</span>
+                </div>
+                {selectedRegime && (
+                  <button
+                    onClick={clearRegimeSelection}
+                    className="ml-auto flex items-center gap-1.5 text-[9px] font-bold text-slate-400 dark:text-slate-500 hover:text-rose-500 dark:hover:text-rose-400 transition-colors uppercase tracking-widest"
+                  >
+                    <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" /></svg>
+                    Reset
+                  </button>
+                )}
+              </div>
+
+              <div className="flex gap-3 items-start">
+                {/* ── Regime dropdown ── */}
+                <div className="relative flex-shrink-0 w-52" ref={regimeRef}>
+                  <span className="block text-[9px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-1.5 ml-1">Regime</span>
+                  <button
+                    type="button"
+                    onClick={() => { setRegimeDropOpen(o => !o); setPeriodDropOpen(false); }}
+                    className={`w-full flex items-center gap-2.5 px-3.5 py-2.5 rounded-xl border text-sm font-bold transition-all text-left ${
+                      selectedRegime
+                        ? `${REGIME_META[selectedRegime].bg} ${REGIME_META[selectedRegime].border} ${REGIME_META[selectedRegime].text}`
+                        : 'bg-slate-50 dark:bg-white/5 border-slate-200 dark:border-white/10 text-slate-400 dark:text-slate-500 hover:border-indigo-300 dark:hover:border-indigo-500/40'
+                    }`}
+                  >
+                    {selectedRegime ? (
+                      <>
+                        <span className={`w-2 h-2 rounded-full flex-shrink-0 ${REGIME_META[selectedRegime].dot}`} />
+                        <span className="truncate text-xs">{REGIME_META[selectedRegime].icon} {REGIME_META[selectedRegime].label}</span>
+                      </>
+                    ) : (
+                      <>
+                        <span className="w-2 h-2 rounded-full flex-shrink-0 bg-slate-200 dark:bg-white/10" />
+                        <span className="text-xs">Seleziona regime…</span>
+                      </>
+                    )}
+                    <svg className={`w-3.5 h-3.5 ml-auto flex-shrink-0 transition-transform duration-200 ${regimeDropOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 9l-7 7-7-7" /></svg>
+                  </button>
+
+                  {regimeDropOpen && (
+                    <div className="absolute z-50 top-full left-0 mt-1.5 w-full bg-white dark:bg-[#1a2436] border border-slate-100 dark:border-white/10 rounded-2xl shadow-xl shadow-slate-900/10 dark:shadow-black/30 overflow-hidden animate-in fade-in slide-in-from-top-1 duration-150">
+                      {(Object.keys(REGIME_META) as RegimeKey[]).map(key => {
+                        const m = REGIME_META[key];
+                        return (
+                          <button
+                            key={key}
+                            type="button"
+                            onClick={() => handleRegimeSelect(key)}
+                            className={`w-full flex items-center gap-3 px-4 py-3 text-left transition-colors ${
+                              selectedRegime === key ? `${m.activeBg} ${m.text}` : `text-slate-700 dark:text-slate-300 ${m.hoverBg}`
+                            }`}
+                          >
+                            <span className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${m.dot}`} />
+                            <div>
+                              <p className="text-xs font-bold leading-tight">{m.icon} {m.label}</p>
+                              <p className="text-[9px] font-medium text-slate-400 dark:text-slate-500 mt-0.5">{REGIME_PERIODS[key].length} periodi storici</p>
+                            </div>
+                            {selectedRegime === key && (
+                              <svg className="w-3.5 h-3.5 ml-auto text-current" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" /></svg>
+                            )}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+
+                {/* ── Period dropdown ── */}
+                <div className="relative w-60 flex-shrink-0" ref={periodRef}>
+                  <span className="block text-[9px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-1.5 ml-1">Periodo</span>
+                  <button
+                    type="button"
+                    disabled={!selectedRegime}
+                    onClick={() => { setPeriodDropOpen(o => !o); setRegimeDropOpen(false); }}
+                    className={`w-full flex items-center gap-2.5 px-3.5 py-2.5 rounded-xl border text-sm font-bold transition-all text-left ${
+                      !selectedRegime
+                        ? 'bg-slate-50/50 dark:bg-white/[0.02] border-slate-100 dark:border-white/5 text-slate-300 dark:text-slate-600 cursor-not-allowed'
+                        : selectedPeriod
+                          ? `${REGIME_META[selectedRegime].bg} ${REGIME_META[selectedRegime].border} ${REGIME_META[selectedRegime].text}`
+                          : 'bg-slate-50 dark:bg-white/5 border-slate-200 dark:border-white/10 text-slate-400 dark:text-slate-500 hover:border-indigo-300 dark:hover:border-indigo-500/40'
+                    }`}
+                  >
+                    {selectedRegime && selectedPeriod ? (() => {
+                      const p = REGIME_PERIODS[selectedRegime].find(x => x.id === selectedPeriod)!;
+                      return (
+                        <>
+                          <span className={`w-2 h-2 rounded-full flex-shrink-0 ${REGIME_META[selectedRegime].dot}`} />
+                          <span className="text-xs font-bold truncate">{p.id} — {p.fullLabel}</span>
+                          <span className={`ml-auto flex-shrink-0 text-[10px] font-bold font-mono px-2 py-0.5 rounded-lg ${
+                            p.change.startsWith('+') ? 'bg-emerald-100 dark:bg-emerald-500/15 text-emerald-700 dark:text-emerald-400' :
+                            p.change.startsWith('-') ? 'bg-rose-100 dark:bg-rose-500/15 text-rose-700 dark:text-rose-400' :
+                            'bg-amber-100 dark:bg-amber-500/15 text-amber-700 dark:text-amber-400'
+                          }`}>{p.change}</span>
+                        </>
+                      );
+                    })() : (
+                      <span className="text-xs">{!selectedRegime ? 'Prima seleziona un regime' : 'Seleziona un periodo…'}</span>
+                    )}
+                    {selectedRegime && (
+                      <svg className={`w-3.5 h-3.5 flex-shrink-0 transition-transform duration-200 ${selectedPeriod ? '' : 'ml-auto'} ${periodDropOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 9l-7 7-7-7" /></svg>
+                    )}
+                  </button>
+
+                  {periodDropOpen && selectedRegime && (
+                    <div className="absolute z-50 top-full left-0 mt-1.5 w-full min-w-[420px] bg-white dark:bg-[#1a2436] border border-slate-100 dark:border-white/10 rounded-2xl shadow-xl shadow-slate-900/10 dark:shadow-black/30 overflow-hidden animate-in fade-in slide-in-from-top-1 duration-150">
+                      {/* Header */}
+                      <div className={`px-4 py-2.5 border-b ${REGIME_META[selectedRegime].bg} ${REGIME_META[selectedRegime].border}`}>
+                        <span className={`text-[9px] font-bold uppercase tracking-widest ${REGIME_META[selectedRegime].text}`}>
+                          {REGIME_META[selectedRegime].icon} {REGIME_META[selectedRegime].label} — {REGIME_PERIODS[selectedRegime].length} campioni storici
+                        </span>
+                      </div>
+                      <div className="max-h-64 overflow-y-auto">
+                        {REGIME_PERIODS[selectedRegime].map(p => (
+                          <button
+                            key={p.id}
+                            type="button"
+                            onClick={() => handlePeriodSelect(p.id)}
+                            className={`w-full flex items-center gap-4 px-4 py-3 text-left border-b border-slate-50 dark:border-white/[0.04] last:border-0 transition-colors ${
+                              selectedPeriod === p.id
+                                ? `${REGIME_META[selectedRegime].activeBg}`
+                                : `${REGIME_META[selectedRegime].hoverBg}`
+                            }`}
+                          >
+                            {/* ID badge */}
+                            <span className={`flex-shrink-0 w-9 text-center text-[10px] font-bold font-mono px-1.5 py-1 rounded-lg border ${
+                              p.isRef
+                                ? `${REGIME_META[selectedRegime].bg} ${REGIME_META[selectedRegime].border} ${REGIME_META[selectedRegime].text}`
+                                : 'bg-slate-50 dark:bg-white/5 border-slate-100 dark:border-white/10 text-slate-500 dark:text-slate-400'
+                            }`}>{p.id}</span>
+                            {/* Period info */}
+                            <div className="flex-1 min-w-0">
+                              <p className="text-xs font-bold text-slate-800 dark:text-slate-200 truncate">{p.fullLabel}</p>
+                              <p className="text-[10px] text-slate-400 dark:text-slate-500 font-medium mt-0.5">{p.duration} · {p.range}</p>
+                            </div>
+                            {/* Change badge */}
+                            <span className={`flex-shrink-0 text-[10px] font-bold font-mono px-2 py-1 rounded-lg ${
+                              p.change.startsWith('+') ? 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-400' :
+                              p.change.startsWith('-') ? 'bg-rose-50 dark:bg-rose-500/10 text-rose-700 dark:text-rose-400' :
+                              'bg-amber-50 dark:bg-amber-500/10 text-amber-700 dark:text-amber-400'
+                            }`}>{p.change}</span>
+                            {/* Ref star */}
+                            {p.isRef && (
+                              <span className="flex-shrink-0 text-[9px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider">Ref</span>
+                            )}
+                            {/* Selected check */}
+                            {selectedPeriod === p.id && (
+                              <svg className={`w-3.5 h-3.5 flex-shrink-0 ${REGIME_META[selectedRegime].text}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" /></svg>
+                            )}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+              </div>
+
+              {/* Selected period info strip */}
+              {selectedRegime && selectedPeriod && (() => {
+                const p = REGIME_PERIODS[selectedRegime].find(x => x.id === selectedPeriod)!;
+                const m = REGIME_META[selectedRegime];
+                return (
+                  <div className={`mt-3 flex items-center gap-3 px-4 py-2.5 rounded-xl border ${m.bg} ${m.border}`}>
+                    <svg className={`w-3.5 h-3.5 flex-shrink-0 ${m.text}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg>
+                    <span className={`text-[10px] font-bold ${m.text}`}>
+                      Date impostate: <span className="font-mono">{p.from}</span> → <span className="font-mono">{p.to}</span>
+                      <span className="mx-2 opacity-40">·</span>
+                      {p.duration} · {p.range} · {p.change}
+                      {p.isRef && <span className="ml-2 opacity-60">(campione di riferimento)</span>}
+                    </span>
+                  </div>
+                );
+              })()}
             </div>
 
             {/* ── Adaptive SL/TP toggle (inline, context-aware) ── */}
@@ -1479,7 +2120,7 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                   <div>
                     <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest block mb-1.5">PnL Totale</span>
                     <p className={`font-bold text-xl tracking-tighter ${disp.stats.total_pnl_usd >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>
-                      {disp.stats.total_pnl_usd >= 0 ? '+' : ''}${disp.stats.total_pnl_usd.toFixed(2)} <span className="text-[10px] font-bold ml-1 opacity-70">({disp.stats.total_pnl_pct > 0 ? '+' : ''}{disp.stats.total_pnl_pct}%)</span>
+                      {(disp.stats.total_pnl_usd ?? 0) >= 0 ? '+' : ''}${(disp.stats.total_pnl_usd ?? 0).toFixed(2)} <span className="text-[10px] font-bold ml-1 opacity-70">({disp.stats.total_pnl_pct > 0 ? '+' : ''}{disp.stats.total_pnl_pct}%)</span>
                     </p>
                   </div>
                   {advancedActive && (
@@ -1837,5 +2478,34 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
         </>
       )}
     </div>
+
+    {/* Save/Rename Preset Modal */}
+    {showSaveModal && (
+      <SavePresetModal
+        mode={saveModalMode}
+        preset={saveModalPreset}
+        params={{ ...buildConfig(true), chronos_enabled: useChronos }}
+        apiBase={apiBase}
+        onClose={() => setShowSaveModal(false)}
+        onSaved={() => {
+          if (saveModalMode === 'rename' && saveModalPreset) {
+            fetch(`${apiBase}/presets`)
+              .then(r => r.json())
+              .then((ps: Preset[]) => {
+                setPresets(ps);
+                const updated = ps.find(p => p.id === saveModalPreset!.id);
+                if (activePreset?.id === saveModalPreset!.id) {
+                  // The active preset was renamed or deleted — update or clear it
+                  setActivePreset(updated ?? null);
+                }
+              })
+              .catch(() => fetchPresets());
+          } else {
+            fetchPresets();
+          }
+        }}
+      />
+    )}
+    </>
   );
 };

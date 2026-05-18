@@ -610,6 +610,156 @@ async def get_events(limit: int = 100, since: Optional[str] = None):
     return result.data
 
 
+# ─── Regime Detection ────────────────────────────────────────────────────────
+
+@app.get("/regime/current")
+async def regime_current():
+    """Return the latest regime detection signal."""
+    if not engine:
+        raise HTTPException(503, "Engine not initialized")
+
+    signal = engine._regime_signal
+
+    regime_data = None
+    if signal is not None:
+        regime_data = {
+            "regime":          signal.regime,
+            "confidence":      signal.confidence,
+            "adx":             signal.adx,
+            "atr_percentile":  signal.atr_percentile,
+            "trend_slope_pct": signal.trend_slope_pct,
+            "bb_width_pct":    signal.bb_width_pct,
+            "bars_in_regime":  signal.bars_in_regime,
+            "transition_risk": signal.transition_risk,
+            "reasoning":       signal.reasoning,
+        }
+
+    return {
+        "regime_signal": regime_data,
+    }
+
+
+@app.get("/regime/history")
+async def regime_history(limit: int = 48):
+    """
+    Return recent regime snapshots from the regime_log table.
+    Returns [] if the table does not exist yet (DDL not yet applied).
+
+    SQL to create the table in Supabase:
+    CREATE TABLE regime_log (
+        id              BIGSERIAL PRIMARY KEY,
+        detected_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+        regime          TEXT NOT NULL,
+        confidence      FLOAT,
+        adx             FLOAT,
+        atr_pct         FLOAT,
+        slope_pct       FLOAT,
+        bars_in_regime  INT,
+        transition_risk FLOAT,
+        profile_applied TEXT
+    );
+    CREATE INDEX ON regime_log (detected_at DESC);
+    """
+    try:
+        db = get_supabase()
+        result = (
+            db.table("regime_log")
+            .select("*")
+            .order("detected_at", desc=True)
+            .limit(min(limit, 200))
+            .execute()
+        )
+        return result.data or []
+    except Exception as exc:
+        log.debug("regime_history: table may not exist yet: %s", exc)
+        return []
+
+
+# ── Config Presets ────────────────────────────────────────────────────────────
+
+class PresetCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=80)
+    params: dict
+
+class PresetUpdate(BaseModel):
+    name: str | None = Field(None, min_length=1, max_length=80)
+    params: dict | None = None
+
+
+@app.get("/presets")
+async def list_presets():
+    """Return all saved config presets ordered by name."""
+    try:
+        db = get_supabase()
+        result = (
+            db.table("config_presets")
+            .select("id, name, params, created_at, updated_at")
+            .order("name")
+            .execute()
+        )
+        return result.data or []
+    except Exception as exc:
+        log.warning("list_presets failed: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/presets", status_code=201)
+async def create_preset(body: PresetCreate):
+    """Create a new named preset with the provided params dict."""
+    try:
+        db = get_supabase()
+        result = (
+            db.table("config_presets")
+            .insert({"name": body.name, "params": body.params})
+            .execute()
+        )
+        if not result.data:
+            raise HTTPException(status_code=500, detail="Insert returned no data")
+        return result.data[0]
+    except HTTPException:
+        raise
+    except Exception as exc:
+        log.warning("create_preset failed: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.put("/presets/{preset_id}")
+async def update_preset(preset_id: int, body: PresetUpdate):
+    """Rename and/or update the params of an existing preset."""
+    update_data: dict = {"updated_at": datetime.now(timezone.utc).isoformat()}
+    if body.name   is not None: update_data["name"]   = body.name
+    if body.params is not None: update_data["params"] = body.params
+    if len(update_data) == 1:
+        raise HTTPException(status_code=422, detail="Provide at least name or params")
+    try:
+        db = get_supabase()
+        result = (
+            db.table("config_presets")
+            .update(update_data)
+            .eq("id", preset_id)
+            .execute()
+        )
+        if not result.data:
+            raise HTTPException(status_code=404, detail="Preset not found")
+        return result.data[0]
+    except HTTPException:
+        raise
+    except Exception as exc:
+        log.warning("update_preset failed: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.delete("/presets/{preset_id}", status_code=204)
+async def delete_preset(preset_id: int):
+    """Delete a preset by id."""
+    try:
+        db = get_supabase()
+        db.table("config_presets").delete().eq("id", preset_id).execute()
+    except Exception as exc:
+        log.warning("delete_preset failed: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
 def _log_event(kind: str, message: str, severity: str = "info", payload: dict | None = None):
     """Write a server event to the events table (sync, fire-and-forget)."""
     try:

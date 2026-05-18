@@ -26,6 +26,7 @@ from services.notifications import TelegramNotifier
 from services.trainer import LGBMTrainer, load_model, _retrain_lock
 from services.covariates import update_covariates, get_latest_covariates
 from services.supabase_client import get_supabase
+from services.regime_detector import RegimeDetector, RegimeSignal
 
 HL_TAKER_FEE = 0.00035  # 0.035% per side
 
@@ -91,6 +92,8 @@ class BotConfig:
         self.dynamic_sl_tp_enabled       = kw.get("dynamic_sl_tp_enabled",       False)
         self.dynamic_sl_tp_blend         = kw.get("dynamic_sl_tp_blend",         0.50)
         self.p10_sl_floor_enabled        = kw.get("p10_sl_floor_enabled",        False)
+        # Thresholds calibration flag (used in risk.calculate_trade_params)
+        self.recalibrated_uncertainty_thresholds = kw.get("recalibrated_uncertainty_thresholds", True)
 
     def model_dump(self) -> dict:
         return self.__dict__
@@ -118,6 +121,10 @@ class ExecutionEngine:
         self._lgbm_model    = None
         self._lgbm_features = None
         self._load_model_from_disk()
+
+        # Regime detection
+        self._regime_detector        = RegimeDetector()
+        self._regime_signal: Optional[RegimeSignal] = None
 
         # State
         self._position: Optional[dict]  = None   # active position dict
@@ -434,19 +441,34 @@ class ExecutionEngine:
             log.warning("Could not persist position state: %s", exc)
 
     async def get_status(self) -> dict:
+        regime_data = None
+        if self._regime_signal is not None:
+            s = self._regime_signal
+            regime_data = {
+                "regime":           s.regime,
+                "confidence":       s.confidence,
+                "adx":              s.adx,
+                "atr_percentile":   s.atr_percentile,
+                "trend_slope_pct":  s.trend_slope_pct,
+                "bb_width_pct":     s.bb_width_pct,
+                "bars_in_regime":   s.bars_in_regime,
+                "transition_risk":  s.transition_risk,
+                "reasoning":        s.reasoning,
+            }
         return {
-            "running":              self.running,
-            "mode":                 self.mode,
-            "hl_testnet":           HL_TESTNET,
-            "equity":               self._equity,
-            "position":             self._position,
-            "mark_price":           self._ws.latest_mark,
-            "cycle_count":          self._cycle_count,
-            "ws_connected":         self._ws.is_connected,
-            "model_loaded":         self._lgbm_model is not None,
-            "retrain_in_progress":  _retrain_lock.locked(),
-            "last_retrain":         self._last_retrain_metrics,
-            "config":               self.config.model_dump(),
+            "running":                  self.running,
+            "mode":                     self.mode,
+            "hl_testnet":               HL_TESTNET,
+            "equity":                   self._equity,
+            "position":                 self._position,
+            "mark_price":               self._ws.latest_mark,
+            "cycle_count":              self._cycle_count,
+            "ws_connected":             self._ws.is_connected,
+            "model_loaded":             self._lgbm_model is not None,
+            "retrain_in_progress":      _retrain_lock.locked(),
+            "last_retrain":             self._last_retrain_metrics,
+            "config":                   self.config.model_dump(),
+            "regime_signal":            regime_data,
         }
 
     # ── Main Loop ─────────────────────────────────────────────────────────────
@@ -593,26 +615,37 @@ class ExecutionEngine:
         await update_covariates()
         covars = get_latest_covariates()
 
+        # 6b. Regime detection — every 4 cycles (~16h on 4H bars)
+        if self._cycle_count % 4 == 0:
+            try:
+                sig = self._regime_detector.detect(df_feat)
+                self._regime_signal = sig
+                asyncio.create_task(self._log_regime(sig))
+            except Exception as _re:
+                log.warning("Regime detection failed: %s", _re)
+
+        cfg = self.config
+
         # Confluence score: computed from bar features (same formula as backtest)
         # so confluence_gate has identical effect live vs. simulated.
         confluence = (compute_qt_score(latest)
-                      if self.config.confluence_gate > 0 else None)
+                      if cfg.confluence_gate > 0 else None)
 
         # 7. Decision gate
         allowed, block_reason = self._risk.can_trade()
         decision_engine = DecisionEngine(
-            directional_threshold       = self.config.directional_threshold,
-            adx_gate                    = self.config.adx_gate,
-            confluence_gate             = self.config.confluence_gate,
-            adx_gate_enabled            = self.config.adx_gate_enabled,
-            sweep_gate_enabled          = self.config.sweep_gate_enabled,
-            fvg_filter_enabled          = self.config.fvg_filter_enabled,
-            mtf_alignment_enabled       = self.config.mtf_alignment_enabled,
-            chronos_weight              = self.config.chronos_weight if self.config.chronos_enabled else 0.0,
-            c2_uncertainty_gate_enabled = self.config.c2_uncertainty_gate_enabled if self.config.chronos_enabled else False,
-            c2_uncertainty_threshold    = self.config.c2_uncertainty_threshold,
-            c2_cont_prob_gate_enabled   = self.config.c2_cont_prob_gate_enabled if self.config.chronos_enabled else False,
-            c2_cont_prob_threshold      = self.config.c2_cont_prob_threshold,
+            directional_threshold       = cfg.directional_threshold,
+            adx_gate                    = cfg.adx_gate,
+            confluence_gate             = cfg.confluence_gate,
+            adx_gate_enabled            = cfg.adx_gate_enabled,
+            sweep_gate_enabled          = cfg.sweep_gate_enabled,
+            fvg_filter_enabled          = cfg.fvg_filter_enabled,
+            mtf_alignment_enabled       = cfg.mtf_alignment_enabled,
+            chronos_weight              = cfg.chronos_weight if self.config.chronos_enabled else 0.0,
+            c2_uncertainty_gate_enabled = cfg.c2_uncertainty_gate_enabled if self.config.chronos_enabled else False,
+            c2_uncertainty_threshold    = cfg.c2_uncertainty_threshold,
+            c2_cont_prob_gate_enabled   = cfg.c2_cont_prob_gate_enabled if self.config.chronos_enabled else False,
+            c2_cont_prob_threshold      = cfg.c2_cont_prob_threshold,
         )
         result = decision_engine.decide(
             features=latest,
@@ -761,14 +794,28 @@ class ExecutionEngine:
         snap: dict,
         atr: Optional[float],
         inference_id: str,
+        cfg: Optional[BotConfig] = None,
     ):
+        # cfg holds the effective config for this trade (may include regime overrides).
+        # _manage_position continues to read self.config throughout the trade lifetime.
+        cfg   = cfg or self.config
         price = snap["mark_price"]
         atr   = atr or price * 0.01  # fallback 1% ATR
 
-        _use_dynamic   = self.config.dynamic_sl_tp_enabled and self.config.chronos_enabled
+        _use_dynamic   = cfg.dynamic_sl_tp_enabled and self.config.chronos_enabled
         _p10_available = self.config.chronos_enabled and result.forecast_p10 > 0
         # Pass c2 quantiles when EITHER adaptive SL/TP or P10 floor needs them
-        _needs_quantiles = _use_dynamic or (self.config.p10_sl_floor_enabled and _p10_available)
+        _needs_quantiles = _use_dynamic or (cfg.p10_sl_floor_enabled and _p10_available)
+
+        # Temporarily apply cfg overrides to the risk manager for this trade calculation.
+        # async is cooperative — no concurrent access risk within this coroutine.
+        _orig_sl  = self._risk.sl_atr_mult
+        _orig_tp  = self._risk.tp_atr_mult
+        _orig_sz  = self._risk.position_size_pct
+        self._risk.sl_atr_mult       = cfg.sl_atr_mult
+        self._risk.tp_atr_mult       = cfg.tp_atr_mult
+        self._risk.position_size_pct = cfg.position_size_pct
+
         params = self._risk.calculate_trade_params(
             side=result.action,
             entry_price=price,
@@ -778,10 +825,16 @@ class ExecutionEngine:
             c2_p90=result.forecast_p90 if _needs_quantiles else None,
             c2_uncertainty=result.forecast_uncertainty if (_use_dynamic and result.forecast_uncertainty > 0) else None,
             dynamic_sl_tp_enabled=_use_dynamic,
-            dynamic_sl_tp_blend=self.config.dynamic_sl_tp_blend,
-            recalibrated_uncertainty_thresholds=self.config.recalibrated_uncertainty_thresholds,
-            p10_sl_floor_enabled=self.config.p10_sl_floor_enabled and _p10_available,
+            dynamic_sl_tp_blend=cfg.dynamic_sl_tp_blend,
+            recalibrated_uncertainty_thresholds=getattr(cfg, "recalibrated_uncertainty_thresholds", True),
+            p10_sl_floor_enabled=cfg.p10_sl_floor_enabled and _p10_available,
         )
+
+        # Restore original risk manager state
+        self._risk.sl_atr_mult       = _orig_sl
+        self._risk.tp_atr_mult       = _orig_tp
+        self._risk.position_size_pct = _orig_sz
+
         # Round to 4 decimal places (HL BTC min size = 0.001)
         size = max(round(params.size_contracts, 4), 0.001)
 
@@ -801,23 +854,24 @@ class ExecutionEngine:
             hl_order_id = await self._submit_open_order(result.action, size, price, params.stop_loss, inference_id)
         else:
             hl_order_id = None
+            _regime_tag = f" [regime={self._regime_signal.regime}]" if self._regime_signal else ""
             log.info(
-                "[PAPER] %s %.4f BTC @ %.2f | SL=%.2f TP=%.2f R:R=%.2f",
+                "[PAPER] %s %.4f BTC @ %.2f | SL=%.2f TP=%.2f R:R=%.2f%s",
                 result.action.upper(), size, price,
-                params.stop_loss, params.take_profit, params.rr_ratio,
+                params.stop_loss, params.take_profit, params.rr_ratio, _regime_tag,
             )
 
         # Pre-calculate level prices so the UI can show them immediately
         _atr = atr or price * 0.01
         _is_long = result.action == "long"
         _partial_tp_price = (
-            (price + self.config.partial_tp_atr_mult * _atr) if _is_long
-            else (price - self.config.partial_tp_atr_mult * _atr)
-        ) if self.config.partial_tp_enabled else None
+            (price + cfg.partial_tp_atr_mult * _atr) if _is_long
+            else (price - cfg.partial_tp_atr_mult * _atr)
+        ) if cfg.partial_tp_enabled else None
         _trailing_activation_price = (
-            (price + self.config.trailing_sl_activation * _atr) if _is_long
-            else (price - self.config.trailing_sl_activation * _atr)
-        ) if self.config.trailing_sl_enabled else None
+            (price + cfg.trailing_sl_activation * _atr) if _is_long
+            else (price - cfg.trailing_sl_activation * _atr)
+        ) if cfg.trailing_sl_enabled else None
 
         self._position = {
             "side":           result.action,
@@ -1355,6 +1409,23 @@ class ExecutionEngine:
             max_daily_dd_pct=self.config.max_daily_dd_pct,
             max_consecutive_losses=self.config.max_consecutive_losses,
         )
+
+    async def _log_regime(self, signal: RegimeSignal):
+        """Persist regime snapshot to regime_log table (best-effort; table may not exist)."""
+        try:
+            db = get_supabase()
+            db.table("regime_log").insert({
+                "regime":          signal.regime,
+                "confidence":      signal.confidence,
+                "adx":             signal.adx,
+                "atr_pct":         signal.atr_percentile,
+                "slope_pct":       signal.trend_slope_pct,
+                "bars_in_regime":  signal.bars_in_regime,
+                "transition_risk": signal.transition_risk,
+                "profile_applied": None,
+            }).execute()
+        except Exception as exc:
+            log.debug("regime_log write skipped (table may not exist yet): %s", exc)
 
     async def _sleep_until_next_candle(self):
         """Fallback: sleep until next 4h UTC candle close."""

@@ -535,7 +535,12 @@ def _sanitize(obj):
 
 def _calculate_stats(trades: list, equity_curve: list, capital: float) -> dict:
     if not trades:
-        return {"total_trades": 0}
+        return {
+            "total_trades": 0, "win_rate": 0.0, "avg_win_pct": 0.0, "avg_loss_pct": 0.0,
+            "profit_factor": 0.0, "total_pnl_usd": 0.0, "total_pnl_pct": 0.0,
+            "sharpe": 0.0, "sortino": 0.0, "calmar": 0.0, "max_drawdown_pct": 0.0,
+            "avg_holding_h": 0.0, "best_trade_pct": 0.0, "worst_trade_pct": 0.0,
+        }
 
     pnls     = [t["pnl_pct"] for t in trades]
     pnls_usd = [t["pnl_usd"] for t in trades]
