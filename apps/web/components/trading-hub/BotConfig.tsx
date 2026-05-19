@@ -29,6 +29,8 @@ interface Config {
   // Feature Importance Pruning
   use_feature_pruning: boolean;
   feature_pruning_min_importance: number;
+  // Isotonic calibration on c2_dir_prob
+  use_chronos_calibration: boolean;
 }
 
 const DEFAULTS: Config = {
@@ -59,6 +61,8 @@ const DEFAULTS: Config = {
   // Feature Importance Pruning
   use_feature_pruning: false,
   feature_pruning_min_importance: 0.005,
+  // Isotonic calibration on c2_dir_prob
+  use_chronos_calibration: false,
 };
 
 interface PruningMetrics {
@@ -90,6 +94,14 @@ interface PruningStatsData {
   threshold?: number;
 }
 
+interface CalibratorStats {
+  file_exists: boolean;
+  fitted: boolean;
+  n_samples?: number;
+  mapping?: Record<string, number>;
+  error?: string;
+}
+
 interface RetrainMetrics {
   status: 'ok' | 'busy';
   trained_at?: string;
@@ -115,6 +127,9 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   const [featImportance, setFeatImportance] = useState<FeatureImportanceData | null>(null);
   const [featImportanceLoading, setFeatImportanceLoading] = useState(false);
   const [pruningStats, setPruningStats] = useState<PruningStatsData | null>(null);
+  const [calibratorStats, setCalibratorStats] = useState<CalibratorStats | null>(null);
+  const [calibratorRefitting, setCalibratorRefitting] = useState(false);
+  const [calibratorRefitResult, setCalibratorRefitResult] = useState<{ status: string; n_samples?: number } | null>(null);
 
   const loadFeatureImportance = () => {
     setFeatImportanceLoading(true);
@@ -130,6 +145,29 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
       .then(r => r.ok ? r.json() : null)
       .then(d => d && setPruningStats(d))
       .catch(() => {});
+  };
+
+  const loadCalibratorStats = () => {
+    fetch(`${apiBase}/calibrator/stats`)
+      .then(r => r.ok ? r.json() : null)
+      .then(d => d && setCalibratorStats(d))
+      .catch(() => {});
+  };
+
+  const handleCalibratorRefit = async () => {
+    if (!confirm('Ricalibra IsotonicCalibrator su tutti i trade storici?\n\nRichiede ≥50 trade chiusi con inference_id nel DB. Il processo è rapido (<2s).')) return;
+    setCalibratorRefitting(true);
+    setCalibratorRefitResult(null);
+    try {
+      const r = await fetch(`${apiBase}/calibrator/refit`, { method: 'POST' });
+      const data = await r.json();
+      setCalibratorRefitResult(data);
+      loadCalibratorStats();
+    } catch {
+      setCalibratorRefitResult({ status: 'error' });
+    } finally {
+      setCalibratorRefitting(false);
+    }
   };
 
   useEffect(() => {
@@ -148,9 +186,10 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
         if (s.retrain_in_progress) setRetraining(true);
       })
       .catch(() => {});
-    // Auto-load feature importance and pruning stats on mount
+    // Auto-load feature importance, pruning stats and calibrator stats on mount
     loadFeatureImportance();
     loadPruningStats();
+    loadCalibratorStats();
   }, [apiBase]);
 
   const handleRetrain = async () => {
@@ -517,6 +556,127 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                 </span>
                 <span className="text-[10px] text-slate-400 dark:text-slate-500">bande quantili coerenti</span>
               </div>
+            </div>
+          )}
+        </div>
+
+        {/* ── Isotonic Calibration ── */}
+        <div className={`flex flex-col gap-3 mt-6 pt-6 border-t transition-colors duration-200 ${config.use_chronos_calibration ? 'border-teal-200 dark:border-teal-500/25' : 'border-slate-100 dark:border-white/5'}`}>
+          <Tooltip text="Corregge c2_dir_prob usando IsotonicRegression addestrata sugli esiti reali dei trade storici: X = c2_dir_prob al momento dell'inferenza, y = 1 se il trade è stato profittevole. Richiede ≥50 trade chiusi con inference_id valorizzato nel DB. Quando attivo, la calibrazione viene ri-fittata ad ogni retrain automaticamente." width="wide" pos="bottom">
+            <label className="flex items-center gap-3 cursor-pointer group">
+              <div className="relative">
+                <input
+                  type="checkbox"
+                  className="sr-only"
+                  checked={config.use_chronos_calibration}
+                  onChange={e => setConfig(c => ({ ...c, use_chronos_calibration: e.target.checked }))}
+                  disabled={!config.chronos_enabled}
+                />
+                <div className={`w-10 h-5 rounded-full transition-all duration-300 ${config.use_chronos_calibration ? 'bg-teal-600' : 'bg-slate-200 dark:bg-white/10'} ${!config.chronos_enabled ? 'opacity-40' : ''}`} />
+                <div className={`absolute top-1 left-1 w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.use_chronos_calibration ? 'translate-x-5' : ''}`} />
+              </div>
+              <div>
+                <p className={`text-sm font-bold transition-colors ${config.use_chronos_calibration ? 'text-teal-600 dark:text-teal-400' : !config.chronos_enabled ? 'text-slate-400 dark:text-slate-600' : 'text-slate-800 dark:text-slate-200 group-hover:text-teal-600 dark:group-hover:text-teal-400'}`}>
+                  Calibrazione Isotonica c2_dir_prob
+                  {config.use_chronos_calibration && (
+                    <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-teal-100 dark:bg-teal-500/20 text-teal-600 dark:text-teal-400 uppercase tracking-wider">Attivo</span>
+                  )}
+                </p>
+                <p className="text-[11px] font-medium text-slate-400 dark:text-slate-500 leading-tight">
+                  {!config.chronos_enabled
+                    ? 'Richiede Chronos-2 attivo'
+                    : config.use_chronos_calibration
+                    ? 'c2_dir_prob corretto da IsotonicRegression — richiede ≥50 trade chiusi nel DB'
+                    : 'Corregge le probabilità Chronos sugli esiti reali dei trade storici'}
+                </p>
+              </div>
+            </label>
+          </Tooltip>
+          {config.use_chronos_calibration && !config.chronos_enabled && (
+            <div className="flex items-start gap-3 bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/30 rounded-xl px-4 py-3">
+              <svg className="w-4 h-4 text-amber-500 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+              </svg>
+              <div>
+                <p className="text-[11px] font-bold text-amber-700 dark:text-amber-400 uppercase tracking-wide">Chronos-2 non attivo</p>
+                <p className="text-[11px] text-amber-600 dark:text-amber-500 leading-snug mt-0.5">
+                  La calibrazione isotonica richiede Chronos-2. Abilitarlo nelle impostazioni sopra.
+                </p>
+              </div>
+            </div>
+          )}
+          {config.use_chronos_calibration && config.chronos_enabled && (
+            <div className="flex flex-col gap-3">
+              {/* Calibrator status card */}
+              <div className="bg-slate-50 dark:bg-white/3 border border-slate-100 dark:border-white/8 rounded-xl px-4 py-3 flex flex-col gap-2">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2">
+                    <div className={`w-2 h-2 rounded-full flex-shrink-0 ${calibratorStats?.fitted ? 'bg-teal-500' : 'bg-slate-300 dark:bg-slate-600'}`} />
+                    <span className="text-[11px] font-bold text-slate-700 dark:text-slate-300">
+                      {calibratorStats?.fitted
+                        ? `Calibratore attivo — ${calibratorStats.n_samples} trade`
+                        : calibratorStats?.file_exists === false
+                        ? 'Nessun calibratore addestrato'
+                        : 'Stato calibratore sconosciuto'}
+                    </span>
+                  </div>
+                  <Tooltip text="Ri-addestra il calibratore isotonic su tutti i trade chiusi nel DB con inference_id valorizzato. Richiede ≥50 campioni. Il processo dura <2 secondi e non richiede un retrain completo di LightGBM." width="wide" pos="top">
+                    <button
+                      onClick={handleCalibratorRefit}
+                      disabled={calibratorRefitting}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-bold bg-teal-600 hover:bg-teal-700 disabled:opacity-50 disabled:cursor-not-allowed text-white transition-colors"
+                    >
+                      {calibratorRefitting ? (
+                        <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/>
+                        </svg>
+                      ) : (
+                        <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                        </svg>
+                      )}
+                      {calibratorRefitting ? 'Calibro…' : 'Ricalibra ora'}
+                    </button>
+                  </Tooltip>
+                </div>
+                {/* Probability mapping */}
+                {calibratorStats?.fitted && calibratorStats.mapping && (
+                  <div className="flex flex-wrap gap-x-3 gap-y-1 mt-1">
+                    {Object.entries(calibratorStats.mapping).map(([key, val]) => {
+                      const raw = parseInt(key.replace('raw_', '')) / 100;
+                      const delta = val - raw;
+                      return (
+                        <div key={key} className="flex items-center gap-1 text-[10px]">
+                          <span className="text-slate-400 dark:text-slate-500 font-mono">{(raw * 100).toFixed(0)}%</span>
+                          <span className="text-slate-300 dark:text-slate-600">→</span>
+                          <span className="font-mono font-bold text-slate-600 dark:text-slate-300">{(val * 100).toFixed(1)}%</span>
+                          <span className={`font-mono text-[9px] ${delta >= 0 ? 'text-teal-500' : 'text-rose-400'}`}>
+                            ({delta >= 0 ? '+' : ''}{(delta * 100).toFixed(1)})
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+              {/* Refit result feedback */}
+              {calibratorRefitResult && (
+                <div className={`flex items-center gap-2 px-3 py-2 rounded-lg text-[11px] font-medium border ${
+                  calibratorRefitResult.status === 'ok'
+                    ? 'bg-teal-50 dark:bg-teal-500/10 border-teal-200 dark:border-teal-500/30 text-teal-700 dark:text-teal-400'
+                    : calibratorRefitResult.status === 'skipped'
+                    ? 'bg-amber-50 dark:bg-amber-500/10 border-amber-200 dark:border-amber-500/30 text-amber-700 dark:text-amber-400'
+                    : 'bg-rose-50 dark:bg-rose-500/10 border-rose-200 dark:border-rose-500/30 text-rose-700 dark:text-rose-400'
+                }`}>
+                  {calibratorRefitResult.status === 'ok' && `✓ Calibratore aggiornato su ${calibratorRefitResult.n_samples} trade`}
+                  {calibratorRefitResult.status === 'skipped' && `⚠ Dati insufficienti — ${calibratorRefitResult.n_samples ?? 0}/50 trade nel DB`}
+                  {calibratorRefitResult.status === 'error' && '✕ Errore durante la ricalibrazione'}
+                </div>
+              )}
+              <p className="text-[10px] text-slate-400 dark:text-slate-500 leading-relaxed">
+                Il calibratore viene ri-addestrato automaticamente ad ogni retrain di LightGBM (ogni ~{config.retrain_every_n_cycles} cicli ≈ {Math.round(config.retrain_every_n_cycles * 4 / 24)} giorni). Usa "Ricalibra ora" per aggiornarlo immediatamente senza attendere il retrain.
+              </p>
             </div>
           )}
         </div>

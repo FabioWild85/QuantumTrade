@@ -89,6 +89,32 @@ class ChronosForecaster:
     CONTEXT_LEN = 512
     MODEL_ID    = "amazon/chronos-2"
 
+    def __init__(self):
+        from pathlib import Path
+        self._calibrator = None
+        cal_path = Path(__file__).parent.parent / "models" / "chronos_calibrator.pkl"
+        if cal_path.exists():
+            try:
+                from services.calibration import IsotonicCalibrator
+                self._calibrator = IsotonicCalibrator.load(cal_path)
+            except Exception as exc:
+                log.warning("Could not load Chronos calibrator: %s", exc)
+
+    def reload_calibrator(self):
+        """Reload the calibrator from disk. Call after /calibrator/refit or post-retrain."""
+        from pathlib import Path
+        cal_path = Path(__file__).parent.parent / "models" / "chronos_calibrator.pkl"
+        if cal_path.exists():
+            try:
+                from services.calibration import IsotonicCalibrator
+                self._calibrator = IsotonicCalibrator.load(cal_path)
+                log.info("Chronos calibrator reloaded (%d samples)", self._calibrator._n_samples)
+            except Exception as exc:
+                log.warning("Could not reload Chronos calibrator: %s", exc)
+        else:
+            self._calibrator = None
+            log.info("Chronos calibrator cleared (file not found)")
+
     def forecast(
         self,
         close_series: np.ndarray,
@@ -99,6 +125,7 @@ class ChronosForecaster:
         oi_series:      Optional[np.ndarray] = None,
         funding_series: Optional[np.ndarray] = None,
         cvd_series:     Optional[np.ndarray] = None,
+        use_calibration: bool = False,
     ) -> dict:
         """
         Args:
@@ -208,13 +235,25 @@ class ChronosForecaster:
 
         latency_ms = (time.perf_counter() - t0) * 1000
         cov_used   = list(past_covariates.keys())
-        log.debug(
-            f"Chronos-2 | {latency_ms:.0f}ms | dir={dir_prob:.3f} | "
-            f"p50={p50:.1f} | cov={cov_used or 'none'}"
-        )
 
-        return {
-            "c2_dir_prob":    dir_prob,
+        # Isotonic calibration — applied after all features are computed
+        cal_dir_prob = dir_prob
+        raw_dir_prob = None
+        if use_calibration and self._calibrator is not None and self._calibrator.is_fitted():
+            raw_dir_prob = dir_prob
+            cal_dir_prob = self._calibrator.transform(dir_prob)
+            log.debug(
+                f"Chronos-2 | {latency_ms:.0f}ms | dir={dir_prob:.3f}→{cal_dir_prob:.3f} (calibrated) | "
+                f"p50={p50:.1f} | cov={cov_used or 'none'}"
+            )
+        else:
+            log.debug(
+                f"Chronos-2 | {latency_ms:.0f}ms | dir={dir_prob:.3f} | "
+                f"p50={p50:.1f} | cov={cov_used or 'none'}"
+            )
+
+        result = {
+            "c2_dir_prob":    cal_dir_prob,
             "c2_vol_prob":    vol_prob,
             "c2_p10":         p10,
             "c2_p50":         p50,
@@ -226,3 +265,7 @@ class ChronosForecaster:
             "latency_ms":     round(latency_ms, 1),
             "cov_used":       cov_used,
         }
+        # Preserve raw prob for logging when calibration is active
+        if raw_dir_prob is not None:
+            result["c2_dir_prob_raw"] = raw_dir_prob
+        return result

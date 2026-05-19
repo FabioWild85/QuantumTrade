@@ -394,6 +394,7 @@ async def run_backtest(req) -> dict:
                     oi_series=oi_so_far,
                     funding_series=funding_so_far,
                     cvd_series=cvd_so_far,
+                    use_calibration=getattr(cfg, "use_chronos_calibration", False),
                 )
             else:
                 c2_out = {

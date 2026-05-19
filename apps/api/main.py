@@ -194,6 +194,8 @@ class BotConfig(BaseModel):
     # Feature Importance Pruning
     use_feature_pruning:            bool  = Field(False)
     feature_pruning_min_importance: float = Field(0.005, ge=0.001, le=0.05)
+    # Isotonic calibration on c2_dir_prob
+    use_chronos_calibration:        bool  = Field(False)
 
 
 class StartBotRequest(BaseModel):
@@ -562,6 +564,38 @@ async def get_pruning_stats():
             "pruned_model_exists": PRUNED_MODEL_PATH.exists(),
             **_json.load(f),
         }
+
+
+# ─── Chronos Calibrator ───────────────────────────────────────────────────────
+
+@app.post("/calibrator/refit")
+async def calibrator_refit():
+    """
+    Force a manual re-fit of the IsotonicCalibrator without a full LightGBM retrain.
+    Requires ≥50 closed trades with inference_id in the DB.
+    Also reloads the calibrator in the running engine instance.
+    """
+    from services.trainer import LGBMTrainer
+    _trainer = LGBMTrainer()
+    result = await _trainer.retrain_calibrator()
+    if engine is not None and result.get("status") == "ok":
+        engine._chronos.reload_calibrator()
+    return result
+
+
+@app.get("/calibrator/stats")
+async def calibrator_stats():
+    """Return current calibrator status: fitted, n_samples, and probability mapping."""
+    from services.trainer import MODEL_DIR
+    from services.calibration import IsotonicCalibrator
+    cal_path = MODEL_DIR / "chronos_calibrator.pkl"
+    if not cal_path.exists():
+        return {"fitted": False, "file_exists": False}
+    try:
+        cal = IsotonicCalibrator.load(cal_path)
+        return {"file_exists": True, **cal.calibration_stats()}
+    except Exception as exc:
+        return {"file_exists": True, "fitted": False, "error": str(exc)}
 
 
 # ─── Trade Events ────────────────────────────────────────────────────────────

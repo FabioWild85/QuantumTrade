@@ -115,6 +115,7 @@ class LGBMTrainer:
         wf_purge_gap:                  int   = 5,
         use_feature_pruning:           bool  = False,
         feature_pruning_min_importance: float = 0.005,
+        use_chronos_calibration:       bool  = False,
     ) -> dict:
         """
         Full retraining pipeline. Returns metrics dict.
@@ -128,6 +129,7 @@ class LGBMTrainer:
             return await self._run(
                 symbol, lookback_candles, wf_n_splits, wf_purge_gap,
                 use_feature_pruning, feature_pruning_min_importance,
+                use_chronos_calibration,
             )
 
     async def _run(
@@ -138,6 +140,7 @@ class LGBMTrainer:
         wf_purge_gap:                  int   = 5,
         use_feature_pruning:           bool  = False,
         feature_pruning_min_importance: float = 0.005,
+        use_chronos_calibration:       bool  = False,
     ) -> dict:
         t0 = datetime.now(timezone.utc)
         log.info("LightGBM retraining started (lookback=%d candles)", lookback_candles)
@@ -238,6 +241,11 @@ class LGBMTrainer:
                 threshold=feature_pruning_min_importance,
             )
 
+        # ── 11. Optional Chronos calibration ──────────────────────────────────
+        cal_metrics: Optional[dict] = None
+        if use_chronos_calibration:
+            cal_metrics = await self.retrain_calibrator()
+
         elapsed_s = (datetime.now(timezone.utc) - t0).total_seconds()
         metrics = {
             "status":          "ok",
@@ -255,6 +263,7 @@ class LGBMTrainer:
             "wf_n_splits":     wf_n_splits,
             "wf_purge_gap":    wf_purge_gap,
             "pruning":         prune_metrics,
+            "calibrator":      cal_metrics,
         }
         log.info(
             "Retraining complete: OOS acc=%.2f%% ll=%.4f | WF acc=%.2f%% ll=%.4f (%.1fs)",
@@ -263,6 +272,25 @@ class LGBMTrainer:
             elapsed_s,
         )
         return metrics
+
+    async def retrain_calibrator(self) -> dict:
+        """
+        Fitta IsotonicCalibrator su trade storici (inference_logs × trades join).
+        Chiamato automaticamente da _run() quando use_chronos_calibration=True.
+        Può essere richiamato manualmente tramite POST /calibrator/refit.
+        Ritorna metrics dict con status 'ok' | 'skipped' e n_samples.
+        """
+        from services.calibration import IsotonicCalibrator
+        from services.supabase_client import get_supabase
+        cal = IsotonicCalibrator()
+        n   = await cal.fit(get_supabase())
+
+        if n >= 50:
+            cal.save(MODEL_DIR / "chronos_calibrator.pkl")
+            return {"status": "ok", "n_samples": n}
+
+        log.warning("Calibrator skipped: insufficient samples (%d < 50)", n)
+        return {"status": "skipped", "n_samples": n}
 
     def _build_pruned_model(
         self,

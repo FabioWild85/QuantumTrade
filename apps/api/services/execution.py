@@ -106,6 +106,8 @@ class BotConfig:
         # Feature Importance Pruning
         self.use_feature_pruning            = kw.get("use_feature_pruning",            False)
         self.feature_pruning_min_importance = kw.get("feature_pruning_min_importance", 0.005)
+        # Isotonic calibration on c2_dir_prob
+        self.use_chronos_calibration        = kw.get("use_chronos_calibration",        False)
 
     def model_dump(self) -> dict:
         return self.__dict__
@@ -607,10 +609,11 @@ class ExecutionEngine:
                 df_feat["close"].values,
                 horizon=3,
                 atr=atr,
-                volume_series= df_feat["volume"].values    if "volume"    in df_feat.columns else None,
-                oi_series=     df_feat["oi_raw"].values    if "oi_raw"    in df_feat.columns else None,
-                funding_series=df_feat["funding"].values   if "funding"   in df_feat.columns else None,
-                cvd_series=    df_feat["delta_raw"].values if "delta_raw" in df_feat.columns else None,
+                volume_series=   df_feat["volume"].values    if "volume"    in df_feat.columns else None,
+                oi_series=       df_feat["oi_raw"].values    if "oi_raw"    in df_feat.columns else None,
+                funding_series=  df_feat["funding"].values   if "funding"   in df_feat.columns else None,
+                cvd_series=      df_feat["delta_raw"].values if "delta_raw" in df_feat.columns else None,
+                use_calibration= self.config.use_chronos_calibration,
             )
         else:
             mark = snap["mark_price"]
@@ -774,6 +777,9 @@ class ExecutionEngine:
         result = load_correct_model(self.config.use_feature_pruning)
         if result:
             self._lgbm_model, self._lgbm_features = result
+        # Reload calibrator from disk when retrain updated it
+        if (metrics.get("calibrator") or {}).get("status") == "ok":
+            self._chronos.reload_calibrator()
         self._last_retrain_metrics = metrics
         log.info(
             "LightGBM model reloaded (%s): OOS acc=%.2f%%, ll=%.4f",
@@ -800,6 +806,7 @@ class ExecutionEngine:
                 wf_purge_gap=self.config.wf_purge_gap,
                 use_feature_pruning=self.config.use_feature_pruning,
                 feature_pruning_min_importance=self.config.feature_pruning_min_importance,
+                use_chronos_calibration=self.config.use_chronos_calibration,
             )
             if metrics.get("status") == "ok":
                 await self._reload_model_after_retrain(metrics, trigger="auto")
@@ -819,6 +826,7 @@ class ExecutionEngine:
             wf_purge_gap=self.config.wf_purge_gap,
             use_feature_pruning=self.config.use_feature_pruning,
             feature_pruning_min_importance=self.config.feature_pruning_min_importance,
+            use_chronos_calibration=self.config.use_chronos_calibration,
         )
         if metrics.get("status") == "ok":
             await self._reload_model_after_retrain(metrics, trigger="manual")
@@ -1287,6 +1295,8 @@ class ExecutionEngine:
                 "opened_at":       self._position["opened_at"],
                 "closed_at":       datetime.now(timezone.utc).isoformat(),
                 "mode":            self.mode,
+                # FK to inference_logs — enables calibrator join on c2_dir_prob
+                "inference_id":    self._position.get("inference_id"),
             }).execute()
         except Exception as exc:
             log.warning("Equity/trade snapshot write failed: %s", exc)
@@ -1434,7 +1444,9 @@ class ExecutionEngine:
 
     @staticmethod
     def _safe_float(v):
-        """Convert to float, returning None for NaN/Inf (not JSON-safe)."""
+        """Convert to float, returning None for NaN/Inf/None (not JSON-safe or DB-safe)."""
+        if v is None:
+            return None
         if hasattr(v, "__float__"):
             f = float(v)
             return None if (math.isnan(f) or math.isinf(f)) else f
@@ -1454,9 +1466,14 @@ class ExecutionEngine:
             safe_lgbm = self._safe_float(lgbm_prob)
             db = get_supabase()
             db.table("inference_logs").insert({
-                "id":       inference_id,
-                "bot_id":   None,
-                "model":    "chronos2_lgbm_ensemble_v2",
+                "id":              inference_id,
+                "bot_id":          None,
+                "model":           "chronos2_lgbm_ensemble_v2",
+                # Top-level probability columns — used by IsotonicCalibrator join
+                "c2_dir_prob":     self._safe_float(c2.get("c2_dir_prob")),
+                "c2_dir_prob_raw": self._safe_float(c2.get("c2_dir_prob_raw")),
+                "c2_uncertainty":  self._safe_float(c2.get("c2_uncertainty")),
+                "c2_cont_prob":    self._safe_float(c2.get("c2_cont_prob")),
                 "features": {
                     k: self._safe_float(v)
                     for k, v in {**features, **covars}.items()
@@ -1466,8 +1483,8 @@ class ExecutionEngine:
                        for k, v in c2.items()},
                     "lgbm_prob": safe_lgbm,
                 },
-                "decision": result.action,
-                "reasoning": result.reasoning,
+                "decision":   result.action,
+                "reasoning":  result.reasoning,
                 "latency_ms": c2.get("latency_ms", 0),
             }).execute()
             return inference_id
