@@ -26,6 +26,7 @@ log = logging.getLogger(__name__)
 MODEL_DIR         = Path(__file__).parent.parent / "models"
 MODEL_PATH        = MODEL_DIR / "lgbm_latest.pkl"
 PRUNED_MODEL_PATH = MODEL_DIR / "lgbm_pruned.pkl"
+MODEL_1H_PATH     = MODEL_DIR / "lgbm_1h_latest.pkl"
 
 # Chronos-2 features are inference-time only — not available for historical retraining.
 # These names MUST match FEATURE_GROUPS["c2"] in smc.py exactly.
@@ -116,6 +117,7 @@ class LGBMTrainer:
         use_feature_pruning:           bool  = False,
         feature_pruning_min_importance: float = 0.005,
         use_chronos_calibration:       bool  = False,
+        use_1h_lgbm_gate:              bool  = False,
     ) -> dict:
         """
         Full retraining pipeline. Returns metrics dict.
@@ -129,7 +131,7 @@ class LGBMTrainer:
             return await self._run(
                 symbol, lookback_candles, wf_n_splits, wf_purge_gap,
                 use_feature_pruning, feature_pruning_min_importance,
-                use_chronos_calibration,
+                use_chronos_calibration, use_1h_lgbm_gate,
             )
 
     async def _run(
@@ -141,6 +143,7 @@ class LGBMTrainer:
         use_feature_pruning:           bool  = False,
         feature_pruning_min_importance: float = 0.005,
         use_chronos_calibration:       bool  = False,
+        use_1h_lgbm_gate:              bool  = False,
     ) -> dict:
         t0 = datetime.now(timezone.utc)
         log.info("LightGBM retraining started (lookback=%d candles)", lookback_candles)
@@ -246,6 +249,15 @@ class LGBMTrainer:
         if use_chronos_calibration:
             cal_metrics = await self.retrain_calibrator()
 
+        # ── 12. Optional 1H gate model retrain ────────────────────────────────
+        lgbm_1h_metrics: Optional[dict] = None
+        if use_1h_lgbm_gate:
+            try:
+                lgbm_1h_metrics = await self.retrain_1h(symbol)
+            except Exception as exc:
+                log.warning("1H gate retrain failed: %s", exc)
+                lgbm_1h_metrics = {"status": "failed", "error": str(exc)}
+
         elapsed_s = (datetime.now(timezone.utc) - t0).total_seconds()
         metrics = {
             "status":          "ok",
@@ -264,6 +276,7 @@ class LGBMTrainer:
             "wf_purge_gap":    wf_purge_gap,
             "pruning":         prune_metrics,
             "calibrator":      cal_metrics,
+            "lgbm_1h":         lgbm_1h_metrics,
         }
         log.info(
             "Retraining complete: OOS acc=%.2f%% ll=%.4f | WF acc=%.2f%% ll=%.4f (%.1fs)",
@@ -291,6 +304,80 @@ class LGBMTrainer:
 
         log.warning("Calibrator skipped: insufficient samples (%d < 50)", n)
         return {"status": "skipped", "n_samples": n}
+
+    async def retrain_1h(
+        self,
+        symbol:           str = "BTC",
+        lookback_candles: int = 2000,
+    ) -> dict:
+        """
+        Train LightGBM on 1H candles as a gate/confirmation model for 4H signals.
+        Uses the same LGBM_FEATURES and build_all_features pipeline.
+        Target: close[+1] > close[0] (1-candle horizon on 1H).
+        Saves to models/lgbm_1h_latest.pkl.
+        """
+        t0 = datetime.now(timezone.utc)
+        log.info("1H LightGBM gate training started (lookback=%d candles)", lookback_candles)
+
+        fetch_n  = lookback_candles + 128
+        df_ohlcv = await self._hl.get_ohlcv(symbol, "1h", limit=fetch_n)
+        df_fund  = await self._hl.get_funding_history(symbol, hours=fetch_n)
+
+        df_feat = build_all_features(df_ohlcv, df_fund, pd.DataFrame(), pd.DataFrame())
+        df_feat["_target"] = (df_feat["close"].shift(-1) > df_feat["close"]).astype(int)
+
+        available = [f for f in LGBM_FEATURES if f in df_feat.columns]
+        df_feat[available] = df_feat[available].fillna(0)
+        df_clean = df_feat.dropna(subset=["_target"]).iloc[64:]
+
+        if len(df_clean) > lookback_candles:
+            df_clean = df_clean.iloc[-lookback_candles:]
+
+        if len(df_clean) < 200:
+            raise ValueError(f"Insufficient 1H data for training: {len(df_clean)} rows")
+
+        X = df_clean[available]
+        y = df_clean["_target"]
+        log.info("1H training set: %d rows × %d features", len(X), len(available))
+
+        split        = int(len(X) * 0.80)
+        X_tr, X_val  = X.iloc[:split], X.iloc[split:]
+        y_tr, y_val  = y.iloc[:split], y.iloc[split:]
+
+        model_1h = lgb.LGBMClassifier(**_LGB_PARAMS)
+        model_1h.fit(
+            X_tr, y_tr,
+            eval_set=[(X_val, y_val)],
+            callbacks=[lgb.early_stopping(50, verbose=False), lgb.log_evaluation(0)],
+        )
+
+        y_pred_1h = model_1h.predict(X_val)
+        y_prob_1h = model_1h.predict_proba(X_val)[:, 1]
+        oos_acc   = float(accuracy_score(y_val, y_pred_1h))
+        oos_ll    = float(log_loss(y_val, y_prob_1h))
+
+        MODEL_DIR.mkdir(exist_ok=True)
+        payload = {"model": model_1h, "features": available}
+        with open(MODEL_1H_PATH, "wb") as f:
+            pickle.dump(payload, f)
+
+        elapsed_s = (datetime.now(timezone.utc) - t0).total_seconds()
+        log.info(
+            "1H model trained: OOS acc=%.2f%% ll=%.4f | best_iter=%s (%.1fs)",
+            oos_acc * 100, oos_ll,
+            getattr(model_1h, "best_iteration_", "?"), elapsed_s,
+        )
+        return {
+            "status":          "ok",
+            "trained_at":      t0.isoformat(),
+            "elapsed_s":       round(elapsed_s, 1),
+            "train_rows":      split,
+            "val_rows":        len(X_val),
+            "n_features":      len(available),
+            "oos_accuracy":    round(oos_acc, 4),
+            "oos_log_loss":    round(oos_ll, 4),
+            "best_iteration":  getattr(model_1h, "best_iteration_", None),
+        }
 
     def _build_pruned_model(
         self,
@@ -372,6 +459,18 @@ def load_model() -> Optional[tuple]:
     if isinstance(payload, dict):
         return payload["model"], payload["features"]
     return payload, LGBM_FEATURES  # legacy: assume full feature list
+
+
+def load_1h_model() -> Optional[tuple]:
+    """
+    Load the 1H gate model from disk.
+    Returns (model, features_list) or None if not found.
+    """
+    if not MODEL_1H_PATH.exists():
+        return None
+    with open(MODEL_1H_PATH, "rb") as f:
+        payload = pickle.load(f)
+    return payload["model"], payload["features"]
 
 
 def load_correct_model(use_pruning: bool = False) -> Optional[tuple]:

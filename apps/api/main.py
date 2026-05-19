@@ -196,6 +196,10 @@ class BotConfig(BaseModel):
     feature_pruning_min_importance: float = Field(0.005, ge=0.001, le=0.05)
     # Isotonic calibration on c2_dir_prob
     use_chronos_calibration:        bool  = Field(False)
+    # Gate LightGBM 1H — confirmation model on 1H timeframe
+    use_1h_lgbm_gate:               bool  = Field(False)
+    lgbm_1h_min_agreement:          float = Field(0.52, ge=0.50, le=0.70)
+    lgbm_1h_block_threshold:        float = Field(0.45, ge=0.30, le=0.50)
 
 
 class StartBotRequest(BaseModel):
@@ -596,6 +600,38 @@ async def calibrator_stats():
         return {"file_exists": True, **cal.calibration_stats()}
     except Exception as exc:
         return {"file_exists": True, "fitted": False, "error": str(exc)}
+
+
+# ─── Gate LightGBM 1H ────────────────────────────────────────────────────────
+
+@app.post("/retrain/1h")
+async def retrain_1h_endpoint():
+    """
+    Train the LightGBM 1H gate model on the last 2000 1H candles.
+    Also reloads the model into the running engine instance.
+    Independent from the main 4H retrain — safe to call at any time.
+    """
+    if not engine:
+        raise HTTPException(503, "Engine not initialized")
+    from services.trainer import LGBMTrainer
+    _trainer = LGBMTrainer()
+    result = await _trainer.retrain_1h()
+    if result.get("status") == "ok":
+        engine._load_1h_model()
+    return result
+
+
+@app.get("/model/1h-status")
+async def get_1h_model_status():
+    """Return 1H gate model status: loaded in engine and file on disk."""
+    from services.trainer import MODEL_1H_PATH
+    if not engine:
+        raise HTTPException(503, "Engine not initialized")
+    return {
+        "loaded_in_engine": engine._lgbm_1h is not None,
+        "file_exists":      MODEL_1H_PATH.exists(),
+        "n_features":       len(engine._lgbm_1h_features) if engine._lgbm_1h_features else 0,
+    }
 
 
 # ─── Trade Events ────────────────────────────────────────────────────────────

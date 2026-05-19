@@ -31,6 +31,10 @@ interface Config {
   feature_pruning_min_importance: number;
   // Isotonic calibration on c2_dir_prob
   use_chronos_calibration: boolean;
+  // Gate LightGBM 1H
+  use_1h_lgbm_gate: boolean;
+  lgbm_1h_min_agreement: number;
+  lgbm_1h_block_threshold: number;
 }
 
 const DEFAULTS: Config = {
@@ -63,6 +67,10 @@ const DEFAULTS: Config = {
   feature_pruning_min_importance: 0.005,
   // Isotonic calibration on c2_dir_prob
   use_chronos_calibration: false,
+  // Gate LightGBM 1H
+  use_1h_lgbm_gate: false,
+  lgbm_1h_min_agreement: 0.52,
+  lgbm_1h_block_threshold: 0.45,
 };
 
 interface PruningMetrics {
@@ -130,6 +138,12 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   const [calibratorStats, setCalibratorStats] = useState<CalibratorStats | null>(null);
   const [calibratorRefitting, setCalibratorRefitting] = useState(false);
   const [calibratorRefitResult, setCalibratorRefitResult] = useState<{ status: string; n_samples?: number } | null>(null);
+  const [lgbm1hLoaded, setLgbm1hLoaded] = useState<boolean | null>(null);
+  const [lgbm1hRetraining, setLgbm1hRetraining] = useState(false);
+  const [lgbm1hResult, setLgbm1hResult] = useState<{
+    status: string; oos_accuracy?: number; oos_log_loss?: number;
+    n_features?: number; elapsed_s?: number; train_rows?: number;
+  } | null>(null);
 
   const loadFeatureImportance = () => {
     setFeatImportanceLoading(true);
@@ -152,6 +166,22 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
       .then(r => r.ok ? r.json() : null)
       .then(d => d && setCalibratorStats(d))
       .catch(() => {});
+  };
+
+  const handleRetrain1h = async () => {
+    if (!confirm('Addestra il modello LightGBM 1H Gate su 2000 candele orarie?\n\nIl processo dura 20–60 secondi. Non interrompe il bot.')) return;
+    setLgbm1hRetraining(true);
+    setLgbm1hResult(null);
+    try {
+      const r = await fetch(`${apiBase}/retrain/1h`, { method: 'POST' });
+      const data = await r.json();
+      setLgbm1hResult(data);
+      if (data.status === 'ok') setLgbm1hLoaded(true);
+    } catch {
+      setLgbm1hResult({ status: 'error' });
+    } finally {
+      setLgbm1hRetraining(false);
+    }
   };
 
   const handleCalibratorRefit = async () => {
@@ -184,6 +214,7 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
         setHlTestnet(s.hl_testnet ?? true);
         if (s.last_retrain) setLastRetrain(s.last_retrain);
         if (s.retrain_in_progress) setRetraining(true);
+        if (s.lgbm_1h_loaded !== undefined) setLgbm1hLoaded(s.lgbm_1h_loaded);
       })
       .catch(() => {});
     // Auto-load feature importance, pruning stats and calibrator stats on mount
@@ -1262,6 +1293,199 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
             </svg>
             <p className="text-[10px] text-slate-400 dark:text-slate-500 leading-relaxed">
               Workflow: <span className="font-mono font-bold">1.</span> Esegui Retrain — il grafico si popola automaticamente · <span className="font-mono font-bold">2.</span> Scegli la soglia in base a quante feature vuoi tenere · <span className="font-mono font-bold">3.</span> Abilita il toggle · <span className="font-mono font-bold">4.</span> Salva e ri-fai Retrain per generare <span className="font-mono">lgbm_pruned.pkl</span>
+            </p>
+          </div>
+        )}
+      </Section>
+
+      {/* Gate LightGBM 1H */}
+      <Section
+        title="Gate LightGBM 1H"
+        description="Un secondo modello LightGBM addestrato su candele 1H conferma o blocca i segnali del modello 4H principale. Riduce i falsi segnali in momenti di disaccordo tra i due timeframe. Richiede un addestramento iniziale con il pulsante dedicato."
+      >
+        {/* Toggle */}
+        <div className={`flex flex-col gap-3 mb-6 pb-6 border-b transition-colors duration-200 ${config.use_1h_lgbm_gate ? 'border-violet-200 dark:border-violet-500/25' : 'border-slate-100 dark:border-white/5'}`}>
+          <div className="flex items-center justify-between gap-4">
+            <Tooltip
+              text="Quando attivo, ogni segnale 4H (long/short) viene filtrato dal modello 1H: se P(direzione)_1H ≥ min_agreement → confermato; se block_threshold ≤ P < min_agreement → permesso con size ×0.70; se P < block_threshold → bloccato. Fail-safe: se il modello 1H non esiste o si verifica un errore, il trade procede normalmente senza il gate."
+              width="wide"
+              pos="bottom"
+            >
+              <label className="flex items-center gap-3 cursor-pointer group">
+                <div className="relative">
+                  <input
+                    type="checkbox"
+                    className="sr-only"
+                    checked={config.use_1h_lgbm_gate}
+                    onChange={e => setConfig(c => ({ ...c, use_1h_lgbm_gate: e.target.checked }))}
+                  />
+                  <div className={`w-10 h-5 rounded-full transition-all duration-300 ${config.use_1h_lgbm_gate ? 'bg-violet-600' : 'bg-slate-200 dark:bg-white/10'}`} />
+                  <div className={`absolute top-1 left-1 w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.use_1h_lgbm_gate ? 'translate-x-5' : ''}`} />
+                </div>
+                <div>
+                  <p className={`text-sm font-bold transition-colors ${config.use_1h_lgbm_gate ? 'text-violet-600 dark:text-violet-400' : 'text-slate-800 dark:text-slate-200 group-hover:text-violet-600 dark:group-hover:text-violet-400'}`}>
+                    Abilita Gate LightGBM 1H
+                    {config.use_1h_lgbm_gate && (
+                      <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-violet-100 dark:bg-violet-500/20 text-violet-600 dark:text-violet-400 uppercase tracking-wider">Attivo</span>
+                    )}
+                  </p>
+                  <p className="text-[11px] font-medium text-slate-400 dark:text-slate-500 leading-tight">
+                    {config.use_1h_lgbm_gate ? 'Segnali 4H filtrati da conferma 1H — tre fasce: block / reduce ×0.70 / pass' : 'Filtra i segnali 4H con un modello LightGBM su candele orarie'}
+                  </p>
+                </div>
+              </label>
+            </Tooltip>
+
+            {/* Model status + Train button */}
+            <div className="flex items-center gap-2 flex-shrink-0">
+              <div className="flex items-center gap-1.5">
+                <div className={`w-2 h-2 rounded-full ${lgbm1hLoaded === true ? 'bg-emerald-500' : lgbm1hLoaded === false ? 'bg-rose-400' : 'bg-slate-300 dark:bg-slate-600'}`} />
+                <span className="text-[10px] font-medium text-slate-500 dark:text-slate-400">
+                  {lgbm1hLoaded === true ? 'Modello caricato' : lgbm1hLoaded === false ? 'Non addestrato' : '—'}
+                </span>
+              </div>
+              <Tooltip text="Addestra il modello LightGBM 1H su 2000 candele orarie (feature identiche al modello 4H, target: close[+1] > close[0] su 1H). Il processo dura 20–60s e non interrompe il bot. Dopo il primo addestramento, verrà ri-addestrato automaticamente ad ogni retrain 4H quando il gate è attivo." width="wide" pos="top">
+                <button
+                  onClick={handleRetrain1h}
+                  disabled={lgbm1hRetraining}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-bold bg-violet-600 hover:bg-violet-700 disabled:opacity-50 disabled:cursor-not-allowed text-white transition-colors"
+                >
+                  {lgbm1hRetraining ? (
+                    <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/>
+                    </svg>
+                  ) : (
+                    <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+                    </svg>
+                  )}
+                  {lgbm1hRetraining ? 'Addestro…' : lgbm1hLoaded ? 'Ri-addestra 1H' : 'Addestra 1H'}
+                </button>
+              </Tooltip>
+            </div>
+          </div>
+
+          {/* Retrain result */}
+          {lgbm1hResult && (
+            <div className={`flex items-center gap-3 px-3 py-2 rounded-lg text-[11px] font-medium border ${
+              lgbm1hResult.status === 'ok'
+                ? 'bg-violet-50 dark:bg-violet-500/10 border-violet-200 dark:border-violet-500/30 text-violet-700 dark:text-violet-400'
+                : 'bg-rose-50 dark:bg-rose-500/10 border-rose-200 dark:border-rose-500/30 text-rose-700 dark:text-rose-400'
+            }`}>
+              {lgbm1hResult.status === 'ok' ? (
+                <>
+                  <span>✓ Modello 1H addestrato</span>
+                  <span className="text-slate-400 dark:text-slate-500">·</span>
+                  <span>OOS acc <span className="font-bold font-mono">{lgbm1hResult.oos_accuracy !== undefined ? `${(lgbm1hResult.oos_accuracy * 100).toFixed(1)}%` : '—'}</span></span>
+                  <span className="text-slate-400 dark:text-slate-500">·</span>
+                  <span>{lgbm1hResult.n_features} feature</span>
+                  <span className="text-slate-400 dark:text-slate-500">·</span>
+                  <span>{lgbm1hResult.elapsed_s}s</span>
+                </>
+              ) : (
+                <span>✕ Errore durante l'addestramento del modello 1H</span>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Threshold sliders — only shown when gate is enabled */}
+        {config.use_1h_lgbm_gate && (
+          <div className="space-y-6">
+            {/* Min agreement */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <Tooltip
+                  text="Probabilità minima P(direzione)_1H per confermare il trade a size piena. Se P(direzione) è tra block_threshold e questo valore, il trade viene permesso con size ridotta al 70%. Deve essere > block_threshold. Valore consigliato per iniziare: 52%."
+                  width="wide"
+                  pos="bottom"
+                >
+                  <span className="text-[10px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest cursor-help">
+                    Accordo minimo 1H
+                  </span>
+                </Tooltip>
+                <span className="font-mono text-sm font-bold text-violet-600 dark:text-violet-400">
+                  {(config.lgbm_1h_min_agreement * 100).toFixed(0)}%
+                  <span className="text-[10px] font-normal text-slate-400 dark:text-slate-500 ml-1">→ size piena</span>
+                </span>
+              </div>
+              <input
+                type="range" min={50} max={70} step={1}
+                value={Math.round(config.lgbm_1h_min_agreement * 100)}
+                onChange={e => setConfig(c => ({ ...c, lgbm_1h_min_agreement: parseInt(e.target.value) / 100 }))}
+                className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/15 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3.5 [&::-webkit-slider-thumb]:h-3.5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-violet-500 [&::-webkit-slider-thumb]:shadow-sm [&::-webkit-slider-thumb]:cursor-pointer [&::-moz-range-thumb]:w-3.5 [&::-moz-range-thumb]:h-3.5 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-violet-500 [&::-moz-range-thumb]:border-0"
+              />
+              <div className="flex justify-between text-[9px] font-mono text-slate-400 dark:text-slate-500">
+                <span>50%</span><span>60%</span><span>70%</span>
+              </div>
+            </div>
+
+            {/* Block threshold */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <Tooltip
+                  text="Se P(direzione)_1H scende sotto questa soglia, il trade viene bloccato completamente (no_trade). Deve essere < accordo minimo. Valore consigliato per iniziare: 42–45%. Abbassare se il gate blocca troppi segnali (>30%)."
+                  width="wide"
+                  pos="bottom"
+                >
+                  <span className="text-[10px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest cursor-help">
+                    Soglia di blocco 1H
+                  </span>
+                </Tooltip>
+                <span className="font-mono text-sm font-bold text-rose-500 dark:text-rose-400">
+                  {(config.lgbm_1h_block_threshold * 100).toFixed(0)}%
+                  <span className="text-[10px] font-normal text-slate-400 dark:text-slate-500 ml-1">→ trade bloccato</span>
+                </span>
+              </div>
+              <input
+                type="range" min={30} max={50} step={1}
+                value={Math.round(config.lgbm_1h_block_threshold * 100)}
+                onChange={e => setConfig(c => ({ ...c, lgbm_1h_block_threshold: parseInt(e.target.value) / 100 }))}
+                className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/15 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3.5 [&::-webkit-slider-thumb]:h-3.5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-rose-500 [&::-webkit-slider-thumb]:shadow-sm [&::-webkit-slider-thumb]:cursor-pointer [&::-moz-range-thumb]:w-3.5 [&::-moz-range-thumb]:h-3.5 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-rose-500 [&::-moz-range-thumb]:border-0"
+              />
+              <div className="flex justify-between text-[9px] font-mono text-slate-400 dark:text-slate-500">
+                <span>30%</span><span>40%</span><span>50%</span>
+              </div>
+            </div>
+
+            {/* Visual bands summary */}
+            <div className="bg-slate-50 dark:bg-white/[0.03] border border-slate-100 dark:border-white/8 rounded-xl px-4 py-3">
+              <p className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest mb-2">Fasce attive</p>
+              <div className="space-y-1.5">
+                <div className="flex items-center gap-2">
+                  <div className="w-2.5 h-2.5 rounded-full bg-emerald-500 flex-shrink-0" />
+                  <span className="text-[11px] text-slate-600 dark:text-slate-300">
+                    P ≥ <span className="font-mono font-bold">{(config.lgbm_1h_min_agreement * 100).toFixed(0)}%</span>
+                    <span className="text-slate-400 dark:text-slate-500 ml-2">→ Trade confermato, size piena</span>
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <div className="w-2.5 h-2.5 rounded-full bg-amber-400 flex-shrink-0" />
+                  <span className="text-[11px] text-slate-600 dark:text-slate-300">
+                    <span className="font-mono font-bold">{(config.lgbm_1h_block_threshold * 100).toFixed(0)}%</span>
+                    <span className="text-slate-400 dark:text-slate-500 mx-1">≤ P &lt;</span>
+                    <span className="font-mono font-bold">{(config.lgbm_1h_min_agreement * 100).toFixed(0)}%</span>
+                    <span className="text-slate-400 dark:text-slate-500 ml-2">→ Permesso, size ×0.70</span>
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <div className="w-2.5 h-2.5 rounded-full bg-rose-500 flex-shrink-0" />
+                  <span className="text-[11px] text-slate-600 dark:text-slate-300">
+                    P &lt; <span className="font-mono font-bold">{(config.lgbm_1h_block_threshold * 100).toFixed(0)}%</span>
+                    <span className="text-slate-400 dark:text-slate-500 ml-2">→ Trade bloccato</span>
+                  </span>
+                </div>
+              </div>
+              {config.lgbm_1h_block_threshold >= config.lgbm_1h_min_agreement && (
+                <div className="mt-2 text-[10px] font-bold text-amber-600 dark:text-amber-400">
+                  ⚠ Soglia di blocco ≥ accordo minimo: la fascia "reduce" scompare. Abbassa il blocco o alza l'accordo.
+                </div>
+              )}
+            </div>
+
+            <p className="text-[10px] text-slate-400 dark:text-slate-500 leading-relaxed">
+              Avvia con valori conservativi <span className="font-mono">accordo=52% · blocco=42%</span>. Monitora: se il gate blocca &gt;30% dei segnali abbassa il blocco; se blocca &lt;10% alzalo. Dopo validazione live, considera il punto 5 (estensione backtest).
             </p>
           </div>
         )}

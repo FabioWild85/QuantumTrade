@@ -23,7 +23,7 @@ from services.chronos_model import ChronosForecaster
 from services.decision import DecisionEngine, DecisionResult, compute_qt_score
 from services.risk import RiskManager
 from services.notifications import TelegramNotifier
-from services.trainer import LGBMTrainer, load_model, load_correct_model, _retrain_lock
+from services.trainer import LGBMTrainer, load_model, load_correct_model, load_1h_model, _retrain_lock
 from services.covariates import update_covariates, get_latest_covariates
 from services.supabase_client import get_supabase
 from services.regime_detector import RegimeDetector, RegimeSignal
@@ -108,6 +108,10 @@ class BotConfig:
         self.feature_pruning_min_importance = kw.get("feature_pruning_min_importance", 0.005)
         # Isotonic calibration on c2_dir_prob
         self.use_chronos_calibration        = kw.get("use_chronos_calibration",        False)
+        # Gate LightGBM 1H — confirmation model on 1H timeframe
+        self.use_1h_lgbm_gate               = kw.get("use_1h_lgbm_gate",               False)
+        self.lgbm_1h_min_agreement          = kw.get("lgbm_1h_min_agreement",          0.52)
+        self.lgbm_1h_block_threshold        = kw.get("lgbm_1h_block_threshold",        0.45)
 
     def model_dump(self) -> dict:
         return self.__dict__
@@ -134,6 +138,8 @@ class ExecutionEngine:
         # Model cache — load immediately if available on disk
         self._lgbm_model    = None
         self._lgbm_features = None
+        self._lgbm_1h          = None
+        self._lgbm_1h_features = None
         self._load_model_from_disk()
 
         # Regime detection
@@ -484,6 +490,7 @@ class ExecutionEngine:
             "cycle_count":              self._cycle_count,
             "ws_connected":             self._ws.is_connected,
             "model_loaded":             self._lgbm_model is not None,
+            "lgbm_1h_loaded":           self._lgbm_1h is not None,
             "retrain_in_progress":      _retrain_lock.locked(),
             "last_retrain":             self._last_retrain_metrics,
             "config":                   self.config.model_dump(),
@@ -679,6 +686,47 @@ class ExecutionEngine:
             current_price=snap["mark_price"],
         )
 
+        # ── 7b. Gate LightGBM 1H ─────────────────────────────────────────────
+        # Applied BEFORE inference logging so the log reflects the final decision.
+        # Fail-safe: any exception skips the gate and lets the trade proceed normally.
+        if (
+            cfg.use_1h_lgbm_gate
+            and self._lgbm_1h is not None
+            and result.action in ("long", "short")
+        ):
+            try:
+                df_1h_raw  = await self._hl.get_ohlcv(SYMBOL, "1h", limit=640)
+                df_1h_fund = await self._hl.get_funding_history(SYMBOL, hours=640)
+                df_1h_feat = build_all_features(
+                    df_1h_raw, df_1h_fund, pd.DataFrame(), pd.DataFrame()
+                ).iloc[64:]  # skip indicator warm-up rows
+
+                lgbm_1h_prob   = self._get_lgbm_1h_prob(df_1h_feat)
+                min_agr         = cfg.lgbm_1h_min_agreement
+                block_thr       = cfg.lgbm_1h_block_threshold
+                # P(trade direction is correct) on 1H timeframe
+                gate_side_prob  = lgbm_1h_prob if result.action == "long" else (1.0 - lgbm_1h_prob)
+                original_action = result.action
+
+                if gate_side_prob < block_thr:
+                    result.action = "no_trade"
+                    result.reasoning.append(
+                        f"1H gate BLOCK: P({original_action})_1h={gate_side_prob:.3f} < {block_thr}"
+                    )
+                elif gate_side_prob < min_agr:
+                    result.size_factor *= 0.70
+                    result.reasoning.append(
+                        f"1H gate REDUCE ×0.70: P({original_action})_1h={gate_side_prob:.3f} < {min_agr}"
+                    )
+
+                log.info(
+                    "1H gate [%s]: p1h=%.3f p_dir=%.3f → action=%s size_factor=%.2f",
+                    original_action, lgbm_1h_prob, gate_side_prob,
+                    result.action, result.size_factor,
+                )
+            except Exception as _exc:
+                log.warning("1H gate skipped (error): %s", _exc)
+
         # 8. Execute
         _raw_id = str(uuid.uuid4())[:12]
         inference_id = await self._log_inference(_raw_id, latest, c2_out, lgbm_prob, result, covars)
@@ -757,6 +805,18 @@ class ExecutionEngine:
             )
         else:
             log.warning("No LightGBM model on disk — using neutral probability (0.5) until first retrain")
+        self._load_1h_model()
+
+    def _load_1h_model(self):
+        result = load_1h_model()
+        if result:
+            self._lgbm_1h, self._lgbm_1h_features = result
+            log.info("1H LightGBM gate loaded (%d features)", len(self._lgbm_1h_features))
+        else:
+            self._lgbm_1h          = None
+            self._lgbm_1h_features = None
+            if self.config.use_1h_lgbm_gate:
+                log.warning("1H LGBM model not found — gate will be skipped until POST /retrain/1h is called")
 
     def _get_lgbm_prob(self, df_feat: pd.DataFrame) -> float:
         if self._lgbm_model is None:
@@ -770,6 +830,20 @@ class ExecutionEngine:
             log.warning("LightGBM predict failed: %s — using 0.5", exc)
             return 0.5
 
+    def _get_lgbm_1h_prob(self, df_feat: pd.DataFrame) -> float:
+        """Predict P(up on 1H) using the 1H gate model. Returns 0.5 if model unavailable."""
+        if self._lgbm_1h is None:
+            return 0.5
+        available = [f for f in (self._lgbm_1h_features or []) if f in df_feat.columns]
+        if not available:
+            return 0.5
+        row = df_feat.iloc[[-1]][available].fillna(0)
+        try:
+            return float(self._lgbm_1h.predict_proba(row)[0, 1])
+        except Exception as exc:
+            log.warning("1H LightGBM predict failed: %s — using 0.5", exc)
+            return 0.5
+
     # ── Retraining ────────────────────────────────────────────────────────────
 
     async def _reload_model_after_retrain(self, metrics: dict, trigger: str = "auto"):
@@ -780,6 +854,9 @@ class ExecutionEngine:
         # Reload calibrator from disk when retrain updated it
         if (metrics.get("calibrator") or {}).get("status") == "ok":
             self._chronos.reload_calibrator()
+        # Reload 1H model from disk when retrain updated it
+        if (metrics.get("lgbm_1h") or {}).get("status") == "ok":
+            self._load_1h_model()
         self._last_retrain_metrics = metrics
         log.info(
             "LightGBM model reloaded (%s): OOS acc=%.2f%%, ll=%.4f",
@@ -807,6 +884,7 @@ class ExecutionEngine:
                 use_feature_pruning=self.config.use_feature_pruning,
                 feature_pruning_min_importance=self.config.feature_pruning_min_importance,
                 use_chronos_calibration=self.config.use_chronos_calibration,
+                use_1h_lgbm_gate=self.config.use_1h_lgbm_gate,
             )
             if metrics.get("status") == "ok":
                 await self._reload_model_after_retrain(metrics, trigger="auto")
@@ -827,6 +905,7 @@ class ExecutionEngine:
             use_feature_pruning=self.config.use_feature_pruning,
             feature_pruning_min_importance=self.config.feature_pruning_min_importance,
             use_chronos_calibration=self.config.use_chronos_calibration,
+            use_1h_lgbm_gate=self.config.use_1h_lgbm_gate,
         )
         if metrics.get("status") == "ok":
             await self._reload_model_after_retrain(metrics, trigger="manual")
