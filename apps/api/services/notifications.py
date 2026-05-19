@@ -92,15 +92,37 @@ class TelegramNotifier:
         pnl_pct: float,
         reason: str,
         holding_hours: float,
+        equity_usd: float = 0.0,
+        partial_pnl_usd: float = 0.0,
     ):
-        emoji = "✅" if pnl_usd >= 0 else "❌"
-        sign  = "+" if pnl_usd >= 0 else ""
-        await self._send(
-            f"{emoji} <b>TRADE CHIUSO — {side.upper()} {symbol}</b>\n"
-            f"PnL:      <code>{sign}${pnl_usd:,.2f} ({sign}{pnl_pct:.2f}%)</code>\n"
-            f"Motivo:   <code>{reason}</code>\n"
-            f"Durata:   <code>{holding_hours:.1f}h</code>"
-        )
+        total_pnl = pnl_usd + partial_pnl_usd
+        emoji = "✅" if total_pnl >= 0 else "❌"
+        sign  = "+" if total_pnl >= 0 else ""
+        reason_labels = {
+            "stop_loss":    "Stop Loss",
+            "take_profit":  "Take Profit",
+            "manual":       "Chiusura manuale",
+            "lgbm_exit":    "LightGBM Exit",
+            "max_hold_bars": "Max Hold Time",
+            "kill":         "Kill Switch",
+        }
+        reason_label = reason_labels.get(reason, reason)
+        lines = [
+            f"{emoji} <b>TRADE CHIUSO — {side.upper()} {symbol}</b>",
+            f"PnL close:  <code>{sign}${pnl_usd:,.2f} ({sign}{pnl_pct:.2f}%)</code>",
+        ]
+        if partial_pnl_usd != 0.0:
+            sp = "+" if partial_pnl_usd >= 0 else ""
+            st = "+" if total_pnl >= 0 else ""
+            lines.append(f"PnL parziale: <code>{sp}${partial_pnl_usd:,.2f}</code>")
+            lines.append(f"PnL totale:   <code>{st}${total_pnl:,.2f}</code>")
+        lines += [
+            f"Motivo:     <code>{reason_label}</code>",
+            f"Durata:     <code>{holding_hours:.1f}h</code>",
+        ]
+        if equity_usd > 0:
+            lines.append(f"Equity:     <code>${equity_usd:,.2f}</code>")
+        await self._send("\n".join(lines))
 
     async def send_error(self, error: str, context: str = ""):
         await self._send(

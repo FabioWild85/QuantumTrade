@@ -7,8 +7,9 @@ import { HubSettings } from './HubSettings';
 import { BacktestPanel } from './BacktestPanel';
 import { ServerLogs } from './ServerLogs';
 import { RegimePanel } from './RegimePanel';
+import { ServerStatus } from './ServerStatus';
 
-type HubPage = 'monitor' | 'forecast' | 'config' | 'trades' | 'backtest' | 'regime' | 'logs' | 'settings';
+type HubPage = 'monitor' | 'forecast' | 'config' | 'trades' | 'backtest' | 'regime' | 'logs' | 'server' | 'settings';
 
 const NAV: { id: HubPage; label: string }[] = [
   { id: 'monitor',  label: 'Monitor' },
@@ -18,6 +19,7 @@ const NAV: { id: HubPage; label: string }[] = [
   { id: 'backtest', label: 'Backtest' },
   { id: 'regime',   label: 'Regime' },
   { id: 'logs',     label: 'Server Log' },
+  { id: 'server',   label: 'Server' },
   { id: 'settings', label: 'Settings' },
 ];
 
@@ -78,6 +80,7 @@ export const TradingHubTab: React.FC = () => {
         {page === 'backtest' && <BacktestPanel apiBase={API_BASE} />}
         {page === 'regime'   && <RegimePanel   apiBase={API_BASE} />}
         {page === 'logs'     && <ServerLogs    apiBase={API_BASE} />}
+        {page === 'server'   && <ServerStatus  apiBase={API_BASE} />}
         {page === 'settings' && <HubSettings   apiBase={API_BASE} />}
       </div>
     </div>

@@ -261,13 +261,14 @@ class ExecutionEngine:
             "inference_id":       None,
             "hl_order_id":        None,
             "opened_at":          datetime.now(timezone.utc).isoformat(),
-            "bars_held":          0,
-            "lgbm_strikes":       0,
-            "be_sl_applied":      False,
-            "sl_trailing_active": False,
-            "high_water":         hl_pos["entry_price"],
-            "partial_done":       False,
-            "reconciled":         True,   # flag: position was re-read from HL on restart
+            "bars_held":              0,
+            "lgbm_strikes":           0,
+            "be_sl_applied":          False,
+            "sl_trailing_active":     False,
+            "high_water":             hl_pos["entry_price"],
+            "partial_done":           False,
+            "partial_realized_pnl":   0.0,
+            "reconciled":             True,   # flag: position was re-read from HL on restart
         }
 
         # Merge saved in-flight state from DB (trailing SL progress, partial TP status, etc.)
@@ -285,6 +286,7 @@ class ExecutionEngine:
                     "sl_trailing_active":      saved_state.get("sl_trailing_active", False),
                     "high_water":              saved_state.get("high_water") or hl_pos["entry_price"],
                     "partial_done":            saved_state.get("partial_done", False),
+                    "partial_realized_pnl":    saved_state.get("partial_realized_pnl", 0.0),
                     "sl_original":             saved_state.get("sl_original"),
                     "entry_atr":               saved_state.get("entry_atr"),
                     "inference_id":            saved_state.get("inference_id"),
@@ -297,6 +299,7 @@ class ExecutionEngine:
                     # Use HL-authoritative values for size (partial TP may have updated on exchange)
                     "size_usd":                saved_state.get("size_usd") or self._position["size_usd"],
                     "size_contracts":          saved_state.get("size_contracts") or self._position["size_contracts"],
+                    "original_size_usd":       saved_state.get("original_size_usd"),
                 })
                 log.info(
                     "Reconciliation: restored in-flight state from DB — "
@@ -427,11 +430,13 @@ class ExecutionEngine:
                     "sl_trailing_active":      self._position.get("sl_trailing_active", False),
                     "high_water":              self._position.get("high_water"),
                     "partial_done":            self._position.get("partial_done", False),
+                    "partial_realized_pnl":    self._position.get("partial_realized_pnl", 0.0),
                     "stop_loss":               self._position.get("stop_loss", 0.0),
                     "take_profit":             self._position.get("take_profit", 0.0),
                     "sl_original":             self._position.get("sl_original"),
                     "size_usd":                self._position.get("size_usd"),
                     "size_contracts":          self._position.get("size_contracts"),
+                    "original_size_usd":       self._position.get("original_size_usd"),
                     "entry_atr":               self._position.get("entry_atr"),
                     "inference_id":            self._position.get("inference_id"),
                     "hl_order_id":             self._position.get("hl_order_id"),
@@ -887,23 +892,25 @@ class ExecutionEngine:
         ) if cfg.trailing_sl_enabled else None
 
         self._position = {
-            "side":           result.action,
-            "entry_price":    price,
-            "stop_loss":      params.stop_loss,
-            "take_profit":    params.take_profit,
-            "sl_original":    params.stop_loss,
-            "size_usd":       eff_size_usd,
-            "size_contracts": size,
-            "entry_atr":      _atr,
-            "inference_id":   inference_id,
-            "hl_order_id":    hl_order_id,
-            "opened_at":      datetime.now(timezone.utc).isoformat(),
-            "bars_held":          0,
-            "lgbm_strikes":       0,
-            "be_sl_applied":      False,
-            "sl_trailing_active": False,
-            "high_water":         price,
-            "partial_done":       False,
+            "side":              result.action,
+            "entry_price":       price,
+            "stop_loss":         params.stop_loss,
+            "take_profit":       params.take_profit,
+            "sl_original":       params.stop_loss,
+            "size_usd":          eff_size_usd,
+            "original_size_usd": eff_size_usd,  # preserved even after partial TP reduces size_usd
+            "size_contracts":    size,
+            "entry_atr":         _atr,
+            "inference_id":      inference_id,
+            "hl_order_id":       hl_order_id,
+            "opened_at":         datetime.now(timezone.utc).isoformat(),
+            "bars_held":              0,
+            "lgbm_strikes":           0,
+            "be_sl_applied":          False,
+            "sl_trailing_active":     False,
+            "high_water":             price,
+            "partial_done":           False,
+            "partial_realized_pnl":   0.0,
             # Pre-calculated level prices for UI
             "partial_tp_price":              _partial_tp_price,
             "trailing_sl_activation_price":  _trailing_activation_price,
@@ -1068,6 +1075,9 @@ class ExecutionEngine:
                 self._position["size_usd"]         *= (1.0 - frac)
                 self._position["size_contracts"]    = round(self._position["size_contracts"] * (1.0 - frac), 4)
                 self._position["partial_done"]      = True
+                self._position["partial_realized_pnl"] = (
+                    self._position.get("partial_realized_pnl", 0.0) + pnl_usd_p
+                )
                 # Auto-move SL to break-even after partial TP (protects remaining position)
                 if not self._position.get("be_sl_applied", False):
                     if side == "long":
@@ -1168,22 +1178,23 @@ class ExecutionEngine:
         if not self._position:
             return
 
-        side  = self._position["side"]
-        entry = self._position["entry_price"]
-        size  = self._position["size_usd"]
+        side              = self._position["side"]
+        entry             = self._position["entry_price"]
+        size              = self._position["size_usd"]             # remaining after any partial TP
+        original_size_usd = self._position.get("original_size_usd") or size
 
-        pnl_pct  = (
+        price_pct = (
             (exit_price - entry) / entry * 100 if side == "long"
             else (entry - exit_price) / entry * 100
         )
         fee_exit = size * HL_TAKER_FEE
-        pnl_usd  = size * pnl_pct / 100 - fee_exit
+        pnl_usd  = size * price_pct / 100 - fee_exit
 
-        opened      = datetime.fromisoformat(self._position["opened_at"])
-        holding_h   = (datetime.now(timezone.utc) - opened).total_seconds() / 3600
+        opened    = datetime.fromisoformat(self._position["opened_at"])
+        holding_h = (datetime.now(timezone.utc) - opened).total_seconds() / 3600
 
         self._equity += pnl_usd
-        self._risk.record_trade_result(pnl_pct)
+        self._risk.record_trade_result(price_pct)
 
         if self.mode == "live":
             try:
@@ -1191,43 +1202,70 @@ class ExecutionEngine:
             except Exception as exc:
                 log.error("Close order failed: %s", exc)
 
+        partial_pnl   = self._position.get("partial_realized_pnl", 0.0) or 0.0
+        total_pnl_usd = pnl_usd + partial_pnl
+        # pnl_pct as % of original position size (consistent with pnl_usd being total)
+        total_pnl_pct = total_pnl_usd / original_size_usd * 100 if original_size_usd else price_pct
+
         log.info(
-            "Position closed: %s | %s | PnL %+.2f%% ($%+.2f)",
-            side.upper(), reason, pnl_pct, pnl_usd,
+            "Position closed: %s | %s | PnL %+.2f%% ($%+.2f) [price_pct=%+.2f%%]",
+            side.upper(), reason, total_pnl_pct, total_pnl_usd, price_pct,
         )
 
         await self._notifier.send_trade_closed(
             side=side,
             symbol=SYMBOL,
             pnl_usd=pnl_usd,
-            pnl_pct=pnl_pct,
+            pnl_pct=price_pct,
             reason=reason,
             holding_hours=holding_h,
+            equity_usd=self._equity,
+            partial_pnl_usd=partial_pnl,
         )
 
         try:
             db = get_supabase()
             db.table("equity_snapshots").insert({
-                "bot_id":        "default",
-                "equity_usd":    self._equity,
+                "bot_id":         "default",
+                "equity_usd":     self._equity,
                 "unrealized_pnl": 0.0,
-                "realized_pnl":  pnl_usd,
-                "drawdown_pct":  min(0.0, pnl_pct),
+                "realized_pnl":   total_pnl_usd,
+                "drawdown_pct":   min(0.0, total_pnl_pct),
             }).execute()
-            severity = "info" if pnl_usd >= 0 else "warning"
+            severity = "info" if total_pnl_usd >= 0 else "warning"
             db.table("events").insert({
                 "severity": severity,
                 "kind": "trade_closed",
-                "message": f"[{self.mode.upper()}] {side.upper()} chiuso ({reason}) | PnL {pnl_pct:+.2f}% (${pnl_usd:+.2f}) in {holding_h:.1f}h",
+                "message": f"[{self.mode.upper()}] {side.upper()} chiuso ({reason}) | PnL {total_pnl_pct:+.2f}% (${total_pnl_usd:+.2f}) in {holding_h:.1f}h",
                 "payload": {
                     "side": side, "symbol": SYMBOL, "reason": reason,
-                    "pnl_pct": round(pnl_pct, 4), "pnl_usd": round(pnl_usd, 2),
+                    "pnl_pct": round(total_pnl_pct, 4), "pnl_usd": round(total_pnl_usd, 2),
                     "entry": entry, "exit": exit_price, "holding_h": round(holding_h, 2),
+                    "partial_pnl_usd": round(partial_pnl, 2),
                     "mode": self.mode,
                 },
             }).execute()
+            # Insert completed trade into trades table (feeds TradeLog UI)
+            _valid_reasons = {"stop_loss", "take_profit", "manual", "kill", "lgbm_exit", "max_hold_bars", "max_funding"}
+            _reason_close = reason if reason in _valid_reasons else "manual"
+            db.table("trades").insert({
+                "bot_id":          "default",
+                "entry_order_id":  self._position.get("trade_id"),
+                "symbol":          SYMBOL,
+                "side":            side,
+                "entry_price":     round(entry, 2),
+                "exit_price":      round(exit_price, 2),
+                "pnl_usd":         round(total_pnl_usd, 2),
+                "pnl_pct":         round(total_pnl_pct, 4),
+                "partial_pnl_usd": round(partial_pnl, 2),
+                "holding_sec":     int(holding_h * 3600),
+                "reason_close":    _reason_close,
+                "opened_at":       self._position["opened_at"],
+                "closed_at":       datetime.now(timezone.utc).isoformat(),
+                "mode":            self.mode,
+            }).execute()
         except Exception as exc:
-            log.warning("Equity snapshot write failed: %s", exc)
+            log.warning("Equity/trade snapshot write failed: %s", exc)
 
         self._position = None
 

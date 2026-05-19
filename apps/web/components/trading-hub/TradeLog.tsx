@@ -7,7 +7,11 @@ interface Trade {
   symbol: string;
   pnl_usd: number | null;
   pnl_pct: number | null;
+  partial_pnl_usd: number | null;
+  entry_price: number | null;
+  exit_price: number | null;
   reason_close: string | null;
+  mode: string | null;
   opened_at: string;
   closed_at: string | null;
   holding_sec: number | null;
@@ -58,6 +62,7 @@ export const TradeLog: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   const [loadingEvents, setLoadingEvents] = useState<string | null>(null);
   const [tab,          setTab]          = useState<'trades' | 'inference'>('trades');
   const [loading,      setLoading]      = useState(true);
+  const [modeFilter, setModeFilter] = useState<'all' | 'paper' | 'live'>('all');
 
   const loadTradeEvents = async (tradeId: string) => {
     if (tradeEvents[tradeId] !== undefined) return; // already loaded
@@ -99,8 +104,13 @@ export const TradeLog: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     return `${h}h ${m}m`;
   };
 
+  // ── Mode filter ────────────────────────────────────────────────────────────
+  const hasLiveTrades = trades.some(t => t.mode === 'live');
+  const filteredTrades = modeFilter === 'all' ? trades
+    : trades.filter(t => (t.mode ?? 'paper') === modeFilter);
+
   // ── Aggregate stats ────────────────────────────────────────────────────────
-  const closed  = trades.filter(t => t.closed_at);
+  const closed  = filteredTrades.filter(t => t.closed_at);
   const wins    = closed.filter(t => (t.pnl_usd ?? 0) > 0);
   const losses  = closed.filter(t => (t.pnl_usd ?? 0) <= 0);
   const totalPnl = closed.reduce((s, t) => s + (t.pnl_usd ?? 0), 0);
@@ -109,12 +119,50 @@ export const TradeLog: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   const avgLoss  = losses.length > 0 ? losses.reduce((s, t) => s + (t.pnl_pct ?? 0), 0) / losses.length : 0;
   const pf       = losses.length > 0 && avgLoss !== 0 ? Math.abs(avgWin * wins.length / (avgLoss * losses.length)) : null;
 
+  // ── Sharpe / Sortino (min 5 closed trades) ──────────────────────────────────
+  const returns    = closed.map(t => t.pnl_pct ?? 0);
+  const N          = returns.length;
+  const meanR      = N > 0 ? returns.reduce((a, b) => a + b, 0) / N : 0;
+  const variance   = N > 1 ? returns.reduce((a, b) => a + (b - meanR) ** 2, 0) / N : 0;
+  const stdR       = Math.sqrt(variance);
+  const sharpe     = N >= 5 && stdR > 0 ? meanR / stdR : null;
+  const negSqSum   = returns.filter(r => r < 0).reduce((a, b) => a + b * b, 0);
+  const downStd    = N > 0 ? Math.sqrt(negSqSum / N) : 0;
+  const sortino    = N >= 5 && downStd > 0 ? meanR / downStd : null;
+
   return (
     <div className="space-y-4">
 
+      {/* ── Mode filter (visible only when live trades exist) ─────────────── */}
+      {hasLiveTrades && (
+        <div className="flex items-center gap-2">
+          <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest">Modalità:</span>
+          {(['all', 'paper', 'live'] as const).map(m => (
+            <button
+              key={m}
+              onClick={() => setModeFilter(m)}
+              className={`px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all border ${
+                modeFilter === m
+                  ? m === 'live'
+                    ? 'bg-emerald-600 text-white border-emerald-600 shadow-sm shadow-emerald-500/20'
+                    : m === 'paper'
+                    ? 'bg-indigo-600 text-white border-indigo-600 shadow-sm shadow-indigo-500/20'
+                    : 'bg-slate-700 dark:bg-slate-200 text-white dark:text-slate-900 border-slate-700 dark:border-slate-200'
+                  : 'text-slate-500 dark:text-slate-400 border-slate-200 dark:border-white/10 hover:border-slate-400 dark:hover:border-white/20'
+              }`}
+            >
+              {m === 'all' ? 'Tutti' : m === 'paper' ? 'Paper' : 'Live'}
+            </button>
+          ))}
+          <span className="text-[10px] text-slate-400 dark:text-slate-500 font-mono ml-1">
+            ({filteredTrades.length} trade)
+          </span>
+        </div>
+      )}
+
       {/* ── Stats strip (only when trades exist) ──────────────────────────── */}
       {closed.length > 0 && (
-        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-4">
+        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-4 xl:grid-cols-8 gap-3">
           <Tooltip text="Numero totale di trade completati (con entrata e uscita)." pos="bottom">
             <StatChip label="Trade chiusi" value={String(closed.length)} />
           </Tooltip>
@@ -147,13 +195,31 @@ export const TradeLog: React.FC<{ apiBase: string }> = ({ apiBase }) => {
               />
             </Tooltip>
           )}
+          {sharpe !== null && (
+            <Tooltip text="Sharpe ratio per-trade: rendimento medio diviso deviazione standard. >1 è buono, >2 è eccellente. Calcolato su tutti i trade chiusi (min. 5)." pos="bottom">
+              <StatChip
+                label="Sharpe"
+                value={sharpe.toFixed(2)}
+                color={sharpe >= 1 ? 'text-emerald-600 dark:text-emerald-400' : sharpe >= 0 ? 'text-amber-600 dark:text-amber-400' : 'text-rose-600 dark:text-rose-400'}
+              />
+            </Tooltip>
+          )}
+          {sortino !== null && (
+            <Tooltip text="Sortino ratio: come lo Sharpe ma penalizza solo le perdite (non la volatilità positiva). >1 è buono, >2 è eccellente." pos="bottom">
+              <StatChip
+                label="Sortino"
+                value={sortino.toFixed(2)}
+                color={sortino >= 1 ? 'text-emerald-600 dark:text-emerald-400' : sortino >= 0 ? 'text-amber-600 dark:text-amber-400' : 'text-rose-600 dark:text-rose-400'}
+              />
+            </Tooltip>
+          )}
         </div>
       )}
 
       {/* ── Tabs ──────────────────────────────────────────────────────────── */}
       <div className="flex gap-4 p-1.5 bg-slate-100 dark:bg-white/5 rounded-2xl w-fit">
         <TabBtn active={tab === 'trades'}    onClick={() => setTab('trades')}>
-          Trades Chiuse ({trades.length})
+          Trades Chiuse ({filteredTrades.length})
         </TabBtn>
         <TabBtn active={tab === 'inference'} onClick={() => setTab('inference')}>
           Inference Intelligence ({logs.length})
@@ -197,7 +263,7 @@ export const TradeLog: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                 </tr>
               </thead>
               <tbody>
-                {trades.map(t => {
+                {filteredTrades.map(t => {
                   const pnl      = t.pnl_usd ?? 0;
                   const pnlPct   = t.pnl_pct ?? 0;
                   const isOpen   = !t.closed_at;
@@ -249,7 +315,39 @@ export const TradeLog: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                       {/* ── Event timeline (expanded) ── */}
                       {isExpTrade && (
                         <tr className="border-b border-slate-100 dark:border-white/5">
-                          <td colSpan={5} className="px-6 py-4 bg-slate-50/50 dark:bg-black/10">
+                          <td colSpan={5} className="px-6 py-4 bg-slate-50/50 dark:bg-black/10 space-y-4">
+                            {/* Trade price + PnL summary */}
+                            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                              <div className="bg-white dark:bg-white/5 border border-slate-100 dark:border-white/5 rounded-xl px-4 py-3">
+                                <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-1">Entry Price</p>
+                                <p className="text-sm font-bold font-mono text-slate-700 dark:text-slate-200">
+                                  {t.entry_price != null ? `$${t.entry_price.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '—'}
+                                </p>
+                              </div>
+                              <div className="bg-white dark:bg-white/5 border border-slate-100 dark:border-white/5 rounded-xl px-4 py-3">
+                                <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-1">Exit Price</p>
+                                <p className="text-sm font-bold font-mono text-slate-700 dark:text-slate-200">
+                                  {t.exit_price != null ? `$${t.exit_price.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '—'}
+                                </p>
+                              </div>
+                              {(t.partial_pnl_usd ?? 0) !== 0 && (
+                                <div className="bg-amber-50 dark:bg-amber-500/10 border border-amber-100 dark:border-amber-500/20 rounded-xl px-4 py-3">
+                                  <p className="text-[10px] font-bold text-amber-500 dark:text-amber-400 uppercase tracking-widest mb-1">Partial TP PnL</p>
+                                  <p className={`text-sm font-bold font-mono ${(t.partial_pnl_usd ?? 0) >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>
+                                    {(t.partial_pnl_usd ?? 0) >= 0 ? '+' : ''}${(t.partial_pnl_usd ?? 0).toFixed(2)}
+                                  </p>
+                                </div>
+                              )}
+                              {(t.partial_pnl_usd ?? 0) !== 0 && t.pnl_usd != null && (
+                                <div className="bg-white dark:bg-white/5 border border-slate-100 dark:border-white/5 rounded-xl px-4 py-3">
+                                  <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-1">PnL Totale Trade</p>
+                                  <p className={`text-sm font-bold font-mono ${t.pnl_usd >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>
+                                    {t.pnl_usd >= 0 ? '+' : ''}${t.pnl_usd.toFixed(2)}
+                                  </p>
+                                </div>
+                              )}
+                            </div>
+                            {/* Event timeline */}
                             {loadingEvents === t.id ? (
                               <p className="text-xs text-slate-400 italic">Caricamento eventi…</p>
                             ) : events && events.length > 0 ? (

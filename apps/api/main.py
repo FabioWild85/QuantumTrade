@@ -5,10 +5,14 @@ Single-user, single-bot, BTC-PERP on Hyperliquid (4h Trend Following)
 
 import asyncio
 import logging
+import os
+import time as _time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Optional
+
+import psutil
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
@@ -451,6 +455,47 @@ async def equity_stream():
     )
 
 
+@app.get("/live/account")
+async def live_account():
+    """Real HL account state: balance, margin, open positions."""
+    import os as _os
+    wallet = _os.getenv("HL_WALLET_ADDRESS", "")
+    if not wallet:
+        return {"configured": False}
+    try:
+        from services.hyperliquid_data import HyperliquidData
+        hl = HyperliquidData()
+        data = await hl._post({"type": "clearinghouseState", "user": wallet})
+        margin = data.get("marginSummary", {})
+        positions = []
+        for ap in data.get("assetPositions", []):
+            pos = ap.get("position", {})
+            szi = float(pos.get("szi", 0))
+            if abs(szi) > 1e-6:
+                lev = pos.get("leverage", {}) or {}
+                positions.append({
+                    "coin":             pos.get("coin"),
+                    "side":             "long" if szi > 0 else "short",
+                    "size":             abs(szi),
+                    "entry_price":      float(pos.get("entryPx") or 0),
+                    "unrealized_pnl":   float(pos.get("unrealizedPnl") or 0),
+                    "return_on_equity": float(pos.get("returnOnEquity") or 0),
+                    "leverage_value":   float(lev.get("value", 1)) if isinstance(lev, dict) else 1.0,
+                    "leverage_type":    lev.get("type", "isolated") if isinstance(lev, dict) else "isolated",
+                })
+        return {
+            "configured":        True,
+            "account_value":     float(margin.get("accountValue", 0)),
+            "total_margin_used": float(margin.get("totalMarginUsed", 0)),
+            "total_ntl_pos":     float(margin.get("totalNtlPos", 0)),
+            "withdrawable":      float(data.get("withdrawable", 0)),
+            "positions":         positions,
+        }
+    except Exception as exc:
+        log.warning("live_account fetch failed: %s", exc)
+        return {"configured": True, "error": str(exc)}
+
+
 @app.get("/trades")
 async def get_trades(limit: int = 100):
     db = get_supabase()
@@ -619,13 +664,18 @@ async def get_events(limit: int = 100, since: Optional[str] = None):
 
 @app.get("/regime/current")
 async def regime_current():
-    """Return the latest regime detection signal."""
+    """Return the latest regime detection signal.
+
+    Priority: in-memory (current run) → latest row in regime_log DB table.
+    The in-memory signal resets on every service restart, so the DB fallback
+    ensures the UI always shows the last known regime instead of 'No data'.
+    """
     if not engine:
         raise HTTPException(503, "Engine not initialized")
 
     signal = engine._regime_signal
+    from_db = False
 
-    regime_data = None
     if signal is not None:
         regime_data = {
             "regime":          signal.regime,
@@ -638,9 +688,41 @@ async def regime_current():
             "transition_risk": signal.transition_risk,
             "reasoning":       signal.reasoning,
         }
+    else:
+        # Fallback: read latest persisted snapshot from regime_log
+        try:
+            db = get_supabase()
+            result = (
+                db.table("regime_log")
+                .select("*")
+                .order("detected_at", desc=True)
+                .limit(1)
+                .execute()
+            )
+            row = (result.data or [None])[0]
+        except Exception:
+            row = None
+
+        if row:
+            from_db = True
+            regime_data = {
+                "regime":          row["regime"],
+                "confidence":      row.get("confidence", 0.5),
+                "adx":             row.get("adx", 0.0),
+                "atr_percentile":  row.get("atr_pct", 50.0),
+                "trend_slope_pct": row.get("slope_pct", 0.0),
+                "bb_width_pct":    row.get("bb_width_pct", 0.0),
+                "bars_in_regime":  row.get("bars_in_regime", 0),
+                "transition_risk": row.get("transition_risk", 0.0),
+                "reasoning":       [],
+                "detected_at":     row.get("detected_at"),
+            }
+        else:
+            regime_data = None
 
     return {
         "regime_signal": regime_data,
+        "from_db":        from_db,
     }
 
 
@@ -763,6 +845,150 @@ async def delete_preset(preset_id: int):
     except Exception as exc:
         log.warning("delete_preset failed: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc))
+
+
+# ─── Server Status ────────────────────────────────────────────────────────────
+
+# Track previous network counters for bandwidth calculation
+_net_prev: dict = {}
+
+@app.get("/server/status")
+async def server_status():
+    """
+    Return real-time VPS resource usage: CPU, RAM, disk, network bandwidth,
+    load average, uptime, and the current API process stats.
+    """
+    global _net_prev
+
+    # ── CPU ──────────────────────────────────────────────────────────────────
+    cpu_pct        = psutil.cpu_percent(interval=0.2)
+    cpu_per_core   = psutil.cpu_percent(interval=None, percpu=True)
+    cpu_count_log  = psutil.cpu_count(logical=True)
+    cpu_count_phys = psutil.cpu_count(logical=False)
+    try:
+        freq = psutil.cpu_freq()
+        cpu_freq_mhz = round(freq.current) if freq else None
+        cpu_freq_max = round(freq.max)      if freq else None
+    except Exception:
+        cpu_freq_mhz = cpu_freq_max = None
+
+    # ── RAM ──────────────────────────────────────────────────────────────────
+    vm = psutil.virtual_memory()
+    swap = psutil.swap_memory()
+
+    # ── Disk ─────────────────────────────────────────────────────────────────
+    disk_path = "/opt/quantum-trade" if os.path.exists("/opt/quantum-trade") else "/"
+    try:
+        disk = psutil.disk_usage(disk_path)
+        disk_root = psutil.disk_usage("/")
+    except Exception:
+        disk = disk_root = None
+
+    # ── Network bandwidth (bytes/s since last call) ───────────────────────────
+    net_now = psutil.net_io_counters()
+    now_ts  = _time.monotonic()
+    net_rx_bps = net_tx_bps = 0.0
+    if _net_prev:
+        dt = max(now_ts - _net_prev["ts"], 0.001)
+        net_rx_bps = (net_now.bytes_recv - _net_prev["rx"]) / dt
+        net_tx_bps = (net_now.bytes_sent - _net_prev["tx"]) / dt
+    _net_prev = {"ts": now_ts, "rx": net_now.bytes_recv, "tx": net_now.bytes_sent}
+
+    # ── Load average ─────────────────────────────────────────────────────────
+    try:
+        load1, load5, load15 = psutil.getloadavg()
+    except Exception:
+        load1 = load5 = load15 = 0.0
+
+    # ── Uptime ───────────────────────────────────────────────────────────────
+    boot_ts  = psutil.boot_time()
+    uptime_s = int(_time.time() - boot_ts)
+
+    # ── Current process (API) ─────────────────────────────────────────────────
+    proc = psutil.Process(os.getpid())
+    with proc.oneshot():
+        proc_cpu  = proc.cpu_percent(interval=0.1)
+        proc_mem  = proc.memory_info()
+        proc_thr  = proc.num_threads()
+        proc_fds  = proc.num_fds() if hasattr(proc, "num_fds") else None
+        proc_up   = int(_time.time() - proc.create_time())
+
+    # ── Top processes by CPU ──────────────────────────────────────────────────
+    top_procs = []
+    for p in sorted(
+        psutil.process_iter(["pid", "name", "cpu_percent", "memory_percent", "status"]),
+        key=lambda x: x.info.get("cpu_percent") or 0,
+        reverse=True,
+    )[:6]:
+        top_procs.append({
+            "pid":    p.info["pid"],
+            "name":   p.info["name"],
+            "cpu":    round(p.info.get("cpu_percent") or 0, 1),
+            "mem":    round(p.info.get("memory_percent") or 0, 1),
+            "status": p.info.get("status", ""),
+        })
+
+    def _gb(b):
+        return round(b / 1024 ** 3, 2)
+
+    def _mb(b):
+        return round(b / 1024 ** 2, 1)
+
+    return {
+        "cpu": {
+            "percent":    round(cpu_pct, 1),
+            "per_core":   [round(c, 1) for c in (cpu_per_core or [])],
+            "cores_logical":  cpu_count_log,
+            "cores_physical": cpu_count_phys,
+            "freq_mhz":   cpu_freq_mhz,
+            "freq_max_mhz": cpu_freq_max,
+        },
+        "ram": {
+            "total_gb":  _gb(vm.total),
+            "used_gb":   _gb(vm.used),
+            "avail_gb":  _gb(vm.available),
+            "percent":   round(vm.percent, 1),
+            "swap_total_gb": _gb(swap.total),
+            "swap_used_gb":  _gb(swap.used),
+            "swap_percent":  round(swap.percent, 1),
+        },
+        "disk": {
+            "path":      disk_path,
+            "total_gb":  _gb(disk.total)  if disk else 0,
+            "used_gb":   _gb(disk.used)   if disk else 0,
+            "free_gb":   _gb(disk.free)   if disk else 0,
+            "percent":   round(disk.percent, 1) if disk else 0,
+            "root_total_gb": _gb(disk_root.total) if disk_root else 0,
+            "root_used_gb":  _gb(disk_root.used)  if disk_root else 0,
+            "root_percent":  round(disk_root.percent, 1) if disk_root else 0,
+        },
+        "network": {
+            "rx_bps":        round(net_rx_bps, 1),
+            "tx_bps":        round(net_tx_bps, 1),
+            "rx_total_gb":   _gb(net_now.bytes_recv),
+            "tx_total_gb":   _gb(net_now.bytes_sent),
+            "rx_packets":    net_now.packets_recv,
+            "tx_packets":    net_now.packets_sent,
+        },
+        "load": {
+            "load1":  round(load1, 2),
+            "load5":  round(load5, 2),
+            "load15": round(load15, 2),
+            "cores":  cpu_count_log or 1,
+        },
+        "uptime_s": uptime_s,
+        "process": {
+            "pid":        os.getpid(),
+            "cpu_pct":    round(proc_cpu, 1),
+            "rss_mb":     _mb(proc_mem.rss),
+            "vms_mb":     _mb(proc_mem.vms),
+            "threads":    proc_thr,
+            "fds":        proc_fds,
+            "uptime_s":   proc_up,
+        },
+        "top_processes": top_procs,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
 
 
 def _log_event(kind: str, message: str, severity: str = "info", payload: dict | None = None):

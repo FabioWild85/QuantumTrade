@@ -22,6 +22,7 @@ interface Position {
   sl_trailing_active: boolean;
   be_sl_applied: boolean;
   partial_done: boolean;
+  partial_realized_pnl: number;
   lgbm_strikes: number;
   partial_tp_price: number | null;
   trailing_sl_activation_price: number | null;
@@ -79,6 +80,25 @@ interface EquitySnap {
   equity_usd: number;
   realized_pnl: number;
   drawdown_pct: number;
+}
+
+interface LiveAccount {
+  configured: boolean;
+  error?: string;
+  account_value?: number;
+  total_margin_used?: number;
+  total_ntl_pos?: number;
+  withdrawable?: number;
+  positions?: Array<{
+    coin: string;
+    side: string;
+    size: number;
+    entry_price: number;
+    unrealized_pnl: number;
+    return_on_equity: number;
+    leverage_value: number;
+    leverage_type: string;
+  }>;
 }
 
 const INITIAL_EQUITY = 10_000;
@@ -164,6 +184,7 @@ export const Monitor: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   const [countdown,     setCountdown]    = useState(secsToNext4h());
   const [initialLoad,   setInitialLoad]  = useState(!readStatusCache()); // false if cache hit
   const [modal,         setModal]        = useState<ModalState | null>(null);
+  const [liveAccount, setLiveAccount] = useState<LiveAccount | null>(null);
   const esRef       = useRef<EventSource | null>(null);
   const statusRef   = useRef<BotStatus | null>(null);
 
@@ -175,15 +196,17 @@ export const Monitor: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   // ── REST polling (status + logs every 15s) ────────────────────────────────
   const fetchAll = async () => {
     try {
-      const [s, l, e, ev] = await Promise.all([
+      const [s, l, e, ev, la] = await Promise.all([
         fetch(`${apiBase}/bot/status`).then(r => r.ok ? r.json() : null),
         fetch(`${apiBase}/inference-logs?limit=5`).then(r => r.ok ? r.json() : []),
         fetch(`${apiBase}/equity?limit=100`).then(r => r.ok ? r.json() : []),
         fetch(`${apiBase}/events?limit=50&since=${new Date(Date.now() - 48 * 3600_000).toISOString()}`).then(r => r.ok ? r.json() : []),
+        fetch(`${apiBase}/live/account`).then(r => r.ok ? r.json() : null),
       ]);
       setStatus(s);
       statusRef.current = s;
       writeStatusCache(s);
+      if (la?.configured) setLiveAccount(la);
       setLogs(l ?? []);
       setEquity(prev => {
         if (!e?.length) return prev;
@@ -328,6 +351,28 @@ export const Monitor: React.FC<{ apiBase: string }> = ({ apiBase }) => {
       : pos.stop_loss - markPrice;
     slProgressPct   = range > 0 ? Math.max(0, Math.min(100, (traveled / range) * 100)) : 0;
   }
+
+  // ── Performance analytics (from equity snapshots) ─────────────────────────
+  let maxDrawdownPct = 0;
+  if (equity.length > 1) {
+    let peak = equity[0].equity_usd;
+    for (const snap of equity) {
+      if (snap.equity_usd > peak) peak = snap.equity_usd;
+      const dd = peak > 0 ? (peak - snap.equity_usd) / peak * 100 : 0;
+      if (dd > maxDrawdownPct) maxDrawdownPct = dd;
+    }
+  }
+  const todayStart  = new Date(); todayStart.setHours(0, 0, 0, 0);
+  const weekStart   = new Date(todayStart);
+  weekStart.setDate(weekStart.getDate() - ((weekStart.getDay() + 6) % 7)); // Monday
+  const beforeToday  = equity.filter(e => new Date(e.time) < todayStart);
+  const beforeWeek   = equity.filter(e => new Date(e.time) < weekStart);
+  const dayBase      = beforeToday.length > 0 ? beforeToday[beforeToday.length - 1].equity_usd : INITIAL_EQUITY;
+  const weekBase     = beforeWeek.length  > 0 ? beforeWeek[beforeWeek.length - 1].equity_usd   : INITIAL_EQUITY;
+  const dailyPnl     = equity.length > 0 ? currentEquity - dayBase  : 0;
+  const weeklyPnl    = equity.length > 0 ? currentEquity - weekBase : 0;
+  const dailyPnlPct  = dayBase  > 0 ? (dailyPnl  / dayBase)  * 100 : 0;
+  const weeklyPnlPct = weekBase > 0 ? (weeklyPnl / weekBase) * 100 : 0;
 
   return (
     <div className="space-y-5">
@@ -499,6 +544,51 @@ export const Monitor: React.FC<{ apiBase: string }> = ({ apiBase }) => {
         )}
       </div>
 
+      {/* ── Performance Analytics ─────────────────────────────────────────── */}
+      {equity.length > 0 && (
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <Tooltip text="Variazione dell'equity dall'inizio della giornata corrente (mezzanotte UTC). Basato sugli snapshot di equity salvati nel DB.">
+            <div className="rounded-xl border transition-all w-full h-full flex flex-col justify-between px-5 py-4 bg-white dark:bg-[#151E32] border-slate-200 dark:border-white/5 hover:border-slate-300 dark:hover:border-white/10">
+              <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-1.5">PnL Oggi</p>
+              <div>
+                <p className={`text-xl font-bold font-mono tracking-tight ${dailyPnl >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>
+                  {dailyPnl >= 0 ? '+' : ''}${dailyPnl.toFixed(2)}
+                </p>
+                <p className={`text-xs font-mono mt-0.5 ${dailyPnl >= 0 ? 'text-emerald-500 dark:text-emerald-500' : 'text-rose-500'}`}>
+                  {dailyPnlPct >= 0 ? '+' : ''}{dailyPnlPct.toFixed(2)}%
+                </p>
+              </div>
+            </div>
+          </Tooltip>
+          <Tooltip text="Variazione dell'equity dall'inizio della settimana corrente (lunedì UTC). Basato sugli snapshot di equity.">
+            <div className="rounded-xl border transition-all w-full h-full flex flex-col justify-between px-5 py-4 bg-white dark:bg-[#151E32] border-slate-200 dark:border-white/5 hover:border-slate-300 dark:hover:border-white/10">
+              <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-1.5">PnL Settimana</p>
+              <div>
+                <p className={`text-xl font-bold font-mono tracking-tight ${weeklyPnl >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>
+                  {weeklyPnl >= 0 ? '+' : ''}${weeklyPnl.toFixed(2)}
+                </p>
+                <p className={`text-xs font-mono mt-0.5 ${weeklyPnl >= 0 ? 'text-emerald-500 dark:text-emerald-500' : 'text-rose-500'}`}>
+                  {weeklyPnlPct >= 0 ? '+' : ''}{weeklyPnlPct.toFixed(2)}%
+                </p>
+              </div>
+            </div>
+          </Tooltip>
+          <Tooltip text="Massimo drawdown storico: la peggiore perdita percentuale dal picco all'equity più bassa successiva. 0% se nessun drawdown.">
+            <div className="rounded-xl border transition-all w-full h-full flex flex-col justify-between px-5 py-4 bg-white dark:bg-[#151E32] border-slate-200 dark:border-white/5 hover:border-slate-300 dark:hover:border-white/10">
+              <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-1.5">Max Drawdown</p>
+              <div>
+                <p className={`text-xl font-bold font-mono tracking-tight ${maxDrawdownPct > 5 ? 'text-rose-600 dark:text-rose-400' : maxDrawdownPct > 2 ? 'text-amber-600 dark:text-amber-400' : 'text-emerald-600 dark:text-emerald-400'}`}>
+                  -{maxDrawdownPct.toFixed(2)}%
+                </p>
+                <p className="text-xs font-mono mt-0.5 text-slate-400 dark:text-slate-500">
+                  {maxDrawdownPct === 0 ? 'Nessun drawdown' : maxDrawdownPct > 5 ? 'Alto' : maxDrawdownPct > 2 ? 'Moderato' : 'Basso'}
+                </p>
+              </div>
+            </div>
+          </Tooltip>
+        </div>
+      )}
+
       {/* ── Last inference logs ───────────────────────────────────────────── */}
       {logs.length > 0 && (
         <div className="elegant-card p-6 bg-white dark:bg-[#151E32]">
@@ -532,6 +622,98 @@ export const Monitor: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                 </div>
               </div>
             ))}
+          </div>
+        </div>
+      )}
+
+      {/* ── Live Account (HL) ──────────────────────────────────────────────── */}
+      {status?.mode === 'live' && liveAccount && liveAccount.configured && !liveAccount.error && (
+        <div className="elegant-card p-6 bg-white dark:bg-[#151E32]">
+          <div className="flex items-center gap-3 mb-5">
+            <span className="w-1.5 h-6 bg-emerald-500 rounded-full"></span>
+            <h3 className="text-sm font-bold text-slate-900 dark:text-white uppercase tracking-wider">Account Hyperliquid</h3>
+            <span className="ml-auto text-[9px] font-bold uppercase tracking-widest px-2 py-0.5 rounded border bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border-emerald-200 dark:border-emerald-500/20">Live</span>
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
+            <Tooltip text="Valore totale del conto su Hyperliquid, inclusi margine usato e PnL non realizzato.">
+              <div className="bg-slate-50 dark:bg-white/5 border border-slate-100 dark:border-white/5 rounded-xl px-4 py-3">
+                <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-1">Account Value</p>
+                <p className="text-base font-bold font-mono text-slate-900 dark:text-white">${(liveAccount.account_value ?? 0).toLocaleString('en-US', { minimumFractionDigits: 2 })}</p>
+              </div>
+            </Tooltip>
+            <Tooltip text="Margine disponibile per nuove posizioni o prelievi.">
+              <div className="bg-slate-50 dark:bg-white/5 border border-slate-100 dark:border-white/5 rounded-xl px-4 py-3">
+                <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-1">Disponibile</p>
+                <p className="text-base font-bold font-mono text-emerald-600 dark:text-emerald-400">${(liveAccount.withdrawable ?? 0).toLocaleString('en-US', { minimumFractionDigits: 2 })}</p>
+              </div>
+            </Tooltip>
+            <Tooltip text="Margine attualmente impegnato nelle posizioni aperte.">
+              <div className="bg-slate-50 dark:bg-white/5 border border-slate-100 dark:border-white/5 rounded-xl px-4 py-3">
+                <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-1">Margine Usato</p>
+                <p className={`text-base font-bold font-mono ${(liveAccount.total_margin_used ?? 0) > 0 ? 'text-amber-600 dark:text-amber-400' : 'text-slate-500 dark:text-slate-400'}`}>
+                  ${(liveAccount.total_margin_used ?? 0).toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                </p>
+              </div>
+            </Tooltip>
+            <Tooltip text="Valore nozionale totale delle posizioni aperte su Hyperliquid.">
+              <div className="bg-slate-50 dark:bg-white/5 border border-slate-100 dark:border-white/5 rounded-xl px-4 py-3">
+                <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-1">Notionale</p>
+                <p className="text-base font-bold font-mono text-slate-700 dark:text-slate-200">${(liveAccount.total_ntl_pos ?? 0).toLocaleString('en-US', { maximumFractionDigits: 0 })}</p>
+              </div>
+            </Tooltip>
+          </div>
+          {/* Open positions from HL (real fill prices) */}
+          {(liveAccount.positions ?? []).length > 0 && (
+            <div className="space-y-2">
+              <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest">Posizioni Aperte (HL)</p>
+              {(liveAccount.positions ?? []).map((p, i) => {
+                const upnlColor = p.unrealized_pnl >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400';
+                const roe = (p.return_on_equity * 100);
+                return (
+                  <div key={i} className="flex items-center justify-between px-4 py-3 bg-slate-50 dark:bg-white/[0.03] border border-slate-100 dark:border-white/5 rounded-xl text-xs font-mono">
+                    <div className="flex items-center gap-3">
+                      <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-widest border ${p.side === 'long' ? 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-100 dark:border-emerald-500/20' : 'bg-rose-50 dark:bg-rose-500/10 text-rose-600 dark:text-rose-400 border-rose-100 dark:border-rose-500/20'}`}>
+                        {p.side.toUpperCase()}
+                      </span>
+                      <span className="text-slate-700 dark:text-slate-200 font-bold">{p.coin}</span>
+                      <span className="text-slate-500 dark:text-slate-400">{p.size.toFixed(4)} BTC</span>
+                    </div>
+                    <div className="flex items-center gap-4 text-right">
+                      <div>
+                        <p className="text-[9px] text-slate-400 uppercase">Fill Price</p>
+                        <p className="text-slate-700 dark:text-slate-200 font-bold">${p.entry_price.toLocaleString('en-US', { minimumFractionDigits: 2 })}</p>
+                      </div>
+                      <div>
+                        <p className="text-[9px] text-slate-400 uppercase">PnL non real.</p>
+                        <p className={`font-bold ${upnlColor}`}>{p.unrealized_pnl >= 0 ? '+' : ''}${p.unrealized_pnl.toFixed(2)}</p>
+                      </div>
+                      <div>
+                        <p className="text-[9px] text-slate-400 uppercase">ROE</p>
+                        <p className={`font-bold ${roe >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>{roe >= 0 ? '+' : ''}{roe.toFixed(2)}%</p>
+                      </div>
+                      <div className="text-slate-400 dark:text-slate-500 text-[9px]">
+                        {p.leverage_value}x {p.leverage_type}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          {(liveAccount.positions ?? []).length === 0 && (
+            <p className="text-xs text-slate-400 dark:text-slate-500 italic">Nessuna posizione aperta su Hyperliquid.</p>
+          )}
+        </div>
+      )}
+      {/* HL wallet not configured warning */}
+      {status?.mode === 'live' && status?.running && (!liveAccount || !liveAccount.configured) && (
+        <div className="elegant-card p-5 bg-amber-50 dark:bg-amber-500/5 border border-amber-200 dark:border-amber-500/20">
+          <div className="flex items-center gap-3">
+            <svg className="w-4 h-4 text-amber-500 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/></svg>
+            <div>
+              <p className="text-xs font-bold text-amber-700 dark:text-amber-400 uppercase tracking-wider">Wallet HL non configurato</p>
+              <p className="text-[11px] text-amber-600 dark:text-amber-400 mt-0.5">Imposta <code className="font-mono">HL_WALLET_ADDRESS</code> nel file <code>.env</code> del VPS per visualizzare il saldo reale del conto.</p>
+            </div>
           </div>
         </div>
       )}
@@ -645,12 +827,28 @@ const LiveTradeCard: React.FC<LiveTradeCardProps> = ({
   const fmt       = (n: number) => n.toLocaleString('en-US', { maximumFractionDigits: 0 });
   const hasMark   = markPrice !== null;
   const rr        = distToSL > 0 ? (distToTP / distToSL).toFixed(2) : '—';
+  const slWarning = hasMark && distToSLPct > 0 && distToSLPct < 1.5;
 
   // SL has moved if current SL differs from original
   const slMoved   = pos.sl_original !== undefined && Math.abs(pos.stop_loss - pos.sl_original) > 1;
 
   return (
     <div className="elegant-card overflow-hidden bg-white dark:bg-[#151E32] border border-indigo-100 dark:border-indigo-500/20">
+
+      {/* SL proximity alert */}
+      {slWarning && (
+        <div className="mx-4 mt-4 px-4 py-3 rounded-xl bg-rose-50 dark:bg-rose-500/10 border border-rose-200 dark:border-rose-500/30 flex items-center gap-3 animate-pulse">
+          <svg className="w-4 h-4 text-rose-500 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z"/>
+          </svg>
+          <div>
+            <p className="text-[11px] font-bold text-rose-700 dark:text-rose-400 uppercase tracking-wider">Stop Loss Vicino</p>
+            <p className="text-[10px] text-rose-600 dark:text-rose-400 font-mono mt-0.5">
+              A soli {distToSLPct.toFixed(2)}% dal SL · ${distToSL.toFixed(0)} di distanza
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* Header */}
       <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 dark:border-white/5">
@@ -674,9 +872,12 @@ const LiveTradeCard: React.FC<LiveTradeCardProps> = ({
       {/* P&L hero */}
       <div className={`px-6 py-5 ${pnlBg} border-b border-slate-100 dark:border-white/5`}>
         {hasMark ? (
-          <div className="flex items-end justify-between">
+          <div className="flex items-end justify-between gap-4">
+            {/* Unrealized PnL (current open portion) */}
             <div>
-              <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-1">P&L Non Realizzato</p>
+              <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-1">
+                P&L Non Realizzato
+              </p>
               <div className="flex items-baseline gap-3">
                 <span className={`text-3xl font-bold font-mono tracking-tighter ${pnlColor}`}>
                   {unrealizedPnl >= 0 ? '+' : ''}${unrealizedPnl.toFixed(2)}
@@ -685,8 +886,35 @@ const LiveTradeCard: React.FC<LiveTradeCardProps> = ({
                   {unrealizedPct >= 0 ? '+' : ''}{unrealizedPct.toFixed(2)}%
                 </span>
               </div>
+              {/* Realized PnL from partial TP — shown only when partial_done */}
+              {pos.partial_done && (pos.partial_realized_pnl ?? 0) !== 0 && (() => {
+                const rPnl = pos.partial_realized_pnl ?? 0;
+                const totalPnl = unrealizedPnl + rPnl;
+                const rColor = rPnl >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400';
+                const tColor = totalPnl >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400';
+                return (
+                  <div className="mt-2 flex flex-col gap-0.5">
+                    <div className="flex items-center gap-3">
+                      <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest w-32">
+                        ✓ Partial TP realiz.
+                      </span>
+                      <span className={`text-sm font-bold font-mono ${rColor}`}>
+                        {rPnl >= 0 ? '+' : ''}${rPnl.toFixed(2)}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest w-32">
+                        PnL Totale trade
+                      </span>
+                      <span className={`text-sm font-bold font-mono ${tColor}`}>
+                        {totalPnl >= 0 ? '+' : ''}${totalPnl.toFixed(2)}
+                      </span>
+                    </div>
+                  </div>
+                );
+              })()}
             </div>
-            <div className="text-right">
+            <div className="text-right flex-shrink-0">
               <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-1">Mark Price</p>
               <p className="text-xl font-bold font-mono text-slate-900 dark:text-white">${fmt(markPrice!)}</p>
             </div>
@@ -760,7 +988,11 @@ const LiveTradeCard: React.FC<LiveTradeCardProps> = ({
           <TradeBadge
             label="Partial TP"
             done={pos.partial_done}
-            doneText={`Eseguito`}
+            doneText={
+              (pos.partial_realized_pnl ?? 0) !== 0
+                ? `${(pos.partial_realized_pnl ?? 0) >= 0 ? '+' : ''}$${(pos.partial_realized_pnl ?? 0).toFixed(2)}`
+                : 'Eseguito'
+            }
             pendingText={pos.partial_tp_price ? `@ $${fmt(pos.partial_tp_price)}` : 'Disabilitato'}
             disabled={!pos.partial_tp_price}
           />

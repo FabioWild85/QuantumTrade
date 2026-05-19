@@ -19,6 +19,7 @@ interface RegimeSignal {
 
 interface RegimeResponse {
   regime_signal: RegimeSignal | null;
+  from_db?:      boolean;
 }
 
 interface HistoryEntry {
@@ -177,7 +178,8 @@ export const RegimePanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     );
   }
 
-  const signal = data?.regime_signal;
+  const signal  = data?.regime_signal;
+  const fromDb  = data?.from_db ?? false;
 
   const style    = signal ? (REGIME_STYLE[signal.regime] ?? REGIME_STYLE.sideways) : REGIME_STYLE.sideways;
   const label    = signal ? REGIME_LABEL[signal.regime] : 'Unknown';
@@ -217,21 +219,30 @@ export const RegimePanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
         <div className={`rounded-xl border ${style.border} ${style.bg} p-5 space-y-4`}>
           {signal ? (
             <>
-              {/* Regime badge + label */}
-              <div className="flex items-start justify-between">
-                <div className="space-y-1">
-                  <div className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-sm font-semibold ${style.badge}`}>
-                    <span className={`w-2 h-2 rounded-full ${style.dot} animate-pulse`} />
-                    {REGIME_ICON[signal.regime]}
-                    {label}
-                  </div>
+              {/* Regime badge + confidence inline · snapshot badge top-right */}
+              <div className="flex items-center gap-3">
+                {/* Badge regime */}
+                <div className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-sm font-semibold flex-shrink-0 ${style.badge}`}>
+                  <span className={`w-2 h-2 rounded-full ${style.dot} animate-pulse`} />
+                  {REGIME_ICON[signal.regime]}
+                  {label}
                 </div>
-                <Tooltip text="Probabilità che il regime rilevato sia corretto. <50% = segnale debole, 50–70% = moderato, >70% = forte." pos="top" width="wide">
-                  <div className="text-right text-xs text-slate-500 cursor-help">
-                    <div className="text-slate-700 dark:text-slate-300 font-medium">{(signal.confidence * 100).toFixed(0)}%</div>
-                    <div>confidence</div>
-                  </div>
+                {/* Confidence — inline a destra del badge */}
+                <Tooltip text="Probabilità che il regime rilevato sia corretto. <50% = segnale debole, 50–70% = moderato, >70% = forte." pos="bottom" width="wide">
+                  <span className="text-xs text-slate-500 dark:text-slate-400 cursor-help whitespace-nowrap flex-shrink-0">
+                    <span className="font-semibold text-slate-700 dark:text-slate-300">{(signal.confidence * 100).toFixed(0)}%</span>
+                    {' '}confidence
+                  </span>
                 </Tooltip>
+                {/* Snapshot badge — spinto all'angolo destro */}
+                {fromDb && (
+                  <Tooltip text="Il bot è stato riavviato di recente — questo dato proviene dall'ultimo snapshot salvato nel DB, non dall'analisi live corrente. Si aggiornerà al prossimo ciclo (ogni 4h)." pos="bottom" width="wide">
+                    <div className="ml-auto inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-widest bg-amber-50 dark:bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-200 dark:border-amber-500/25 cursor-help flex-shrink-0">
+                      <svg className="w-2.5 h-2.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                      Ultimo snapshot DB
+                    </div>
+                  </Tooltip>
+                )}
               </div>
 
               {/* Confidence bar */}
