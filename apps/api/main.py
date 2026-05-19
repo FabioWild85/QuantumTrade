@@ -191,6 +191,9 @@ class BotConfig(BaseModel):
     retrain_every_n_cycles: int = Field(120, ge=20,  le=120)
     wf_n_splits:            int = Field(5,   ge=3,   le=12)
     wf_purge_gap:           int = Field(5,   ge=2,   le=20)
+    # Feature Importance Pruning
+    use_feature_pruning:            bool  = Field(False)
+    feature_pruning_min_importance: float = Field(0.005, ge=0.001, le=0.05)
 
 
 class StartBotRequest(BaseModel):
@@ -531,6 +534,34 @@ async def retrain_status():
         "model_loaded":  engine._lgbm_model is not None if engine else False,
         "last_retrain":  engine._last_retrain_metrics if engine else None,
     }
+
+
+@app.get("/model/feature-importance")
+async def get_feature_importance():
+    """Return normalised gain importance for each feature from the last retrain."""
+    import json as _json
+    from services.trainer import MODEL_DIR
+    path = MODEL_DIR / "feature_importance.json"
+    if not path.exists():
+        return {"available": False}
+    with open(path) as f:
+        return {"available": True, **_json.load(f)}
+
+
+@app.get("/model/pruning-stats")
+async def get_pruning_stats():
+    """Return full vs pruned model comparison metrics from the last retrain."""
+    import json as _json
+    from services.trainer import MODEL_DIR, PRUNED_MODEL_PATH
+    path = MODEL_DIR / "pruned_features.json"
+    if not path.exists():
+        return {"available": False, "pruned_model_exists": PRUNED_MODEL_PATH.exists()}
+    with open(path) as f:
+        return {
+            "available":           True,
+            "pruned_model_exists": PRUNED_MODEL_PATH.exists(),
+            **_json.load(f),
+        }
 
 
 # ─── Trade Events ────────────────────────────────────────────────────────────

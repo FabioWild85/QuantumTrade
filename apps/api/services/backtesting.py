@@ -16,7 +16,7 @@ from services.hyperliquid_data import HyperliquidData
 from services.smc import build_all_features
 from services.decision import DecisionEngine, compute_qt_score
 from services.risk import RiskManager
-from services.trainer import load_model
+from services.trainer import load_correct_model
 
 log = logging.getLogger(__name__)
 
@@ -122,7 +122,8 @@ async def run_backtest(req) -> dict:
     df_feat = build_all_features(df_ohlcv, df_fund, df_oi, df_liq)
 
     # ── 3. Load LightGBM model ───────────────────────────────────────────────
-    model_result = load_model()
+    _use_pruning = getattr(cfg, "use_feature_pruning", False)
+    model_result = load_correct_model(_use_pruning)
     if model_result is None:
         return {"error": "Nessun modello LightGBM trovato. Avvia il bot almeno una volta o esegui POST /retrain."}
     lgbm_model, lgbm_features = model_result

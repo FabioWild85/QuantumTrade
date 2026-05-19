@@ -23,7 +23,7 @@ from services.chronos_model import ChronosForecaster
 from services.decision import DecisionEngine, DecisionResult, compute_qt_score
 from services.risk import RiskManager
 from services.notifications import TelegramNotifier
-from services.trainer import LGBMTrainer, load_model, _retrain_lock
+from services.trainer import LGBMTrainer, load_model, load_correct_model, _retrain_lock
 from services.covariates import update_covariates, get_latest_covariates
 from services.supabase_client import get_supabase
 from services.regime_detector import RegimeDetector, RegimeSignal
@@ -103,6 +103,9 @@ class BotConfig:
         self.retrain_every_n_cycles  = kw.get("retrain_every_n_cycles",  120)
         self.wf_n_splits             = kw.get("wf_n_splits",             5)
         self.wf_purge_gap            = kw.get("wf_purge_gap",            5)
+        # Feature Importance Pruning
+        self.use_feature_pruning            = kw.get("use_feature_pruning",            False)
+        self.feature_pruning_min_importance = kw.get("feature_pruning_min_importance", 0.005)
 
     def model_dump(self) -> dict:
         return self.__dict__
@@ -742,10 +745,13 @@ class ExecutionEngine:
     # ── LightGBM ──────────────────────────────────────────────────────────────
 
     def _load_model_from_disk(self):
-        result = load_model()
+        result = load_correct_model(self.config.use_feature_pruning)
         if result:
             self._lgbm_model, self._lgbm_features = result
-            log.info("LightGBM model loaded from disk (%d features)", len(self._lgbm_features))
+            log.info(
+                "LightGBM model loaded from disk (%d features, pruning=%s)",
+                len(self._lgbm_features), self.config.use_feature_pruning,
+            )
         else:
             log.warning("No LightGBM model on disk — using neutral probability (0.5) until first retrain")
 
@@ -765,7 +771,7 @@ class ExecutionEngine:
 
     async def _reload_model_after_retrain(self, metrics: dict, trigger: str = "auto"):
         """Common post-retrain logic: reload model, persist metrics, log to Supabase."""
-        result = load_model()
+        result = load_correct_model(self.config.use_feature_pruning)
         if result:
             self._lgbm_model, self._lgbm_features = result
         self._last_retrain_metrics = metrics
@@ -792,6 +798,8 @@ class ExecutionEngine:
                 lookback_candles=500,
                 wf_n_splits=self.config.wf_n_splits,
                 wf_purge_gap=self.config.wf_purge_gap,
+                use_feature_pruning=self.config.use_feature_pruning,
+                feature_pruning_min_importance=self.config.feature_pruning_min_importance,
             )
             if metrics.get("status") == "ok":
                 await self._reload_model_after_retrain(metrics, trigger="auto")
@@ -809,6 +817,8 @@ class ExecutionEngine:
             lookback_candles=500,
             wf_n_splits=self.config.wf_n_splits,
             wf_purge_gap=self.config.wf_purge_gap,
+            use_feature_pruning=self.config.use_feature_pruning,
+            feature_pruning_min_importance=self.config.feature_pruning_min_importance,
         )
         if metrics.get("status") == "ok":
             await self._reload_model_after_retrain(metrics, trigger="manual")

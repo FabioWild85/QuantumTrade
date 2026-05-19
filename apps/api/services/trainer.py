@@ -6,6 +6,7 @@ trains LightGBM with walk-forward validation, saves to models/lgbm_latest.pkl.
 """
 
 import asyncio
+import json
 import logging
 import pickle
 from datetime import datetime, timezone
@@ -22,8 +23,9 @@ from services.smc import build_all_features, ALL_FEATURES
 
 log = logging.getLogger(__name__)
 
-MODEL_DIR  = Path(__file__).parent.parent / "models"
-MODEL_PATH = MODEL_DIR / "lgbm_latest.pkl"
+MODEL_DIR         = Path(__file__).parent.parent / "models"
+MODEL_PATH        = MODEL_DIR / "lgbm_latest.pkl"
+PRUNED_MODEL_PATH = MODEL_DIR / "lgbm_pruned.pkl"
 
 # Chronos-2 features are inference-time only — not available for historical retraining.
 # These names MUST match FEATURE_GROUPS["c2"] in smc.py exactly.
@@ -107,10 +109,12 @@ class LGBMTrainer:
 
     async def retrain(
         self,
-        symbol:           str = "BTC",
-        lookback_candles: int = 500,
-        wf_n_splits:      int = 5,
-        wf_purge_gap:     int = 5,
+        symbol:                        str   = "BTC",
+        lookback_candles:              int   = 500,
+        wf_n_splits:                   int   = 5,
+        wf_purge_gap:                  int   = 5,
+        use_feature_pruning:           bool  = False,
+        feature_pruning_min_importance: float = 0.005,
     ) -> dict:
         """
         Full retraining pipeline. Returns metrics dict.
@@ -121,14 +125,19 @@ class LGBMTrainer:
             return {"status": "busy"}
 
         async with _retrain_lock:
-            return await self._run(symbol, lookback_candles, wf_n_splits, wf_purge_gap)
+            return await self._run(
+                symbol, lookback_candles, wf_n_splits, wf_purge_gap,
+                use_feature_pruning, feature_pruning_min_importance,
+            )
 
     async def _run(
         self,
-        symbol:           str,
-        lookback_candles: int,
-        wf_n_splits:      int = 5,
-        wf_purge_gap:     int = 5,
+        symbol:                        str,
+        lookback_candles:              int,
+        wf_n_splits:                   int   = 5,
+        wf_purge_gap:                  int   = 5,
+        use_feature_pruning:           bool  = False,
+        feature_pruning_min_importance: float = 0.005,
     ) -> dict:
         t0 = datetime.now(timezone.utc)
         log.info("LightGBM retraining started (lookback=%d candles)", lookback_candles)
@@ -202,11 +211,32 @@ class LGBMTrainer:
         oos_acc   = float(accuracy_score(y_val, y_pred))
         oos_ll    = float(log_loss(y_val, y_prob))
 
-        # ── 8. Save ──────────────────────────────────────────────────────────
+        # ── 8. Save full model ────────────────────────────────────────────────
         MODEL_DIR.mkdir(exist_ok=True)
         payload = {"model": model, "features": available}
         with open(MODEL_PATH, "wb") as f:
             pickle.dump(payload, f)
+
+        # ── 9. Feature importance JSON (always saved, used by UI endpoint) ────
+        importances = model.feature_importances_
+        total_imp   = importances.sum() or 1.0
+        imp_dict    = {
+            name: round(float(imp / total_imp), 5)
+            for name, imp in sorted(
+                zip(available, importances), key=lambda x: -x[1]
+            )
+        }
+        with open(MODEL_DIR / "feature_importance.json", "w") as f:
+            json.dump({"trained_at": t0.isoformat(), "features": imp_dict}, f, indent=2)
+        log.info("Feature importance saved (%d features)", len(imp_dict))
+
+        # ── 10. Optional feature pruning ──────────────────────────────────────
+        prune_metrics: Optional[dict] = None
+        if use_feature_pruning:
+            _, _, prune_metrics = self._build_pruned_model(
+                model, X_tr, y_tr, X_val, y_val,
+                threshold=feature_pruning_min_importance,
+            )
 
         elapsed_s = (datetime.now(timezone.utc) - t0).total_seconds()
         metrics = {
@@ -224,6 +254,7 @@ class LGBMTrainer:
             "wf_folds":        wf_results,
             "wf_n_splits":     wf_n_splits,
             "wf_purge_gap":    wf_purge_gap,
+            "pruning":         prune_metrics,
         }
         log.info(
             "Retraining complete: OOS acc=%.2f%% ll=%.4f | WF acc=%.2f%% ll=%.4f (%.1fs)",
@@ -232,6 +263,71 @@ class LGBMTrainer:
             elapsed_s,
         )
         return metrics
+
+    def _build_pruned_model(
+        self,
+        model:     lgb.LGBMClassifier,
+        X_train:   pd.DataFrame,
+        y_train:   pd.Series,
+        X_val:     pd.DataFrame,
+        y_val:     pd.Series,
+        threshold: float = 0.005,
+    ) -> tuple[lgb.LGBMClassifier, list[str], dict]:
+        """
+        Trains a second model on the subset of features with normalised gain
+        importance >= threshold, saves it as lgbm_pruned.pkl.
+        Returns (pruned_model, kept_features, comparison_metrics).
+        Falls back to the full model when too few features survive pruning.
+        """
+        importances = model.feature_importances_
+        total       = importances.sum() or 1.0
+        norm        = importances / total
+
+        kept    = [f for f, imp in zip(X_train.columns, norm) if imp >= threshold]
+        removed = [f for f, imp in zip(X_train.columns, norm) if imp < threshold]
+
+        if len(kept) < 10:
+            log.warning("Pruning skipped: too few features would survive (%d)", len(kept))
+            return model, list(X_train.columns), {"status": "skipped", "reason": "too_few_features"}
+
+        log.info(
+            "Pruning: keeping %d/%d features, removing %d (threshold=%.3f)",
+            len(kept), len(X_train.columns), len(removed), threshold,
+        )
+
+        pruned = lgb.LGBMClassifier(**_LGB_PARAMS)
+        pruned.fit(
+            X_train[kept], y_train,
+            eval_set=[(X_val[kept], y_val)],
+            callbacks=[lgb.early_stopping(50, verbose=False), lgb.log_evaluation(0)],
+        )
+
+        full_acc   = float(accuracy_score(y_val, model.predict(X_val)))
+        pruned_acc = float(accuracy_score(y_val, pruned.predict(X_val[kept])))
+
+        prune_result = {
+            "status":           "ok",
+            "threshold":        threshold,
+            "features_kept":    len(kept),
+            "features_removed": len(removed),
+            "removed_names":    removed,
+            "full_accuracy":    round(full_acc,   4),
+            "pruned_accuracy":  round(pruned_acc, 4),
+            "accuracy_delta":   round(pruned_acc - full_acc, 4),
+        }
+
+        # Persist pruned model and its stats
+        payload_pruned = {"model": pruned, "features": kept}
+        with open(PRUNED_MODEL_PATH, "wb") as f:
+            pickle.dump(payload_pruned, f)
+        with open(MODEL_DIR / "pruned_features.json", "w") as f:
+            json.dump({"trained_at": datetime.now(timezone.utc).isoformat(), **prune_result}, f, indent=2)
+
+        log.info(
+            "Pruned model saved: %d features | acc delta=%+.4f (full=%.4f pruned=%.4f)",
+            len(kept), prune_result["accuracy_delta"], full_acc, pruned_acc,
+        )
+        return pruned, kept, prune_result
 
 
 def load_model() -> Optional[tuple]:
@@ -248,3 +344,19 @@ def load_model() -> Optional[tuple]:
     if isinstance(payload, dict):
         return payload["model"], payload["features"]
     return payload, LGBM_FEATURES  # legacy: assume full feature list
+
+
+def load_correct_model(use_pruning: bool = False) -> Optional[tuple]:
+    """
+    Load the appropriate model based on the use_pruning flag.
+    When use_pruning=True: loads lgbm_pruned.pkl, falls back to full model if absent.
+    Returns (model, features_list) or None if no model exists at all.
+    """
+    if use_pruning and PRUNED_MODEL_PATH.exists():
+        with open(PRUNED_MODEL_PATH, "rb") as f:
+            payload = pickle.load(f)
+        log.info("Loaded PRUNED model (%d features)", len(payload["features"]))
+        return payload["model"], payload["features"]
+    if use_pruning:
+        log.warning("Pruned model not found — falling back to full model")
+    return load_model()
