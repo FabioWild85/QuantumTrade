@@ -178,6 +178,11 @@ class BotConfig(BaseModel):
     dynamic_sl_tp_blend: float = Field(0.50, ge=0.0, le=1.0)
     recalibrated_uncertainty_thresholds: bool = Field(True)
     p10_sl_floor_enabled: bool = Field(False)
+    # Regime Bias: asymmetric threshold by market direction
+    regime_bias_enabled: bool = Field(False)
+    regime_bias_delta: float = Field(0.08, ge=0.01, le=0.20)
+    regime_bias_size_factor: float = Field(1.0, ge=0.30, le=1.0)
+    forced_regime: str = Field("auto", pattern="^(auto|bull|bear|neutral)$")
 
 
 class StartBotRequest(BaseModel):

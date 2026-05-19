@@ -26,6 +26,7 @@ class DecisionResult:
     forecast_p50: float
     forecast_p90: float
     forecast_uncertainty: float = 0.0
+    size_factor: float = 1.0  # 1.0 = full size; <1.0 = reduced for counter-trend trades
 
 
 class DecisionEngine:
@@ -48,6 +49,10 @@ class DecisionEngine:
         c2_uncertainty_threshold: float = 0.05,
         c2_cont_prob_gate_enabled: bool = False,
         c2_cont_prob_threshold: float = 0.25,
+        regime_bias_enabled: bool = False,
+        regime_bias_delta: float = 0.08,
+        regime_bias_size_factor: float = 1.0,
+        forced_regime: str = "auto",
     ):
         self.directional_threshold       = directional_threshold
         self.adx_gate                    = adx_gate
@@ -61,6 +66,10 @@ class DecisionEngine:
         self.c2_uncertainty_threshold    = c2_uncertainty_threshold
         self.c2_cont_prob_gate_enabled   = c2_cont_prob_gate_enabled
         self.c2_cont_prob_threshold      = c2_cont_prob_threshold
+        self.regime_bias_enabled         = regime_bias_enabled
+        self.regime_bias_delta           = regime_bias_delta
+        self.regime_bias_size_factor     = regime_bias_size_factor
+        self.forced_regime               = forced_regime
 
     def decide(
         self,
@@ -87,6 +96,17 @@ class DecisionEngine:
         fvg_bear = features.get("fvg_bear", 0.0)
         fvg_bull = features.get("fvg_bull", 0.0)
         d_regime = features.get("d_regime", 0)
+
+        # Manual override: forced_regime takes precedence over auto-detected d_regime
+        # for the Regime Bias logic. MTF alignment always uses the auto d_regime.
+        if self.forced_regime == "bull":
+            bias_regime = 1
+        elif self.forced_regime == "bear":
+            bias_regime = -1
+        elif self.forced_regime == "neutral":
+            bias_regime = 0
+        else:
+            bias_regime = int(d_regime)
 
         dir_prob       = c2_output.get("c2_dir_prob", 0.5)
         p10            = c2_output.get("c2_p10", current_price)
@@ -140,13 +160,39 @@ class DecisionEngine:
                 effective_threshold -= 0.02
                 reasoning.append(f"MTF: Daily bear regime — short threshold relaxed to {effective_threshold:.2f}")
 
+        # ── Regime Bias: asymmetric threshold by direction ────────────────────
+        # Uses bias_regime (manual override or auto d_regime).
+        # MTF alignment above always uses the auto d_regime from features.
+        threshold_long  = effective_threshold
+        threshold_short = effective_threshold
+        counter_trend_size_factor = 1.0
+        _regime_source = "manuale" if self.forced_regime != "auto" else "auto"
+
+        if self.regime_bias_enabled and self.regime_bias_delta > 0:
+            if bias_regime == 1:
+                threshold_short = effective_threshold + self.regime_bias_delta
+                counter_trend_size_factor = self.regime_bias_size_factor
+                reasoning.append(
+                    f"RegimeBias: regime=BULL ({_regime_source}) → "
+                    f"threshold_long={threshold_long:.2f}, "
+                    f"threshold_short={threshold_short:.2f} (+{self.regime_bias_delta:.2f})"
+                )
+            elif bias_regime == -1:
+                threshold_long = effective_threshold + self.regime_bias_delta
+                counter_trend_size_factor = self.regime_bias_size_factor
+                reasoning.append(
+                    f"RegimeBias: regime=BEAR ({_regime_source}) → "
+                    f"threshold_long={threshold_long:.2f} (+{self.regime_bias_delta:.2f}), "
+                    f"threshold_short={threshold_short:.2f}"
+                )
+
         # ── Confluence gate ───────────────────────────────────────────────────
         if confluence_score is not None and confluence_score < self.confluence_gate:
             reasoning.append(f"GATE: Confluence {confluence_score:.0f} < {self.confluence_gate:.0f}")
             return self._no_trade(reasoning, dir_prob, p10, p50, p90, features, c2_uncertainty)
 
         # ── Long signal ───────────────────────────────────────────────────────
-        if ensemble_prob > effective_threshold:
+        if ensemble_prob > threshold_long:
             # Anti-FVG filter: don't enter long into a bearish FVG zone overhead
             if self.fvg_filter_enabled and fvg_bear == 1.0:
                 reasoning.append("FILTER: Bearish FVG detected overhead — skipping long entry")
@@ -157,7 +203,13 @@ class DecisionEngine:
             if p50 > 0 and p50 < current_price:
                 reasoning.append(f"NOTE: C2 median ({p50:.1f}) below entry — minor bearish bias in forecast")
 
-            reasoning.append(f"LONG: P(up)={ensemble_prob:.3f} > {effective_threshold:.2f}, C2_p50={p50:.1f}")
+            is_counter_trend = (bias_regime == -1)
+            sf = counter_trend_size_factor if is_counter_trend else 1.0
+            thr_used = threshold_long
+            reasoning.append(
+                f"LONG: P(up)={ensemble_prob:.3f} > {thr_used:.2f}, C2_p50={p50:.1f}"
+                + (f" [counter-trend size×{sf:.2f}]" if sf < 1.0 else "")
+            )
             return DecisionResult(
                 action="long",
                 confidence=ensemble_prob,
@@ -168,11 +220,12 @@ class DecisionEngine:
                 forecast_p50=p50,
                 forecast_p90=p90,
                 forecast_uncertainty=c2_uncertainty,
+                size_factor=sf,
             )
 
         # ── Short signal ──────────────────────────────────────────────────────
         short_prob = 1.0 - ensemble_prob
-        if short_prob > effective_threshold:
+        if short_prob > threshold_short:
             if self.fvg_filter_enabled and fvg_bull == 1.0:
                 reasoning.append("FILTER: Bullish FVG detected below — skipping short entry")
                 return self._no_trade(reasoning, dir_prob, p10, p50, p90, features, c2_uncertainty)
@@ -180,7 +233,13 @@ class DecisionEngine:
             if p50 > 0 and p50 > current_price:
                 reasoning.append(f"NOTE: C2 median ({p50:.1f}) above entry — minor bullish bias in forecast")
 
-            reasoning.append(f"SHORT: P(down)={short_prob:.3f} > {effective_threshold:.2f}, C2_p50={p50:.1f}")
+            is_counter_trend = (bias_regime == 1)
+            sf = counter_trend_size_factor if is_counter_trend else 1.0
+            thr_used = threshold_short
+            reasoning.append(
+                f"SHORT: P(down)={short_prob:.3f} > {thr_used:.2f}, C2_p50={p50:.1f}"
+                + (f" [counter-trend size×{sf:.2f}]" if sf < 1.0 else "")
+            )
             return DecisionResult(
                 action="short",
                 confidence=short_prob,
@@ -191,10 +250,14 @@ class DecisionEngine:
                 forecast_p50=p50,
                 forecast_p90=p90,
                 forecast_uncertainty=c2_uncertainty,
+                size_factor=sf,
             )
 
         # ── No signal ─────────────────────────────────────────────────────────
-        reasoning.append(f"NO-TRADE: P(up)={ensemble_prob:.3f} in neutral zone [{1-effective_threshold:.2f}–{effective_threshold:.2f}]")
+        reasoning.append(
+            f"NO-TRADE: P(up)={ensemble_prob:.3f} | "
+            f"long>{threshold_long:.2f}, short>{threshold_short:.2f}"
+        )
         return self._no_trade(reasoning, dir_prob, p10, p50, p90, features, c2_uncertainty)
 
     def _no_trade(self, reasoning, dir_prob, p10, p50, p90, features, uncertainty=0.0) -> DecisionResult:

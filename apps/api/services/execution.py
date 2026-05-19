@@ -94,6 +94,11 @@ class BotConfig:
         self.p10_sl_floor_enabled        = kw.get("p10_sl_floor_enabled",        False)
         # Thresholds calibration flag (used in risk.calculate_trade_params)
         self.recalibrated_uncertainty_thresholds = kw.get("recalibrated_uncertainty_thresholds", True)
+        # Regime Bias: asymmetric threshold by market direction
+        self.regime_bias_enabled     = kw.get("regime_bias_enabled",     False)
+        self.regime_bias_delta       = kw.get("regime_bias_delta",       0.08)
+        self.regime_bias_size_factor = kw.get("regime_bias_size_factor", 1.0)
+        self.forced_regime           = kw.get("forced_regime",           "auto")
 
     def model_dump(self) -> dict:
         return self.__dict__
@@ -646,6 +651,10 @@ class ExecutionEngine:
             c2_uncertainty_threshold    = cfg.c2_uncertainty_threshold,
             c2_cont_prob_gate_enabled   = cfg.c2_cont_prob_gate_enabled if self.config.chronos_enabled else False,
             c2_cont_prob_threshold      = cfg.c2_cont_prob_threshold,
+            regime_bias_enabled         = cfg.regime_bias_enabled,
+            regime_bias_delta           = cfg.regime_bias_delta,
+            regime_bias_size_factor     = cfg.regime_bias_size_factor,
+            forced_regime               = cfg.forced_regime,
         )
         result = decision_engine.decide(
             features=latest,
@@ -835,8 +844,12 @@ class ExecutionEngine:
         self._risk.tp_atr_mult       = _orig_tp
         self._risk.position_size_pct = _orig_sz
 
+        # Apply regime bias size reduction for counter-trend trades
+        eff_size_usd       = params.size_usd       * result.size_factor
+        eff_size_contracts = params.size_contracts * result.size_factor
+
         # Round to 4 decimal places (HL BTC min size = 0.001)
-        size = max(round(params.size_contracts, 4), 0.001)
+        size = max(round(eff_size_contracts, 4), 0.001)
 
         if self.mode == "live":
             # Idempotency guard: abort if a position already exists on HL
@@ -879,7 +892,7 @@ class ExecutionEngine:
             "stop_loss":      params.stop_loss,
             "take_profit":    params.take_profit,
             "sl_original":    params.stop_loss,
-            "size_usd":       params.size_usd,
+            "size_usd":       eff_size_usd,
             "size_contracts": size,
             "entry_atr":      _atr,
             "inference_id":   inference_id,
@@ -927,7 +940,8 @@ class ExecutionEngine:
                 "payload": {
                     "side": result.action, "symbol": SYMBOL, "size": size,
                     "price": price, "sl": params.stop_loss, "tp": params.take_profit,
-                    "rr": params.rr_ratio, "size_usd": params.size_usd, "mode": self.mode,
+                    "rr": params.rr_ratio, "size_usd": eff_size_usd, "mode": self.mode,
+                    "size_factor": result.size_factor,
                 },
             }).execute()
         except Exception as exc:
@@ -936,7 +950,7 @@ class ExecutionEngine:
         await self._notifier.send_trade_opened(
             side=result.action,
             symbol=SYMBOL,
-            size_usd=params.size_usd,
+            size_usd=eff_size_usd,
             entry_price=price,
             stop_loss=params.stop_loss,
             take_profit=params.take_profit,

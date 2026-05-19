@@ -589,6 +589,10 @@ const ConfigSummary: React.FC<{ config: Record<string, any> }> = ({ config: c })
   if (c.c2_uncertainty_gate_enabled)   activeBadges.push(badge(`C2 Gate <${c.c2_uncertainty_threshold ?? 0.05}`, 'bg-cyan-50 dark:bg-cyan-500/10 text-cyan-600 dark:text-cyan-400 border-cyan-100 dark:border-cyan-500/20'));
   if (c.dynamic_sl_tp_enabled)         activeBadges.push(badge(`Adaptive SL/TP ${Math.round((c.dynamic_sl_tp_blend ?? 0.5) * 100)}% C2`, 'bg-violet-50 dark:bg-violet-500/10 text-violet-600 dark:text-violet-400 border-violet-100 dark:border-violet-500/20'));
   if (c.p10_sl_floor_enabled)          activeBadges.push(badge('P10 SL Floor', 'bg-violet-50 dark:bg-violet-500/10 text-violet-600 dark:text-violet-400 border-violet-100 dark:border-violet-500/20'));
+  if (c.regime_bias_enabled) {
+    const rLabel = c.forced_regime && c.forced_regime !== 'auto' ? ` [${c.forced_regime.toUpperCase()}]` : '';
+    activeBadges.push(badge(`Regime Bias +${c.regime_bias_delta ?? 0.08}${rLabel}`, 'bg-orange-50 dark:bg-orange-500/10 text-orange-600 dark:text-orange-400 border-orange-100 dark:border-orange-500/20'));
+  }
   if (c.enhanced_exit_enabled)         activeBadges.push(badge('Enhanced Exit', 'bg-purple-50 dark:bg-purple-500/10 text-purple-600 dark:text-purple-400 border-purple-100 dark:border-purple-500/20'));
 
   const disabledFilters: string[] = [];
@@ -1266,6 +1270,11 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   const [dynamicSlTpBlend,         setDynamicSlTpBlend]         = useState('0.50');
   const [recalibratedUncertainty,  setRecalibratedUncertainty]  = useState(true);
   const [p10SlFloor,               setP10SlFloor]               = useState(false);
+  // Regime Bias
+  const [regimeBias,          setRegimeBias]          = useState(false);
+  const [regimeBiasDelta,     setRegimeBiasDelta]     = useState('0.08');
+  const [regimeBiasSizeFactor,setRegimeBiasSizeFactor]= useState('1.0');
+  const [forcedRegime,        setForcedRegime]        = useState<'auto' | 'bull' | 'bear' | 'neutral'>('auto');
   const [compareMode,         setCompareMode]         = useState(false);
 
   // ── Regime quick-selector ────────────────────────────────────────────────────
@@ -1345,6 +1354,10 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     if (p.dynamic_sl_tp_blend                     !== undefined) setDynamicSlTpBlend(String(p.dynamic_sl_tp_blend));
     if (p.recalibrated_uncertainty_thresholds     !== undefined) setRecalibratedUncertainty(!!p.recalibrated_uncertainty_thresholds);
     if (p.p10_sl_floor_enabled                    !== undefined) setP10SlFloor(!!p.p10_sl_floor_enabled);
+    if (p.regime_bias_enabled     !== undefined) setRegimeBias(!!p.regime_bias_enabled);
+    if (p.regime_bias_delta       !== undefined) setRegimeBiasDelta(String(p.regime_bias_delta));
+    if (p.regime_bias_size_factor !== undefined) setRegimeBiasSizeFactor(String(p.regime_bias_size_factor));
+    if (p.forced_regime           !== undefined) setForcedRegime(p.forced_regime as 'auto' | 'bull' | 'bear' | 'neutral');
     if (p.be_sl_enabled                 !== undefined) setAdvBeSL(!!p.be_sl_enabled);
     if (p.be_sl_activation      !== undefined) setAdvBeSLAct(String(p.be_sl_activation));
     if (p.max_hold_bars_enabled !== undefined) setAdvMaxHold(!!p.max_hold_bars_enabled);
@@ -1500,6 +1513,11 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     be_sl_activation:              parseFloat(advBeSLAct),
     max_hold_bars_enabled:         advMaxHold,
     max_hold_bars:                 parseInt(advMaxHoldBars),
+    // Regime Bias
+    regime_bias_enabled:           regimeBias,
+    regime_bias_delta:             parseFloat(regimeBiasDelta),
+    regime_bias_size_factor:       parseFloat(regimeBiasSizeFactor),
+    forced_regime:                 forcedRegime,
   });
 
   const runBacktest = async () => {
@@ -1537,7 +1555,7 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   const advancedActive = trailingSL || partialTP;
   const drawerHasCustom = trailingSL || partialTP || lgbmExit || useChronos || advBeSL || advMaxHold
     || !advAdxEnabled || !advSweepEnabled || !advFvgEnabled || !advMtfEnabled
-    || c2UncertaintyGate || c2ContProbGate;
+    || c2UncertaintyGate || c2ContProbGate || regimeBias;
 
   return (
     <>
@@ -2245,6 +2263,76 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                   <Toggle label="Liquidity Sweep Filter" desc="Evita ingressi su falsi breakout di liquidità" checked={advSweepEnabled} onChange={setAdvSweepEnabled} />
                   <Toggle label="Fair Value Gap (SMC)" desc="Filtra ingressi contro zone di inefficienza" checked={advFvgEnabled} onChange={setAdvFvgEnabled} />
                   <Toggle label="MTF Daily Alignment" desc="Verifica allineamento con trend primario daily" checked={advMtfEnabled} onChange={setAdvMtfEnabled} />
+                </div>
+              </section>
+
+              {/* ── Regime Bias ────────────────────────────────────────────────── */}
+              <section className="space-y-5">
+                <h4 className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest flex items-center gap-2">
+                  <span className="w-1.5 h-1.5 rounded-full bg-orange-500" />
+                  Regime Bias
+                </h4>
+                <div className="space-y-4 bg-slate-50 dark:bg-white/[0.02] p-4 rounded-2xl border border-slate-100 dark:border-white/5">
+                  <Toggle
+                    label="Threshold Asimmetrico"
+                    desc="Penalizza i trade contro-trend richiedendo un segnale più forte"
+                    checked={regimeBias}
+                    onChange={setRegimeBias}
+                  />
+                  {regimeBias && (
+                    <div className="space-y-4 pt-1">
+                      {/* Forced regime selector */}
+                      <div>
+                        <p className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest mb-2">Regime di mercato</p>
+                        <div className="grid grid-cols-4 gap-1.5">
+                          {(['auto', 'bull', 'bear', 'neutral'] as const).map(r => {
+                            const labels: Record<string, string> = { auto: 'Auto', bull: 'Bull', bear: 'Bear', neutral: 'Neutro' };
+                            const activeClass: Record<string, string> = {
+                              auto:    'bg-slate-700 dark:bg-white text-white dark:text-slate-900 border-slate-700',
+                              bull:    'bg-emerald-600 text-white border-emerald-600',
+                              bear:    'bg-rose-600 text-white border-rose-600',
+                              neutral: 'bg-slate-400 text-white border-transparent',
+                            };
+                            const inactive = 'bg-white dark:bg-white/5 text-slate-400 dark:text-slate-500 border-slate-200 dark:border-white/10 hover:bg-slate-50 dark:hover:bg-white/10';
+                            return (
+                              <button
+                                key={r}
+                                onClick={() => setForcedRegime(r)}
+                                className={`py-2 rounded-lg text-[9px] font-bold uppercase tracking-widest transition-all border ${forcedRegime === r ? activeClass[r] : inactive}`}
+                              >
+                                {labels[r]}
+                              </button>
+                            );
+                          })}
+                        </div>
+                        {forcedRegime !== 'auto' && (
+                          <p className="text-[9px] font-bold mt-1.5 text-orange-500 dark:text-orange-400">
+                            {forcedRegime === 'bull' && 'Regime BULL forzato — short penalizzati'}
+                            {forcedRegime === 'bear' && 'Regime BEAR forzato — long penalizzati'}
+                            {forcedRegime === 'neutral' && 'Regime NEUTRO — bias attivo ma simmetrico'}
+                          </p>
+                        )}
+                      </div>
+                      <Tooltip text="Delta aggiunto alla soglia direzionale per il lato contro-trend. Es. 0.08 con threshold 0.62 → 0.70 richiesto per un short in regime bull." pos="top" width="wide">
+                        <NumInput
+                          label="Penalità contro-trend (delta)"
+                          value={regimeBiasDelta}
+                          onChange={setRegimeBiasDelta}
+                          step="0.01" min="0.01" max="0.20"
+                          unit="Δ"
+                        />
+                      </Tooltip>
+                      <Tooltip text="Fattore di riduzione size per i trade contro-trend che superano comunque la soglia alzata. 1.0 = size piena, 0.5 = metà size." pos="top" width="wide">
+                        <NumInput
+                          label="Size factor contro-trend"
+                          value={regimeBiasSizeFactor}
+                          onChange={setRegimeBiasSizeFactor}
+                          step="0.05" min="0.30" max="1.0"
+                          unit="×"
+                        />
+                      </Tooltip>
+                    </div>
+                  )}
                 </div>
               </section>
 

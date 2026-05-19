@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Tooltip } from './Tooltip';
 
 interface FeatureFlags {
+  mode: 'paper' | 'live';
   // Exit strategies
   trailing_sl_enabled: boolean;
   trailing_sl_activation: number;
@@ -37,6 +38,7 @@ export const HubSettings: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   const [agentResult, setAgentResult]     = useState<string | null>(null);
   const [connecting, setConnecting]       = useState(false);
   const [flags, setFlags]                 = useState<FeatureFlags>({
+    mode:                    'paper',
     trailing_sl_enabled:     false,
     trailing_sl_activation:  1.0,
     partial_tp_enabled:      false,
@@ -79,7 +81,7 @@ export const HubSettings: React.FC<{ apiBase: string }> = ({ apiBase }) => {
       const r = await fetch(`${apiBase}/bot`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...flags, mode: 'paper' }),
+        body: JSON.stringify(flags),
       });
       setSaveMsg(r.ok ? '✓ Impostazioni salvate' : '❌ Errore salvataggio');
     } catch { setSaveMsg('❌ Errore salvataggio'); }
@@ -180,6 +182,40 @@ export const HubSettings: React.FC<{ apiBase: string }> = ({ apiBase }) => {
         </div>
       </Section>
 
+
+      {/* Mode Selection */}
+      <Section title="Ambiente di Esecuzione" description="Seleziona la modalità operativa. Paper Trading simula tutto senza usare fondi reali. Live Trading invia ordini reali su Hyperliquid — usare solo dopo aver verificato la configurazione.">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <button
+            onClick={() => setFlags(f => ({ ...f, mode: 'paper' }))}
+            className={`w-full py-4 rounded-xl text-[11px] font-bold uppercase tracking-widest transition-all border ${
+              flags.mode === 'paper'
+                ? 'bg-indigo-600 text-white border-indigo-600 shadow-lg shadow-indigo-500/30'
+                : 'bg-slate-50 dark:bg-white/5 text-slate-400 dark:text-slate-500 border-slate-100 dark:border-white/10 hover:bg-slate-100 dark:hover:bg-white/10'
+            }`}
+          >
+            Paper Trading
+          </button>
+          <button
+            onClick={() => setFlags(f => ({ ...f, mode: 'live' }))}
+            className={`w-full py-4 rounded-xl text-[11px] font-bold uppercase tracking-widest transition-all border ${
+              flags.mode === 'live'
+                ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-900 border-slate-900 dark:border-white shadow-lg'
+                : 'bg-slate-50 dark:bg-white/5 text-slate-400 dark:text-slate-500 border-slate-100 dark:border-white/10 hover:bg-slate-100 dark:hover:bg-white/10'
+            }`}
+          >
+            Live Trading
+          </button>
+        </div>
+        {flags.mode === 'live' && (
+          <div className="mt-4 flex items-start gap-3 bg-rose-50 dark:bg-rose-500/10 border border-rose-100 dark:border-rose-500/20 rounded-xl px-4 py-3">
+            <svg className="w-5 h-5 text-rose-500 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
+            <p className="text-[10px] font-bold text-rose-600 dark:text-rose-400 uppercase tracking-tight leading-relaxed">
+              Attenzione: La modalità Live utilizza asset reali su Hyperliquid. Verifica HL_AGENT_PRIVATE_KEY nel .env prima di avviare.
+            </p>
+          </div>
+        )}
+      </Section>
 
       {/* Advanced Controls */}
       <Section title="Intelligence Engine" description="Parametri critici che governano il motore decisionale del bot e le logiche di esecuzione in tempo reale.">

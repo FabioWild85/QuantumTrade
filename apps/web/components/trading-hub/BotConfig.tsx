@@ -18,6 +18,10 @@ interface Config {
   c2_cont_prob_gate_enabled: boolean;
   c2_cont_prob_threshold: number;
   chronos_enabled: boolean;
+  regime_bias_enabled: boolean;
+  regime_bias_delta: number;
+  regime_bias_size_factor: number;
+  forced_regime: 'auto' | 'bull' | 'bear' | 'neutral';
 }
 
 const DEFAULTS: Config = {
@@ -37,6 +41,10 @@ const DEFAULTS: Config = {
   c2_cont_prob_gate_enabled: false,
   c2_cont_prob_threshold: 0.10,
   chronos_enabled: true,
+  regime_bias_enabled: false,
+  regime_bias_delta: 0.08,
+  regime_bias_size_factor: 1.0,
+  forced_regime: 'auto',
 };
 
 interface RetrainMetrics {
@@ -443,6 +451,105 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
             </div>
           )}
         </div>
+      </Section>
+
+      {/* Regime Bias */}
+      <Section title="Regime Bias — Threshold Asimmetrico" description="Penalizza i trade contro-trend richiedendo un segnale più forte. In regime bull, i short richiedono ensemble_prob > threshold + delta; in bear, i long richiedono lo stesso. Sideways = simmetrico.">
+        <div className={`flex flex-col gap-3 mb-6 pb-6 border-b transition-colors duration-200 ${config.regime_bias_enabled ? 'border-orange-200 dark:border-orange-500/25' : 'border-slate-100 dark:border-white/5'}`}>
+          <label className="flex items-center gap-3 cursor-pointer group">
+            <div className="relative">
+              <input type="checkbox" className="sr-only" checked={config.regime_bias_enabled} onChange={e => setConfig(c => ({ ...c, regime_bias_enabled: e.target.checked }))} />
+              <div className={`w-10 h-5 rounded-full transition-all duration-300 ${config.regime_bias_enabled ? 'bg-orange-600' : 'bg-slate-200 dark:bg-white/10'}`} />
+              <div className={`absolute top-1 left-1 w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.regime_bias_enabled ? 'translate-x-5' : ''}`} />
+            </div>
+            <div>
+              <p className={`text-sm font-bold transition-colors ${config.regime_bias_enabled ? 'text-orange-600 dark:text-orange-400' : 'text-slate-800 dark:text-slate-200 group-hover:text-orange-600 dark:group-hover:text-orange-400'}`}>
+                Threshold Asimmetrico
+                {config.regime_bias_enabled && <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-orange-100 dark:bg-orange-500/20 text-orange-600 dark:text-orange-400 uppercase tracking-wider">Attivo</span>}
+              </p>
+              <p className="text-[11px] text-slate-400 dark:text-slate-500 mt-0.5">
+                {config.regime_bias_enabled
+                  ? `Penalità +${config.regime_bias_delta} per trade contro-trend · size ×${config.regime_bias_size_factor}`
+                  : 'Soglia identica per long e short indipendentemente dal regime'}
+              </p>
+            </div>
+          </label>
+        </div>
+
+        {config.regime_bias_enabled && (
+          <>
+            {/* Forced regime selector */}
+            <div className="mb-6">
+              <Tooltip text="Scegli tu il regime di mercato manualmente, oppure lascia che sia il bot a rilevarlo automaticamente da EMA20+ADX. Con 'Neutro' il bias è attivo ma non penalizza nessuna direzione." width="wide" pos="bottom">
+                <p className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest mb-3">Regime di mercato</p>
+              </Tooltip>
+              <div className="grid grid-cols-4 gap-2">
+                {(['auto', 'bull', 'bear', 'neutral'] as const).map(r => {
+                  const labels: Record<string, string> = { auto: 'Auto', bull: 'Bull', bear: 'Bear', neutral: 'Neutro' };
+                  const active: Record<string, string> = {
+                    auto:    'bg-slate-800 dark:bg-white text-white dark:text-slate-900 border-slate-800 dark:border-white',
+                    bull:    'bg-emerald-600 text-white border-emerald-600 shadow-emerald-500/20',
+                    bear:    'bg-rose-600 text-white border-rose-600 shadow-rose-500/20',
+                    neutral: 'bg-slate-400 dark:bg-slate-500 text-white border-transparent',
+                  };
+                  const inactive = 'bg-slate-50 dark:bg-white/5 text-slate-400 dark:text-slate-500 border-slate-100 dark:border-white/10 hover:bg-slate-100 dark:hover:bg-white/10';
+                  return (
+                    <button
+                      key={r}
+                      onClick={() => setConfig(c => ({ ...c, forced_regime: r }))}
+                      className={`py-2.5 rounded-xl text-[10px] font-bold uppercase tracking-widest transition-all border shadow-sm ${config.forced_regime === r ? active[r] : inactive}`}
+                    >
+                      {labels[r]}
+                    </button>
+                  );
+                })}
+              </div>
+              {config.forced_regime !== 'auto' && (
+                <p className="text-[10px] font-bold mt-2 text-orange-600 dark:text-orange-400">
+                  {config.forced_regime === 'bull' && 'Regime BULL manuale — gli short richiedono soglia più alta'}
+                  {config.forced_regime === 'bear' && 'Regime BEAR manuale — i long richiedono soglia più alta'}
+                  {config.forced_regime === 'neutral' && 'Regime NEUTRO — nessun bias su nessuna direzione'}
+                </p>
+              )}
+            </div>
+
+            <div className="mb-4">
+              <Tooltip text="Delta aggiunto alla soglia direzionale per il lato contro-trend. Es. con threshold 0.62 e delta 0.08, in regime bull i short richiedono ensemble_prob > 0.70." width="wide" pos="bottom">
+                <label className="flex items-center justify-between mb-2">
+                  <span className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest">Penalità contro-trend (delta)</span>
+                  <span className="font-mono text-sm font-bold text-orange-600 dark:text-orange-400">+{config.regime_bias_delta.toFixed(2)}</span>
+                </label>
+              </Tooltip>
+              <input
+                type="range" min="0.01" max="0.20" step="0.01"
+                value={config.regime_bias_delta}
+                onChange={e => setConfig(c => ({ ...c, regime_bias_delta: parseFloat(e.target.value) }))}
+                className="w-full h-1.5 bg-slate-200 dark:bg-white/10 rounded-full appearance-none cursor-pointer accent-orange-600"
+              />
+              <div className="flex justify-between text-[9px] font-mono text-slate-400 dark:text-slate-500 mt-1">
+                <span>0.01</span><span>0.10</span><span>0.20</span>
+              </div>
+            </div>
+
+            <div>
+              <Tooltip text="Fattore di riduzione size per i trade contro-trend che superano comunque la soglia alzata. 1.0 = size piena, 0.5 = metà size." width="wide" pos="bottom">
+                <label className="flex items-center justify-between mb-2">
+                  <span className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest">Size factor contro-trend</span>
+                  <span className="font-mono text-sm font-bold text-orange-600 dark:text-orange-400">×{config.regime_bias_size_factor.toFixed(2)}</span>
+                </label>
+              </Tooltip>
+              <input
+                type="range" min="0.30" max="1.0" step="0.05"
+                value={config.regime_bias_size_factor}
+                onChange={e => setConfig(c => ({ ...c, regime_bias_size_factor: parseFloat(e.target.value) }))}
+                className="w-full h-1.5 bg-slate-200 dark:bg-white/10 rounded-full appearance-none cursor-pointer accent-orange-600"
+              />
+              <div className="flex justify-between text-[9px] font-mono text-slate-400 dark:text-slate-500 mt-1">
+                <span>0.30</span><span>0.65</span><span>1.0</span>
+              </div>
+            </div>
+          </>
+        )}
       </Section>
 
       {/* LightGBM Model */}

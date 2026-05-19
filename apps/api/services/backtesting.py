@@ -73,6 +73,11 @@ async def run_backtest(req) -> dict:
     dynamic_sl_tp_blend                 = getattr(cfg, "dynamic_sl_tp_blend",                 0.50)
     recalibrated_uncertainty_thresholds = getattr(cfg, "recalibrated_uncertainty_thresholds", True)
     p10_sl_floor_enabled                = getattr(cfg, "p10_sl_floor_enabled",                False)
+    # Regime Bias
+    regime_bias_enabled     = getattr(cfg, "regime_bias_enabled",     False)
+    regime_bias_delta       = getattr(cfg, "regime_bias_delta",       0.08)
+    regime_bias_size_factor = getattr(cfg, "regime_bias_size_factor", 1.0)
+    forced_regime           = getattr(cfg, "forced_regime",           "auto")
 
     hl = HyperliquidData()
 
@@ -140,6 +145,10 @@ async def run_backtest(req) -> dict:
         c2_uncertainty_threshold=c2_uncertainty_threshold,
         c2_cont_prob_gate_enabled=c2_cont_prob_gate_enabled if use_chronos else False,
         c2_cont_prob_threshold=c2_cont_prob_threshold,
+        regime_bias_enabled=regime_bias_enabled,
+        regime_bias_delta=regime_bias_delta,
+        regime_bias_size_factor=regime_bias_size_factor,
+        forced_regime=forced_regime,
     )
     risk = RiskManager(
         sl_atr_mult=sl_atr_mult,
@@ -427,14 +436,15 @@ async def run_backtest(req) -> dict:
                     recalibrated_uncertainty_thresholds=recalibrated_uncertainty_thresholds,
                     p10_sl_floor_enabled=p10_sl_floor_enabled and _p10_available,
                 )
-                fee_entry = params.size_usd * HL_TAKER_FEE
+                effective_size_usd = params.size_usd * result.size_factor
+                fee_entry = effective_size_usd * HL_TAKER_FEE
                 equity   -= fee_entry
                 position  = {
                     "side":          result.action,
                     "entry":         close_price,
                     "sl":            params.stop_loss,
                     "tp":            params.take_profit,
-                    "size_usd":      params.size_usd,
+                    "size_usd":      effective_size_usd,
                     "bar_idx":       i,
                     "entry_atr":     atr,
                     "partial_done":      False,
