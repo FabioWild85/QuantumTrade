@@ -107,8 +107,10 @@ class LGBMTrainer:
 
     async def retrain(
         self,
-        symbol: str = "BTC",
+        symbol:           str = "BTC",
         lookback_candles: int = 500,
+        wf_n_splits:      int = 5,
+        wf_purge_gap:     int = 5,
     ) -> dict:
         """
         Full retraining pipeline. Returns metrics dict.
@@ -119,9 +121,15 @@ class LGBMTrainer:
             return {"status": "busy"}
 
         async with _retrain_lock:
-            return await self._run(symbol, lookback_candles)
+            return await self._run(symbol, lookback_candles, wf_n_splits, wf_purge_gap)
 
-    async def _run(self, symbol: str, lookback_candles: int) -> dict:
+    async def _run(
+        self,
+        symbol:           str,
+        lookback_candles: int,
+        wf_n_splits:      int = 5,
+        wf_purge_gap:     int = 5,
+    ) -> dict:
         t0 = datetime.now(timezone.utc)
         log.info("LightGBM retraining started (lookback=%d candles)", lookback_candles)
 
@@ -164,7 +172,7 @@ class LGBMTrainer:
         log.info("Training set: %d rows × %d features", len(X), len(available))
 
         # ── 4. Purged walk-forward CV (OOS reale senza look-ahead bias) ──────
-        wf_results = _walk_forward_splits(X, y, n_splits=5, purge_gap=5)
+        wf_results = _walk_forward_splits(X, y, n_splits=wf_n_splits, purge_gap=wf_purge_gap)
         wf_ll  = float(np.mean([r["log_loss"]  for r in wf_results])) if wf_results else None
         wf_acc = float(np.mean([r["accuracy"]  for r in wf_results])) if wf_results else None
         log.info(
@@ -214,6 +222,8 @@ class LGBMTrainer:
             "wf_avg_accuracy": round(wf_acc, 4) if wf_acc is not None else None,
             "wf_avg_log_loss": round(wf_ll,  4) if wf_ll  is not None else None,
             "wf_folds":        wf_results,
+            "wf_n_splits":     wf_n_splits,
+            "wf_purge_gap":    wf_purge_gap,
         }
         log.info(
             "Retraining complete: OOS acc=%.2f%% ll=%.4f | WF acc=%.2f%% ll=%.4f (%.1fs)",

@@ -40,7 +40,7 @@ HL_TESTNET        = os.getenv("HL_TESTNET", "true").lower() == "true"
 HL_AGENT_PRIVKEY  = os.getenv("HL_AGENT_PRIVATE_KEY", "")  # for live order signing
 
 # Retrain every N completed cycles (~30 days on 4h bars)
-RETRAIN_INTERVAL = 120
+RETRAIN_INTERVAL = 120  # default — ora configurabile via BotConfig.retrain_every_n_cycles
 
 CIRCUIT_BREAKER_THRESHOLD = 5   # stop bot after N consecutive cycle errors
 
@@ -99,6 +99,10 @@ class BotConfig:
         self.regime_bias_delta       = kw.get("regime_bias_delta",       0.08)
         self.regime_bias_size_factor = kw.get("regime_bias_size_factor", 1.0)
         self.forced_regime           = kw.get("forced_regime",           "auto")
+        # Walk-forward & retraining parameters
+        self.retrain_every_n_cycles  = kw.get("retrain_every_n_cycles",  120)
+        self.wf_n_splits             = kw.get("wf_n_splits",             5)
+        self.wf_purge_gap            = kw.get("wf_purge_gap",            5)
 
     def model_dump(self) -> dict:
         return self.__dict__
@@ -729,7 +733,7 @@ class ExecutionEngine:
 
         # 11. Auto-retrain (background — never blocks the loop)
         self._cycle_count += 1
-        if self._cycle_count % RETRAIN_INTERVAL == 0:
+        if self._cycle_count % self.config.retrain_every_n_cycles == 0:
             asyncio.create_task(self._retrain_background())
 
         elapsed_ms = (datetime.now(timezone.utc) - cycle_start).total_seconds() * 1000
@@ -783,7 +787,12 @@ class ExecutionEngine:
     async def _retrain_background(self):
         log.info("Auto-retraining triggered (cycle %d)", self._cycle_count)
         try:
-            metrics = await self._trainer.retrain(SYMBOL, lookback_candles=500)
+            metrics = await self._trainer.retrain(
+                SYMBOL,
+                lookback_candles=500,
+                wf_n_splits=self.config.wf_n_splits,
+                wf_purge_gap=self.config.wf_purge_gap,
+            )
             if metrics.get("status") == "ok":
                 await self._reload_model_after_retrain(metrics, trigger="auto")
         except Exception as exc:
@@ -795,7 +804,12 @@ class ExecutionEngine:
         Blocks until complete (~10-30s) and returns the metrics dict.
         Returns {"status": "busy"} immediately if a retrain is already in progress.
         """
-        metrics = await self._trainer.retrain(SYMBOL, lookback_candles=500)
+        metrics = await self._trainer.retrain(
+            SYMBOL,
+            lookback_candles=500,
+            wf_n_splits=self.config.wf_n_splits,
+            wf_purge_gap=self.config.wf_purge_gap,
+        )
         if metrics.get("status") == "ok":
             await self._reload_model_after_retrain(metrics, trigger="manual")
         return metrics

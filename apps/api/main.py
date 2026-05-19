@@ -187,6 +187,10 @@ class BotConfig(BaseModel):
     regime_bias_delta: float = Field(0.08, ge=0.01, le=0.20)
     regime_bias_size_factor: float = Field(1.0, ge=0.30, le=1.0)
     forced_regime: str = Field("auto", pattern="^(auto|bull|bear|neutral)$")
+    # Walk-forward & retraining parameters
+    retrain_every_n_cycles: int = Field(120, ge=20,  le=120)
+    wf_n_splits:            int = Field(5,   ge=3,   le=12)
+    wf_purge_gap:           int = Field(5,   ge=2,   le=20)
 
 
 class StartBotRequest(BaseModel):

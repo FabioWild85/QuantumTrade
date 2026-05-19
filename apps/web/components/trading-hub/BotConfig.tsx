@@ -22,6 +22,10 @@ interface Config {
   regime_bias_delta: number;
   regime_bias_size_factor: number;
   forced_regime: 'auto' | 'bull' | 'bear' | 'neutral';
+  // Walk-forward & retraining
+  retrain_every_n_cycles: number;
+  wf_n_splits: number;
+  wf_purge_gap: number;
 }
 
 const DEFAULTS: Config = {
@@ -45,6 +49,10 @@ const DEFAULTS: Config = {
   regime_bias_delta: 0.08,
   regime_bias_size_factor: 1.0,
   forced_regime: 'auto',
+  // Walk-forward & retraining
+  retrain_every_n_cycles: 120,
+  wf_n_splits: 5,
+  wf_purge_gap: 5,
 };
 
 interface RetrainMetrics {
@@ -650,6 +658,104 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
         <p className="text-[10px] text-slate-400 dark:text-slate-500 text-center mt-2">
           Addestra il modello sugli ultimi 500 candles 4h · non interrompe il bot
         </p>
+      </Section>
+
+      {/* Walk-forward & Retraining */}
+      <Section
+        title="Retraining Automatico LightGBM"
+        description="Controlla la frequenza di riaddestramento del modello e la configurazione della walk-forward cross-validation. Parametri aggressivi permettono al modello di adattarsi più velocemente ai nuovi regimi di mercato."
+      >
+        {/* retrain_every_n_cycles */}
+        <div className="space-y-2 mb-6">
+          <div className="flex items-center justify-between">
+            <Tooltip text="Numero di cicli 4H tra un retrain e il successivo. Valori bassi (30–40) permettono al modello di adattarsi più rapidamente ai cambi di regime ma aumentano il carico computazionale sul server." width="wide" pos="bottom">
+              <span className="text-[10px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest cursor-help">
+                Frequenza retrain
+              </span>
+            </Tooltip>
+            <span className="font-mono text-sm font-bold text-indigo-600 dark:text-indigo-400">
+              ogni {config.retrain_every_n_cycles} cicli
+              <span className="text-[10px] font-normal text-slate-400 dark:text-slate-500 ml-1">
+                (≈{Math.round(config.retrain_every_n_cycles / 6)} giorni)
+              </span>
+            </span>
+          </div>
+          <input
+            type="range" min={20} max={120} step={10}
+            value={config.retrain_every_n_cycles}
+            onChange={e => setConfig(c => ({ ...c, retrain_every_n_cycles: parseInt(e.target.value) }))}
+            className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/15 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3.5 [&::-webkit-slider-thumb]:h-3.5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-indigo-500 [&::-webkit-slider-thumb]:shadow-sm [&::-webkit-slider-thumb]:cursor-pointer [&::-moz-range-thumb]:w-3.5 [&::-moz-range-thumb]:h-3.5 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-indigo-500 [&::-moz-range-thumb]:border-0"
+          />
+          <div className="flex justify-between text-[9px] font-mono text-slate-400 dark:text-slate-500">
+            <span>20 (≈3gg)</span><span>60 (≈10gg)</span><span>120 (≈20gg)</span>
+          </div>
+          <p className="text-[10px] text-slate-400 dark:text-slate-500 leading-relaxed">
+            Default 120. Abbassa a 30–40 per adattarti più velocemente ai nuovi regimi. Il bot non si interrompe durante il retrain.
+          </p>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-6 pt-4 border-t border-slate-100 dark:border-white/5">
+          {/* wf_n_splits */}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <Tooltip text="Numero di fold nella walk-forward cross-validation temporale. Più fold = stima OOS più robusta ma retrain più lento. Con 500 candele e 8 fold, ogni window di validazione copre ~30 candele 4H (~5 giorni)." width="wide" pos="bottom">
+                <span className="text-[10px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest cursor-help">
+                  Fold walk-forward
+                </span>
+              </Tooltip>
+              <span className="font-mono text-sm font-bold text-indigo-600 dark:text-indigo-400">
+                {config.wf_n_splits} fold
+              </span>
+            </div>
+            <input
+              type="range" min={3} max={12} step={1}
+              value={config.wf_n_splits}
+              onChange={e => setConfig(c => ({ ...c, wf_n_splits: parseInt(e.target.value) }))}
+              className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/15 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3.5 [&::-webkit-slider-thumb]:h-3.5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-indigo-500 [&::-webkit-slider-thumb]:shadow-sm [&::-webkit-slider-thumb]:cursor-pointer [&::-moz-range-thumb]:w-3.5 [&::-moz-range-thumb]:h-3.5 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-indigo-500 [&::-moz-range-thumb]:border-0"
+            />
+            <div className="flex justify-between text-[9px] font-mono text-slate-400 dark:text-slate-500">
+              <span>3</span><span>7</span><span>12</span>
+            </div>
+          </div>
+
+          {/* wf_purge_gap */}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <Tooltip text="Candele 4H escluse tra la fine del training set e l'inizio del validation set in ogni fold. Elimina l'autocorrelazione temporale (look-ahead bias). Alzare in mercati molto trending o con alta persistenza della volatilità." width="wide" pos="bottom">
+                <span className="text-[10px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest cursor-help">
+                  Purge gap
+                </span>
+              </Tooltip>
+              <span className="font-mono text-sm font-bold text-indigo-600 dark:text-indigo-400">
+                {config.wf_purge_gap} candele
+                <span className="text-[10px] font-normal text-slate-400 dark:text-slate-500 ml-1">
+                  ({config.wf_purge_gap * 4}h)
+                </span>
+              </span>
+            </div>
+            <input
+              type="range" min={2} max={20} step={1}
+              value={config.wf_purge_gap}
+              onChange={e => setConfig(c => ({ ...c, wf_purge_gap: parseInt(e.target.value) }))}
+              className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/15 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3.5 [&::-webkit-slider-thumb]:h-3.5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-indigo-500 [&::-webkit-slider-thumb]:shadow-sm [&::-webkit-slider-thumb]:cursor-pointer [&::-moz-range-thumb]:w-3.5 [&::-moz-range-thumb]:h-3.5 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-indigo-500 [&::-moz-range-thumb]:border-0"
+            />
+            <div className="flex justify-between text-[9px] font-mono text-slate-400 dark:text-slate-500">
+              <span>2 (8h)</span><span>10 (40h)</span><span>20 (80h)</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Recommended settings hint */}
+        {(config.retrain_every_n_cycles === 120 && config.wf_n_splits === 5 && config.wf_purge_gap === 5) && (
+          <div className="mt-4 flex items-start gap-2 bg-slate-50 dark:bg-white/[0.03] border border-slate-100 dark:border-white/8 rounded-xl px-4 py-3">
+            <svg className="w-4 h-4 text-slate-400 dark:text-slate-500 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            <p className="text-[10px] text-slate-400 dark:text-slate-500 leading-relaxed">
+              Stai usando i valori di default. Per un adattamento più aggressivo ai regimi: <span className="font-mono font-bold">retrain=40 · fold=8 · gap=8</span>
+            </p>
+          </div>
+        )}
       </Section>
 
       {/* Action Footer */}
