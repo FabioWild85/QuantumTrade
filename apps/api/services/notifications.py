@@ -71,18 +71,28 @@ class TelegramNotifier:
         rr: float,
         dir_prob: float,
         inference_id: str,
+        ensemble_pct: float = 0.0,
+        reasoning: Optional[list] = None,
     ):
         emoji = "📈" if side == "long" else "📉"
-        await self._send(
-            f"{emoji} <b>TRADE APERTO — {side.upper()} {symbol}</b>\n"
-            f"Entry:    <code>${entry_price:,.2f}</code>\n"
-            f"Size:     <code>${size_usd:,.0f}</code>\n"
-            f"SL:       <code>${stop_loss:,.2f}</code>\n"
-            f"TP:       <code>${take_profit:,.2f}</code>\n"
-            f"R:R:      <code>{rr:.2f}</code>\n"
-            f"P(dir):   <code>{dir_prob:.1%}</code>\n"
-            f"ID:       <code>{inference_id}</code>"
-        )
+        lines = [
+            f"{emoji} <b>TRADE APERTO — {side.upper()} {symbol}</b>",
+            f"Entry:    <code>${entry_price:,.2f}</code>",
+            f"Size:     <code>${size_usd:,.0f}</code>",
+            f"SL:       <code>${stop_loss:,.2f}</code>",
+            f"TP:       <code>${take_profit:,.2f}</code>",
+            f"R:R:      <code>{rr:.2f}</code>",
+            f"Ensemble: <code>{ensemble_pct:.1f}%</code>",
+            f"P(dir):   <code>{dir_prob:.1%}</code>",
+            f"ID:       <code>{inference_id}</code>",
+        ]
+        if reasoning:
+            # Show last 3 decision lines (most specific context)
+            sig_lines = [r for r in reasoning if r] [-3:]
+            lines.append(f"\n<b>Segnali:</b>")
+            for r in sig_lines:
+                lines.append(f"• <i>{r}</i>")
+        await self._send("\n".join(lines))
 
     async def send_trade_closed(
         self,
@@ -201,13 +211,23 @@ class TelegramNotifier:
         open_side: str,
         ensemble_pct: float,
         reasoning: list,
+        mark_price: float = 0.0,
+        dir_prob: float = 0.0,
+        hyp_sl: float = 0.0,
+        hyp_tp: float = 0.0,
+        hyp_rr: float = 0.0,
     ):
         last_reason = reasoning[-1] if reasoning else "—"
         await self._send(
             f"⚠️ <b>SEGNALE CONTRARIO BLOCCATO — {signal_side.upper()}</b>\n"
-            f"Posizione aperta: <code>{open_side.upper()}</code>\n"
-            f"Ensemble:         <code>{ensemble_pct:.1f}%</code>\n"
-            f"Motivo:           <code>{last_reason}</code>\n"
+            f"Pos. aperta:  <code>{open_side.upper()}</code>\n"
+            f"Entry (ip.):  <code>${mark_price:,.2f}</code>\n"
+            f"SL (ip.):     <code>${hyp_sl:,.2f}</code>\n"
+            f"TP (ip.):     <code>${hyp_tp:,.2f}</code>\n"
+            f"R:R (ip.):    <code>{hyp_rr:.2f}</code>\n"
+            f"Ensemble:     <code>{ensemble_pct:.1f}%</code>\n"
+            f"P(dir):       <code>{dir_prob:.1%}</code>\n"
+            f"Motivo:       <code>{last_reason}</code>\n"
             f"<i>Segnale ignorato — posizione {open_side.upper()} in corso</i>"
         )
 

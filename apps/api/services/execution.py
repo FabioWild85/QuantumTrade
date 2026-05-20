@@ -154,6 +154,7 @@ class ExecutionEngine:
         self._retrain_task: Optional[asyncio.Task] = None
         self._task: Optional[asyncio.Task]         = None
         self._last_retrain_metrics: Optional[dict] = None
+        self._last_cycle_signals:   Optional[dict] = None
 
     # ── Config ────────────────────────────────────────────────────────────────
 
@@ -493,6 +494,7 @@ class ExecutionEngine:
             "lgbm_1h_loaded":           self._lgbm_1h is not None,
             "retrain_in_progress":      _retrain_lock.locked(),
             "last_retrain":             self._last_retrain_metrics,
+            "last_cycle_signals":       self._last_cycle_signals,
             "config":                   self.config.model_dump(),
             "regime_signal":            regime_data,
         }
@@ -742,6 +744,19 @@ class ExecutionEngine:
             ensemble_pct = round(result.confidence * 100, 1)
             is_opposite  = (signal_side != open_side)
 
+            # Hypothetical SL/TP the blocked trade would have used (ATR-based, same as _open_position)
+            _atr_bl  = atr or snap["mark_price"] * 0.01
+            _px_bl   = snap["mark_price"]
+            _sl_dist = cfg.sl_atr_mult * _atr_bl
+            _tp_dist = cfg.tp_atr_mult * _atr_bl
+            if signal_side == "long":
+                hyp_sl = _px_bl - _sl_dist
+                hyp_tp = _px_bl + _tp_dist
+            else:
+                hyp_sl = _px_bl + _sl_dist
+                hyp_tp = _px_bl - _tp_dist
+            hyp_rr = round(_tp_dist / _sl_dist, 2)
+
             kind  = "signal_blocked_opposite" if is_opposite else "signal_blocked_same"
             label = "SEGNALE CONTRARIO IGNORATO" if is_opposite else "Segnale uguale ignorato"
             log.info(
@@ -762,6 +777,11 @@ class ExecutionEngine:
                         "signal":       signal_side,
                         "open_side":    open_side,
                         "ensemble_pct": ensemble_pct,
+                        "dir_prob":     round(result.directional_prob * 100, 1),
+                        "mark_price":   _px_bl,
+                        "hyp_sl":       round(hyp_sl, 2),
+                        "hyp_tp":       round(hyp_tp, 2),
+                        "hyp_rr":       hyp_rr,
                         "is_opposite":  is_opposite,
                         "reasoning":    result.reasoning,
                         "inference_id": inference_id,
@@ -776,6 +796,11 @@ class ExecutionEngine:
                     open_side=open_side,
                     ensemble_pct=ensemble_pct,
                     reasoning=result.reasoning,
+                    mark_price=_px_bl,
+                    dir_prob=result.directional_prob,
+                    hyp_sl=hyp_sl,
+                    hyp_tp=hyp_tp,
+                    hyp_rr=hyp_rr,
                 ))
 
         # 9. Manage existing position (SL/TP + optional LightGBM mid-trade exit)
@@ -789,6 +814,18 @@ class ExecutionEngine:
         self._cycle_count += 1
         if self._cycle_count % self.config.retrain_every_n_cycles == 0:
             asyncio.create_task(self._retrain_background())
+
+        # Store latest signal snapshot for status endpoint and Monitor UI
+        self._last_cycle_signals = {
+            "action":       result.action,
+            "ensemble_pct": round(result.confidence * 100, 1),
+            "lgbm_pct":     round(lgbm_prob * 100, 1),
+            "c2_dir_pct":   round(c2_out.get("c2_dir_prob", 0.5) * 100, 1),
+            "c2_p50":       c2_out.get("c2_p50"),
+            "c2_cont_prob": round(c2_out.get("c2_cont_prob", 0.0) * 100, 1),
+            "reasoning":    result.reasoning,
+            "updated_at":   datetime.now(timezone.utc).isoformat(),
+        }
 
         elapsed_ms = (datetime.now(timezone.utc) - cycle_start).total_seconds() * 1000
         log.info("Cycle %d done in %.0fms | action=%s", self._cycle_count, elapsed_ms, result.action)
@@ -1022,6 +1059,7 @@ class ExecutionEngine:
             "high_water":             price,
             "partial_done":           False,
             "partial_realized_pnl":   0.0,
+            "entry_reasoning":        list(result.reasoning),
             # Pre-calculated level prices for UI
             "partial_tp_price":              _partial_tp_price,
             "trailing_sl_activation_price":  _trailing_activation_price,
@@ -1073,8 +1111,10 @@ class ExecutionEngine:
             stop_loss=params.stop_loss,
             take_profit=params.take_profit,
             rr=params.rr_ratio,
+            ensemble_pct=round(result.confidence * 100, 1),
             dir_prob=result.directional_prob,
             inference_id=inference_id,
+            reasoning=result.reasoning,
         )
 
     async def _emit_trade_event(self, kind: str, payload: dict):
@@ -1304,19 +1344,22 @@ class ExecutionEngine:
         opened    = datetime.fromisoformat(self._position["opened_at"])
         holding_h = (datetime.now(timezone.utc) - opened).total_seconds() / 3600
 
+        # Compute total PnL (final leg + any partial TP already realized) before
+        # updating risk guards and sending notifications, so both use the true
+        # trade result rather than only the final-leg price return.
+        partial_pnl   = self._position.get("partial_realized_pnl", 0.0) or 0.0
+        total_pnl_usd = pnl_usd + partial_pnl
+        # pnl_pct as % of original position size (consistent with pnl_usd being total)
+        total_pnl_pct = total_pnl_usd / original_size_usd * 100 if original_size_usd else price_pct
+
         self._equity += pnl_usd
-        self._risk.record_trade_result(price_pct)
+        self._risk.record_trade_result(total_pnl_pct)
 
         if self.mode == "live":
             try:
                 await self._submit_close_order()
             except Exception as exc:
                 log.error("Close order failed: %s", exc)
-
-        partial_pnl   = self._position.get("partial_realized_pnl", 0.0) or 0.0
-        total_pnl_usd = pnl_usd + partial_pnl
-        # pnl_pct as % of original position size (consistent with pnl_usd being total)
-        total_pnl_pct = total_pnl_usd / original_size_usd * 100 if original_size_usd else price_pct
 
         log.info(
             "Position closed: %s | %s | PnL %+.2f%% ($%+.2f) [price_pct=%+.2f%%]",
@@ -1326,8 +1369,8 @@ class ExecutionEngine:
         await self._notifier.send_trade_closed(
             side=side,
             symbol=SYMBOL,
-            pnl_usd=pnl_usd,
-            pnl_pct=price_pct,
+            pnl_usd=total_pnl_usd,
+            pnl_pct=total_pnl_pct,
             reason=reason,
             holding_hours=holding_h,
             equity_usd=self._equity,

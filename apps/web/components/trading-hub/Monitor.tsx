@@ -28,6 +28,7 @@ interface Position {
   trailing_sl_activation_price: number | null;
   trailing_sl_dist: number | null;
   entry_atr: number | null;
+  entry_reasoning?: string[];
 }
 
 interface BotStatus {
@@ -47,6 +48,16 @@ interface BotStatus {
     trailing_sl_enabled?: boolean;
     [key: string]: unknown;
   };
+  last_cycle_signals?: {
+    action: string;
+    ensemble_pct: number;
+    lgbm_pct: number;
+    c2_dir_pct: number;
+    c2_p50: number | null;
+    c2_cont_prob: number;
+    reasoning: string[];
+    updated_at: string;
+  } | null;
 }
 
 interface InferenceLog {
@@ -516,6 +527,7 @@ export const Monitor: React.FC<{ apiBase: string }> = ({ apiBase }) => {
           mode={status?.mode ?? 'paper'}
           lgbmConfirmBars={status?.config?.lgbm_exit_confirm_bars ?? 2}
           beSlEnabled={status?.config?.be_sl_enabled ?? false}
+          lastCycleSignals={status?.last_cycle_signals ?? null}
           onClose={closePosition}
         />
       )}
@@ -735,8 +747,13 @@ export const Monitor: React.FC<{ apiBase: string }> = ({ apiBase }) => {
               const isOpposite = ev.kind === 'signal_blocked_opposite';
               const signal    = ev.payload?.signal?.toUpperCase() ?? '—';
               const openSide  = ev.payload?.open_side?.toUpperCase() ?? '—';
-              const pct       = ev.payload?.ensemble_pct ?? 0;
-              const reasoning = ev.payload?.reasoning ?? [];
+              const pct        = ev.payload?.ensemble_pct ?? 0;
+              const dirProb    = ev.payload?.dir_prob ?? 0;
+              const markPrice  = ev.payload?.mark_price ?? 0;
+              const hypSl      = ev.payload?.hyp_sl ?? 0;
+              const hypTp      = ev.payload?.hyp_tp ?? 0;
+              const hypRr      = ev.payload?.hyp_rr ?? 0;
+              const reasoning  = ev.payload?.reasoning ?? [];
               const lastReason = reasoning[reasoning.length - 1] ?? '';
               return (
                 <div
@@ -768,10 +785,19 @@ export const Monitor: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                       {new Date(ev.time).toLocaleString('it-IT', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}
                     </span>
                   </div>
-                  <div className={`flex items-center gap-4 mb-2 text-[11px] ${isOpposite ? 'text-amber-700 dark:text-amber-400' : 'text-slate-500 dark:text-slate-400'}`}>
-                    <span>Posizione aperta: <span className="font-bold">{openSide}</span></span>
+                  <div className={`flex items-center gap-4 mb-2 text-[11px] flex-wrap ${isOpposite ? 'text-amber-700 dark:text-amber-400' : 'text-slate-500 dark:text-slate-400'}`}>
+                    <span>Pos. aperta: <span className="font-bold">{openSide}</span></span>
                     <span>Ensemble: <span className="font-bold">{pct.toFixed(1)}%</span></span>
+                    {dirProb > 0 && <span>P(dir): <span className="font-bold">{dirProb.toFixed(1)}%</span></span>}
                   </div>
+                  {markPrice > 0 && (
+                    <div className={`grid grid-cols-4 gap-2 mb-2 text-[10px] font-mono p-2 rounded-lg ${isOpposite ? 'bg-amber-100/60 dark:bg-amber-500/10' : 'bg-slate-100 dark:bg-white/5'}`}>
+                      <div><span className="opacity-60">Entry</span><br/><span className="font-bold">${markPrice.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</span></div>
+                      {hypSl > 0 && <div><span className="opacity-60">SL</span><br/><span className="font-bold text-rose-500">${hypSl.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</span></div>}
+                      {hypTp > 0 && <div><span className="opacity-60">TP</span><br/><span className="font-bold text-emerald-500">${hypTp.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</span></div>}
+                      {hypRr > 0 && <div><span className="opacity-60">R:R</span><br/><span className="font-bold">{hypRr.toFixed(2)}</span></div>}
+                    </div>
+                  )}
                   {lastReason && (
                     <div className="truncate text-slate-500 dark:text-slate-500 text-[11px] flex items-start gap-2 mt-1">
                       <span className="text-amber-400 opacity-60 shrink-0">•</span>
@@ -798,6 +824,17 @@ export const Monitor: React.FC<{ apiBase: string }> = ({ apiBase }) => {
 
 // ── Live Trade Card ───────────────────────────────────────────────────────────
 
+interface LastCycleSignals {
+  action: string;
+  ensemble_pct: number;
+  lgbm_pct: number;
+  c2_dir_pct: number;
+  c2_p50: number | null;
+  c2_cont_prob: number;
+  reasoning: string[];
+  updated_at: string;
+}
+
 interface LiveTradeCardProps {
   pos: Position;
   markPrice: number | null;
@@ -812,13 +849,15 @@ interface LiveTradeCardProps {
   mode: string;
   lgbmConfirmBars: number;
   beSlEnabled: boolean;
+  lastCycleSignals: LastCycleSignals | null;
   onClose: () => void;
 }
 
 const LiveTradeCard: React.FC<LiveTradeCardProps> = ({
   pos, markPrice, unrealizedPnl, unrealizedPct,
   distToSL, distToTP, distToSLPct, distToTPPct,
-  slProgressPct, positionDurationH, mode, lgbmConfirmBars, beSlEnabled, onClose,
+  slProgressPct, positionDurationH, mode, lgbmConfirmBars, beSlEnabled,
+  lastCycleSignals, onClose,
 }) => {
   const isLong    = pos.side === 'long';
   const pnlPos    = unrealizedPnl >= 0;
@@ -1025,6 +1064,60 @@ const LiveTradeCard: React.FC<LiveTradeCardProps> = ({
           </div>
         </div>
       </div>
+
+      {/* Entry reasoning — why the trade was opened */}
+      {pos.entry_reasoning && pos.entry_reasoning.length > 0 && (
+        <div className="px-6 py-4 border-b border-slate-100 dark:border-white/5">
+          <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-2">Perché Aperto</p>
+          <div className="space-y-1">
+            {pos.entry_reasoning.map((line, i) => (
+              <p key={i} className="text-[11px] font-mono text-slate-600 dark:text-slate-300 leading-relaxed">
+                <span className="text-indigo-400 mr-1.5">›</span>{line}
+              </p>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Current cycle signals — are they still strong? */}
+      {lastCycleSignals && (
+        <div className="px-6 py-4 border-b border-slate-100 dark:border-white/5">
+          <div className="flex items-center justify-between mb-2">
+            <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest">Segnali Attuali</p>
+            <span className={`text-[9px] font-bold uppercase tracking-widest px-2 py-0.5 rounded-full ${
+              lastCycleSignals.action === pos.side
+                ? 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
+                : lastCycleSignals.action === 'no_trade'
+                  ? 'bg-slate-50 dark:bg-white/5 text-slate-400 dark:text-slate-500'
+                  : 'bg-amber-50 dark:bg-amber-500/10 text-amber-600 dark:text-amber-400'
+            }`}>
+              {lastCycleSignals.action === pos.side ? '✓ Confermato' : lastCycleSignals.action === 'no_trade' ? 'Neutro' : '⚠ Contrario'}
+            </span>
+          </div>
+          <div className="grid grid-cols-4 gap-2 mb-3">
+            {[
+              { label: 'Ensemble', value: `${lastCycleSignals.ensemble_pct.toFixed(1)}%`, highlight: lastCycleSignals.ensemble_pct >= 60 },
+              { label: 'LGBM 4H', value: `${lastCycleSignals.lgbm_pct.toFixed(1)}%`, highlight: lastCycleSignals.lgbm_pct >= 55 },
+              { label: 'C2 Dir', value: `${lastCycleSignals.c2_dir_pct.toFixed(1)}%`, highlight: lastCycleSignals.c2_dir_pct >= 55 },
+              { label: 'C2 Cont', value: `${lastCycleSignals.c2_cont_prob.toFixed(0)}%`, highlight: lastCycleSignals.c2_cont_prob >= 50 },
+            ].map(({ label, value, highlight }) => (
+              <div key={label} className="bg-slate-50 dark:bg-white/5 rounded-lg p-2 text-center">
+                <p className="text-[9px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-0.5">{label}</p>
+                <p className={`text-xs font-bold font-mono ${highlight ? 'text-indigo-600 dark:text-indigo-400' : 'text-slate-500 dark:text-slate-400'}`}>{value}</p>
+              </div>
+            ))}
+          </div>
+          {lastCycleSignals.reasoning.length > 0 && (
+            <div className="space-y-0.5">
+              {lastCycleSignals.reasoning.slice(-3).map((line, i) => (
+                <p key={i} className="text-[10px] font-mono text-slate-500 dark:text-slate-400">
+                  <span className="text-slate-300 dark:text-slate-600 mr-1.5">›</span>{line}
+                </p>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Size footer */}
       <div className="px-6 py-3 flex items-center justify-between border-t border-slate-100 dark:border-white/5">
