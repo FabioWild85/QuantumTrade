@@ -6,6 +6,7 @@ Single-user, single-bot, BTC-PERP on Hyperliquid (4h Trend Following)
 import asyncio
 import logging
 import os
+import threading
 import time as _time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
@@ -710,30 +711,103 @@ backtest_jobs: dict = {}
 # Single-slot executor: only one Chronos backtest at a time to avoid RAM exhaustion
 _backtest_executor = ThreadPoolExecutor(max_workers=1)
 
+# Track active job for reconnect and cancellation
+_active_job_id: Optional[str] = None
+_active_cancel_event: Optional[threading.Event] = None
+
+
+def _cleanup_old_jobs(keep: int = 20):
+    """Keep only the most recent `keep` jobs to avoid memory growth."""
+    if len(backtest_jobs) > keep:
+        old_keys = sorted(
+            (k for k in backtest_jobs if k != _active_job_id),
+            key=lambda k: backtest_jobs[k].get("_ts", 0),
+        )[: len(backtest_jobs) - keep]
+        for k in old_keys:
+            del backtest_jobs[k]
+
+
+@app.get("/backtest/active")
+async def backtest_active():
+    """Return the currently running job_id so the frontend can reconnect after a refresh."""
+    if _active_job_id and backtest_jobs.get(_active_job_id, {}).get("status") == "running":
+        return {"job_id": _active_job_id, "status": "running"}
+    return {"job_id": None, "status": "idle"}
+
 
 @app.post("/backtest")
 async def backtest_start(req: BacktestRequest, background_tasks: BackgroundTasks):
-    import uuid
+    global _active_job_id, _active_cancel_event
+    import uuid, time as _t
+
+    # Cancel any job that is still running (e.g. leftover from before a page refresh)
+    if _active_cancel_event is not None:
+        _active_cancel_event.set()
+    if _active_job_id and backtest_jobs.get(_active_job_id, {}).get("status") == "running":
+        backtest_jobs[_active_job_id] = {
+            "status": "cancelled",
+            "result": {"error": "Annullato — nuovo backtest avviato"},
+            "_ts": _t.time(),
+        }
+
     job_id = str(uuid.uuid4())[:8]
-    backtest_jobs[job_id] = {"status": "running", "result": None}
+    cancel_event = threading.Event()
+    _active_job_id = job_id
+    _active_cancel_event = cancel_event
+    backtest_jobs[job_id] = {"status": "running", "result": None, "_ts": _t.time()}
+    _cleanup_old_jobs()
 
     async def run():
+        global _active_job_id, _active_cancel_event
+        import time as _t2
         from services.backtesting import run_backtest
         try:
-            # Run in a thread so the event loop stays free for health checks and polling.
-            # asyncio.run() inside the thread creates its own loop for the async I/O inside run_backtest.
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(
                 _backtest_executor,
-                lambda: asyncio.run(run_backtest(req))
+                lambda: asyncio.run(run_backtest(req, cancel_event=cancel_event))
             )
-            backtest_jobs[job_id] = {"status": "done", "result": result}
+            if cancel_event.is_set():
+                backtest_jobs[job_id] = {"status": "cancelled", "result": {"error": "Backtest annullato"}, "_ts": _t2.time()}
+            else:
+                backtest_jobs[job_id] = {"status": "done", "result": result, "_ts": _t2.time()}
+        except RuntimeError as e:
+            if "backtest_cancelled" in str(e) or cancel_event.is_set():
+                backtest_jobs[job_id] = {"status": "cancelled", "result": {"error": "Backtest annullato"}, "_ts": _t2.time()}
+            else:
+                logger.error(f"Backtest job {job_id} failed: {e}")
+                backtest_jobs[job_id] = {"status": "error", "result": {"error": str(e)}, "_ts": _t2.time()}
         except Exception as e:
-            logger.error(f"Backtest job {job_id} failed: {e}")
-            backtest_jobs[job_id] = {"status": "error", "result": {"error": str(e)}}
+            if cancel_event.is_set():
+                backtest_jobs[job_id] = {"status": "cancelled", "result": {"error": "Backtest annullato"}, "_ts": _t2.time()}
+            else:
+                logger.error(f"Backtest job {job_id} failed: {e}")
+                backtest_jobs[job_id] = {"status": "error", "result": {"error": str(e)}, "_ts": _t2.time()}
+        finally:
+            if _active_job_id == job_id:
+                _active_job_id = None
+                _active_cancel_event = None
 
     background_tasks.add_task(run)
     return {"job_id": job_id, "status": "running"}
+
+
+@app.delete("/backtest/{job_id}")
+async def backtest_cancel(job_id: str):
+    global _active_job_id, _active_cancel_event
+    import time as _t
+    job = backtest_jobs.get(job_id)
+    if not job:
+        raise HTTPException(404, "Job not found")
+    if job["status"] != "running":
+        return {"status": job["status"]}
+    if _active_cancel_event is not None and _active_job_id == job_id:
+        _active_cancel_event.set()
+    backtest_jobs[job_id] = {"status": "cancelled", "result": {"error": "Backtest annullato dall'utente"}, "_ts": _t.time()}
+    if _active_job_id == job_id:
+        _active_job_id = None
+        _active_cancel_event = None
+    return {"status": "cancelled"}
 
 
 @app.get("/backtest/{job_id}")

@@ -6,6 +6,7 @@ Fees: HL taker 0.035% per side, funding accrued every 2 candles (8h cycle).
 """
 
 import logging
+import threading
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -24,7 +25,7 @@ HL_TAKER_FEE = 0.00035   # 0.035% per trade side
 FUNDING_INTERVAL_BARS = 2  # funding paid every 2×4h bars (8h cycle)
 
 
-async def run_backtest(req) -> dict:
+async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> dict:
     """
     Main entry point, called from FastAPI /backtest endpoint.
     req: BacktestRequest with symbol, from_date, to_date, initial_capital, config.
@@ -173,6 +174,8 @@ async def run_backtest(req) -> dict:
     funding_col   = "funding" in df_feat.columns
 
     for i in range(len(df_feat)):
+        if cancel_event and cancel_event.is_set():
+            raise RuntimeError("backtest_cancelled")
         row = df_feat.iloc[i]
         features = row.to_dict()
         atr_raw  = features.get("atr_14")

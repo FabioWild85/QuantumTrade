@@ -391,21 +391,15 @@ function applyLeverage(result: BacktestResult, lev: number): BacktestResult {
   }
   const finalEquity = levCurve[levCurve.length - 1].equity;
 
-  // Build bar → levered equity map to annotate each trade's post-close equity.
-  const barToLevEq = new Map(levCurve.map(p => [p.bar, p.equity]));
-  const getEqAtBar = (bar: number) => {
-    if (barToLevEq.has(bar)) return barToLevEq.get(bar)!;
-    // fall back to nearest bar >= requested
-    for (const p of levCurve) { if (p.bar >= bar) return p.equity; }
-    return levCurve[levCurve.length - 1].equity;
-  };
-
-  // Scale individual trade P&L for display in trade log and attach per-trade equity.
-  // NOTE: pnl_usd is approximate (scaled, not compounded). Authoritative PnL = finalEquity - init.
+  // Annotate each trade with its post-close levered equity using direct index lookup.
+  // trades[k] corresponds 1:1 to equity_curve[k+1] (both appended together on every close).
+  // A bar-keyed Map would collapse two trades closing at the same bar (e.g. partial TP + final
+  // close), giving both rows the same (last) equity. Index-based lookup avoids that.
   let bankruptFound = false;
-  const levTrades = result.trades.map(t => {
-    const exitBar = t.bar; // t.bar is already the exit bar (backend: "bar": i at close)
-    const levEq   = getEqAtBar(exitBar);
+  const levTrades = result.trades.map((t, k) => {
+    const levEq   = k + 1 < levCurve.length
+      ? levCurve[k + 1].equity
+      : levCurve[levCurve.length - 1].equity;
     const bankrupt = !bankruptFound && levEq <= 0;
     if (bankrupt) bankruptFound = true;
     return {
@@ -547,20 +541,85 @@ const LeverageWarning: React.FC<{ lev: number; levPnlPct: number; basePnlPct: nu
 };
 
 // ── Job runner helper ──────────────────────────────────────────────────────────
-async function runJob(apiBase: string, body: object): Promise<BacktestResult> {
+async function runJob(
+  apiBase: string,
+  body: object,
+  signal?: AbortSignal,
+): Promise<BacktestResult> {
   const startRes = await fetch(`${apiBase}/backtest`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
+    signal,
   });
   const { job_id } = await startRes.json();
+  sessionStorage.setItem('bt_active_job', job_id);
+
   return new Promise((resolve, reject) => {
-    const t = setInterval(async () => {
-      const r = await fetch(`${apiBase}/backtest/${job_id}`);
-      const job = await r.json();
-      if (job.status === 'done') {
-        clearInterval(t);
-        job.result?.error ? reject(new Error(job.result.error)) : resolve(job.result);
+    let t: ReturnType<typeof setInterval>;
+
+    const cleanup = () => {
+      clearInterval(t);
+      sessionStorage.removeItem('bt_active_job');
+    };
+
+    const onAbort = () => {
+      cleanup();
+      reject(new DOMException('Backtest annullato', 'AbortError'));
+    };
+    signal?.addEventListener('abort', onAbort);
+
+    t = setInterval(async () => {
+      if (signal?.aborted) { cleanup(); return; }
+      try {
+        const r = await fetch(`${apiBase}/backtest/${job_id}`, { signal });
+        const job = await r.json();
+        if (job.status === 'done') {
+          signal?.removeEventListener('abort', onAbort);
+          cleanup();
+          job.result?.error ? reject(new Error(job.result.error)) : resolve(job.result);
+        } else if (job.status === 'cancelled' || job.status === 'error') {
+          signal?.removeEventListener('abort', onAbort);
+          cleanup();
+          reject(new Error(job.result?.error ?? job.status));
+        }
+      } catch (err: any) {
+        if (err.name === 'AbortError') { cleanup(); }
+      }
+    }, 2000);
+  });
+}
+
+// ── Reconnect to an already-running job (e.g. after page refresh) ─────────────
+async function reconnectJob(apiBase: string, job_id: string, signal?: AbortSignal): Promise<BacktestResult> {
+  sessionStorage.setItem('bt_active_job', job_id);
+  return new Promise((resolve, reject) => {
+    let t: ReturnType<typeof setInterval>;
+
+    const cleanup = () => {
+      clearInterval(t);
+      sessionStorage.removeItem('bt_active_job');
+    };
+
+    const onAbort = () => { cleanup(); reject(new DOMException('Backtest annullato', 'AbortError')); };
+    signal?.addEventListener('abort', onAbort);
+
+    t = setInterval(async () => {
+      if (signal?.aborted) { cleanup(); return; }
+      try {
+        const r = await fetch(`${apiBase}/backtest/${job_id}`, { signal });
+        const job = await r.json();
+        if (job.status === 'done') {
+          signal?.removeEventListener('abort', onAbort);
+          cleanup();
+          job.result?.error ? reject(new Error(job.result.error)) : resolve(job.result);
+        } else if (job.status === 'cancelled' || job.status === 'error') {
+          signal?.removeEventListener('abort', onAbort);
+          cleanup();
+          reject(new Error(job.result?.error ?? job.status));
+        }
+      } catch (err: any) {
+        if (err.name === 'AbortError') { cleanup(); }
       }
     }, 2000);
   });
@@ -1322,6 +1381,10 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   const [lastRunConfig,  setLastRunConfig]  = useState<Record<string, any> | null>(null);
   const [toast,          setToast]          = useState<{ type: 'success' | 'error'; msg: string } | null>(null);
 
+  // ── Abort controller ref (one per run, replaced on each new run) ─────────────
+  const abortCtrlRef = useRef<AbortController | null>(null);
+  const activeJobRef = useRef<string | null>(null);
+
   // ── Load backtest config from API on mount ────────────────────────────────────
   const applyConfig = useCallback((p: Record<string, any>) => {
     if (p.sl_atr_mult        !== undefined) setSlMult(String(p.sl_atr_mult));
@@ -1370,6 +1433,43 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
       .then(applyConfig)
       .catch(() => {/* silent — use defaults */});
   }, [apiBase, applyConfig]);
+
+  // ── Reconnect to a job that was running before a page refresh ────────────────
+  useEffect(() => {
+    fetch(`${apiBase}/backtest/active`)
+      .then(r => r.json())
+      .then(({ job_id }: { job_id: string | null }) => {
+        if (!job_id) { sessionStorage.removeItem('bt_active_job'); return; }
+        // There's a live job on the server — reconnect and show results when done
+        setStatus('running');
+        setResult(null);
+        setBaseline(null);
+        setErrorMsg('');
+        const ctrl = new AbortController();
+        abortCtrlRef.current = ctrl;
+        activeJobRef.current = job_id;
+        reconnectJob(apiBase, job_id, ctrl.signal)
+          .then(r => { setResult(r); setStatus('done'); })
+          .catch((e: Error) => {
+            if (e.name === 'AbortError') { setStatus('idle'); }
+            else { setErrorMsg(e.message); setStatus('error'); }
+          });
+      })
+      .catch(() => {/* no active job or server unreachable */});
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [apiBase]);
+
+  const cancelBacktest = async () => {
+    const jobId = activeJobRef.current ?? sessionStorage.getItem('bt_active_job');
+    abortCtrlRef.current?.abort();
+    abortCtrlRef.current = null;
+    activeJobRef.current = null;
+    if (jobId) {
+      try { await fetch(`${apiBase}/backtest/${jobId}`, { method: 'DELETE' }); } catch {}
+    }
+    sessionStorage.removeItem('bt_active_job');
+    setStatus('idle');
+  };
 
   // Close dropdowns on outside click
   useEffect(() => {
@@ -1521,6 +1621,12 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   });
 
   const runBacktest = async () => {
+    // Abort any previous run cleanly before starting a new one
+    abortCtrlRef.current?.abort();
+    const ctrl = new AbortController();
+    abortCtrlRef.current = ctrl;
+    activeJobRef.current = null;
+
     setStatus('running');
     setResult(null);
     setBaseline(null);
@@ -1539,16 +1645,26 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
       };
       if (compareMode && (trailingSL || partialTP)) {
         const bodyBase = { ...body, config: buildConfig(false) };
-        const [r1, r2] = await Promise.all([runJob(apiBase, body), runJob(apiBase, bodyBase)]);
+        const [r1, r2] = await Promise.all([
+          runJob(apiBase, body, ctrl.signal),
+          runJob(apiBase, bodyBase, ctrl.signal),
+        ]);
         setResult(r1);
         setBaseline(r2);
       } else {
-        setResult(await runJob(apiBase, body));
+        setResult(await runJob(apiBase, body, ctrl.signal));
       }
       setStatus('done');
     } catch (e: any) {
-      setErrorMsg(e.message);
-      setStatus('error');
+      if (e.name === 'AbortError') {
+        setStatus('idle');
+      } else {
+        setErrorMsg(e.message);
+        setStatus('error');
+      }
+    } finally {
+      if (abortCtrlRef.current === ctrl) abortCtrlRef.current = null;
+      activeJobRef.current = null;
     }
   };
 
@@ -2073,7 +2189,7 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
               ) : null;
             })()}
 
-            {/* Run button */}
+            {/* Run / Cancel buttons */}
             <div className="flex flex-col sm:flex-row items-center gap-4 pt-4 border-t border-slate-100 dark:border-white/5">
               <button onClick={runBacktest} disabled={status === 'running'}
                 className="w-full sm:w-auto px-8 py-3.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-sm font-bold uppercase tracking-widest rounded-xl transition-all shadow-lg shadow-indigo-500/25 active:scale-95 flex items-center justify-center gap-3">
@@ -2091,6 +2207,15 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                   </>
                 )}
               </button>
+              {status === 'running' && (
+                <button onClick={cancelBacktest}
+                  className="w-full sm:w-auto px-6 py-3.5 bg-rose-600 hover:bg-rose-500 text-white text-sm font-bold uppercase tracking-widest rounded-xl transition-all shadow-lg shadow-rose-500/25 active:scale-95 flex items-center justify-center gap-2">
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                  Annulla
+                </button>
+              )}
               {status === 'error' && (
                 <div className="flex items-center gap-2 text-rose-600 dark:text-rose-400 bg-rose-50 dark:bg-rose-500/10 px-4 py-2 rounded-xl border border-rose-100 dark:border-rose-500/20 text-xs font-bold">
                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
