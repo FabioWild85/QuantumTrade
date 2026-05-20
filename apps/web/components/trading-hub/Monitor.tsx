@@ -219,7 +219,7 @@ export const Monitor: React.FC<{ apiBase: string }> = ({ apiBase }) => {
       statusRef.current = s;
       writeStatusCache(s);
       if (la?.configured) setLiveAccount(la);
-      setLogs(l ?? []);
+      setLogs((Array.isArray(l) ? l : []).filter(Boolean));
       setEquity(prev => {
         if (!e?.length) return prev;
         const sorted = [...e].sort((a: EquitySnap, b: EquitySnap) =>
@@ -561,7 +561,7 @@ export const Monitor: React.FC<{ apiBase: string }> = ({ apiBase }) => {
             </span>
           )}
         </div>
-        {equity.length < 2 ? (
+        {equity.length === 0 ? (
           <div className="h-32 flex items-center justify-center text-slate-400 dark:text-slate-500 text-xs italic">
             La curva apparirà dopo il primo trade chiuso
           </div>
@@ -636,8 +636,8 @@ export const Monitor: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                     {log.decision?.toUpperCase()}
                   </span>
                   <span className="text-slate-400 dark:text-slate-500 font-medium">
-                    {new Date(log.time).toLocaleTimeString('it-IT')}
-                    {log.latency_ms && ` · ${log.latency_ms.toFixed(0)}ms`}
+                    {log.time ? new Date(log.time).toLocaleTimeString('it-IT') : '—'}
+                    {log.latency_ms ? ` · ${log.latency_ms.toFixed(0)}ms` : ''}
                   </span>
                 </div>
                 <div className="space-y-1.5">
@@ -798,7 +798,7 @@ export const Monitor: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                       </span>
                     </div>
                     <span className="text-slate-400 dark:text-slate-500 font-medium text-[10px]">
-                      {new Date(ev.time).toLocaleString('it-IT', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}
+                      {ev.time ? new Date(ev.time).toLocaleString('it-IT', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '—'}
                     </span>
                   </div>
                   <div className={`flex items-center gap-4 mb-2 text-[11px] flex-wrap ${isOpposite ? 'text-amber-700 dark:text-amber-400' : 'text-slate-500 dark:text-slate-400'}`}>
@@ -1185,7 +1185,9 @@ const EquityCurveChart: React.FC<{ data: EquitySnap[]; startCapital: number }> =
   const cW = W - PAD.l - PAD.r;
   const cH = H - PAD.t - PAD.b;
 
-  const vals = data.map(d => d.equity_usd);
+  // Prepend a synthetic start-capital point so the chart works with a single snapshot
+  const rawVals = data.map(d => d.equity_usd);
+  const vals = rawVals.length === 1 ? [startCapital, ...rawVals] : rawVals;
   const minV = Math.min(...vals, startCapital) * 0.9993;
   const maxV = Math.max(...vals, startCapital) * 1.0007;
   const vRange = maxV - minV || 1;
@@ -1205,9 +1207,9 @@ const EquityCurveChart: React.FC<{ data: EquitySnap[]; startCapital: number }> =
 
   const fmtK = (v: number) => v >= 10000 ? `$${(v / 1000).toFixed(1)}k` : `$${v.toFixed(0)}`;
 
-  // Time labels: first + last
-  const firstDate = new Date(data[0].time).toLocaleDateString('it-IT', { day: '2-digit', month: '2-digit' });
-  const lastDate  = new Date(data[n - 1].time).toLocaleDateString('it-IT', { day: '2-digit', month: '2-digit' });
+  // Time labels: first + last — use data[] indices (not vals[] which may include synthetic start point)
+  const firstDate = data[0]?.time ? new Date(data[0].time).toLocaleDateString('it-IT', { day: '2-digit', month: '2-digit' }) : '';
+  const lastDate  = data[data.length - 1]?.time ? new Date(data[data.length - 1].time).toLocaleDateString('it-IT', { day: '2-digit', month: '2-digit' }) : '';
 
   return (
     <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-full" preserveAspectRatio="xMidYMid meet">

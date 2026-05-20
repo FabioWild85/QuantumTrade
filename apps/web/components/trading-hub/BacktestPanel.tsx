@@ -1620,6 +1620,93 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     forced_regime:                 forcedRegime,
   });
 
+  const downloadConfig = () => {
+    const cfg = buildConfig(true);
+    const now = new Date().toLocaleString('it-IT');
+    const lines: string[] = [
+      '╔══════════════════════════════════════════════════════════════╗',
+      '║           QUANTUM TRADE — CONFIGURAZIONE BACKTEST            ║',
+      '╚══════════════════════════════════════════════════════════════╝',
+      `Esportato il: ${now}`,
+      '',
+      '━━━ PARAMETRI BASE ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
+      `Data inizio:          ${fromDate}`,
+      `Data fine:            ${toDate}`,
+      `Capitale iniziale:    $${parseFloat(capital).toLocaleString('en-US')}`,
+      `Simbolo:              BTC/USD`,
+      `Modalità:             Paper (simulazione)`,
+      '',
+      '━━━ GESTIONE RISCHIO ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
+      `SL ATR multiplier:    ${slMult}×`,
+      `TP ATR multiplier:    ${tpMult}×`,
+      `Position size:        ${posSizePct}% del capitale per trade`,
+      `Max daily drawdown:   ${cfg.max_daily_dd_pct}%`,
+      `Max consecutive loss: ${cfg.max_consecutive_losses} trade`,
+      '',
+      '━━━ STRATEGIA DI ENTRATA ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
+      `Directional threshold:  ${advDirThresh} (P(up) minimo)`,
+      `ADX gate:               ${advAdxGate} (${advAdxEnabled ? 'ATTIVO' : 'DISATTIVATO'})`,
+      `Confluence gate:        ${advConfGate}% (${advSweepEnabled ? 'sweep ON' : 'sweep OFF'} | ${advFvgEnabled ? 'FVG ON' : 'FVG OFF'} | ${advMtfEnabled ? 'MTF ON' : 'MTF OFF'})`,
+      `Regime bias:            ${regimeBias ? `ATTIVO — delta ${regimeBiasDelta}, size ×${regimeBiasSizeFactor}` : 'DISATTIVATO'}`,
+      `Regime forzato:         ${forcedRegime.toUpperCase()}`,
+      '',
+      '━━━ STRATEGIE DI USCITA ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
+      `Trailing SL:            ${trailingSL ? `ATTIVO — attivazione +${trailAct}R` : 'DISATTIVATO'}`,
+      `Partial TP:             ${partialTP ? `ATTIVO — ${partialPct}% @ ${partialMult}× ATR` : 'DISATTIVATO'}`,
+      `LightGBM exit:          ${lgbmExit ? `ATTIVO — soglia ${lgbmThresh}, min hold ${lgbmMinHold} barre, confirm ${lgbmConfirm} barre${enhancedExit ? ', enhanced ON' : ''}` : 'DISATTIVATO'}`,
+      `Breakeven SL:           ${advBeSL ? `ATTIVO — attivazione +${advBeSLAct}R` : 'DISATTIVATO'}`,
+      `Max hold bars:          ${advMaxHold ? `${advMaxHoldBars} barre (${Math.round(parseInt(advMaxHoldBars) * 4)}h)` : 'DISATTIVATO'}`,
+      '',
+      '━━━ MODELLI AI ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
+      `Chronos-2:              ${useChronos ? `ATTIVO — peso ensemble ${advChronosWeight}` : 'DISATTIVATO (solo LightGBM)'}`,
+      `C2 Uncertainty gate:    ${c2UncertaintyGate ? `ATTIVO — soglia ${c2UncertaintyThresh}` : 'DISATTIVATO'}`,
+      `C2 Continuation gate:   ${c2ContProbGate ? `ATTIVO — soglia ${c2ContProbThresh}` : 'DISATTIVATO'}`,
+      `Dynamic SL/TP:          ${dynamicSlTp ? `ATTIVO — blend ${dynamicSlTpBlend}` : 'DISATTIVATO'}`,
+      `Recalibrated uncertainty: ${recalibratedUncertainty ? 'SÌ' : 'NO'}`,
+      `P10 SL floor:           ${p10SlFloor && useChronos ? 'ATTIVO' : 'DISATTIVATO'}`,
+    ];
+
+    if (result) {
+      const s = result.stats;
+      lines.push('');
+      lines.push('━━━ RISULTATI ULTIMO RUN ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      lines.push(`Periodo simulato:     ${result.from_date} → ${result.to_date}`);
+      lines.push(`Capitale iniziale:    $${result.initial_capital.toLocaleString('en-US')}`);
+      lines.push(`Equity finale:        $${result.final_equity.toLocaleString('en-US', { maximumFractionDigits: 2 })}`);
+      lines.push(`PnL totale:           ${s.total_pnl_pct >= 0 ? '+' : ''}${s.total_pnl_pct.toFixed(2)}% ($${s.total_pnl_usd.toFixed(2)})`);
+      lines.push(`Trade totali:         ${s.total_trades}`);
+      lines.push(`Win rate:             ${s.win_rate.toFixed(1)}%`);
+      lines.push(`Profit factor:        ${s.profit_factor?.toFixed(2) ?? '—'}`);
+      lines.push(`Sharpe ratio:         ${s.sharpe_ratio?.toFixed(2) ?? '—'}`);
+      lines.push(`Sortino ratio:        ${s.sortino_ratio?.toFixed(2) ?? '—'}`);
+      lines.push(`Max drawdown:         ${s.max_drawdown_pct.toFixed(2)}%`);
+      lines.push(`Avg win:              +${s.avg_win_pct?.toFixed(2) ?? '0.00'}%`);
+      lines.push(`Avg loss:             ${s.avg_loss_pct?.toFixed(2) ?? '0.00'}%`);
+      lines.push(`Best trade:           +${s.best_trade_pct?.toFixed(2) ?? '0.00'}%`);
+      lines.push(`Worst trade:          ${s.worst_trade_pct?.toFixed(2) ?? '0.00'}%`);
+      lines.push(`Avg holding:          ${s.avg_holding_bars?.toFixed(1) ?? '—'} barre (${((s.avg_holding_bars ?? 0) * 4).toFixed(0)}h)`);
+    }
+
+    lines.push('');
+    lines.push('━━━ CONFIG JSON COMPLETO ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    lines.push(JSON.stringify({
+      symbol: 'BTC',
+      from_date: fromDate,
+      to_date: toDate,
+      initial_capital: parseFloat(capital) || 10000,
+      use_chronos: useChronos,
+      config: cfg,
+    }, null, 2));
+
+    const blob = new Blob([lines.join('\n')], { type: 'text/plain;charset=utf-8' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href     = url;
+    a.download = `backtest_config_${fromDate}_${toDate}.txt`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   const runBacktest = async () => {
     // Abort any previous run cleanly before starting a new one
     abortCtrlRef.current?.abort();
@@ -2189,7 +2276,7 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
               ) : null;
             })()}
 
-            {/* Run / Cancel buttons */}
+            {/* Run / Cancel / Download buttons */}
             <div className="flex flex-col sm:flex-row items-center gap-4 pt-4 border-t border-slate-100 dark:border-white/5">
               <button onClick={runBacktest} disabled={status === 'running'}
                 className="w-full sm:w-auto px-8 py-3.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-sm font-bold uppercase tracking-widest rounded-xl transition-all shadow-lg shadow-indigo-500/25 active:scale-95 flex items-center justify-center gap-3">
@@ -2222,6 +2309,15 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                    {errorMsg}
                 </div>
               )}
+              <button
+                onClick={downloadConfig}
+                className="sm:ml-auto w-full sm:w-auto px-5 py-3.5 bg-slate-100 hover:bg-slate-200 dark:bg-white/5 dark:hover:bg-white/10 text-slate-700 dark:text-slate-300 text-sm font-bold uppercase tracking-widest rounded-xl transition-all active:scale-95 flex items-center justify-center gap-2 border border-slate-200 dark:border-white/10"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                </svg>
+                Scarica Configurazione
+              </button>
             </div>
           </div>
 

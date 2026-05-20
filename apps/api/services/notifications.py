@@ -109,13 +109,14 @@ class TelegramNotifier:
         emoji = "✅" if total_pnl >= 0 else "❌"
         sign  = "+" if total_pnl >= 0 else ""
         reason_labels = {
-            "stop_loss":    "Stop Loss",
-            "take_profit":  "Take Profit",
-            "manual":       "Chiusura manuale",
-            "lgbm_exit":    "LightGBM Exit",
-            "max_hold_bars": "Max Hold Time",
-            "kill":         "Kill Switch",
-            "macro_pause":  "Pausa Macro Evento",
+            "stop_loss":      "Stop Loss",
+            "take_profit":    "Take Profit",
+            "manual":         "Chiusura manuale",
+            "lgbm_exit":      "LightGBM Exit",
+            "max_hold_bars":  "Max Hold Time",
+            "kill":           "Kill Switch",
+            "macro_pause":    "Pausa Macro Evento",
+            "exchange_close": "Chiuso dall'exchange",
         }
         reason_label = reason_labels.get(reason, reason)
         lines = [
@@ -245,6 +246,25 @@ class TelegramNotifier:
             f"▶️ <b>PAUSA MACRO TERMINATA</b>\n"
             f"Evento: <code>{event_name}</code>\n"
             f"<i>Bot ripreso — aperture normali al prossimo ciclo</i>"
+        )
+
+    async def send_macro_trade_blocked(
+        self,
+        event_name: str,
+        signal_side: str,
+        ensemble_pct: float,
+        dir_prob: float,
+        mark_price: float,
+    ):
+        emoji = "📈" if signal_side == "long" else "📉"
+        await self._send(
+            f"🚫 <b>SEGNALE BLOCCATO — PAUSA MACRO</b>\n"
+            f"Evento:   <code>{event_name}</code>\n"
+            f"Segnale:  {emoji} <code>{signal_side.upper()}</code>\n"
+            f"Prezzo:   <code>${mark_price:,.2f}</code>\n"
+            f"Ensemble: <code>{ensemble_pct:.1f}%</code>\n"
+            f"P(dir):   <code>{dir_prob:.1%}</code>\n"
+            f"<i>Nessun trade aperto — riprende alla fine della finestra</i>"
         )
 
     async def send_daily_summary(

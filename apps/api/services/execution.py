@@ -212,6 +212,10 @@ class ExecutionEngine:
         # Kick off the main loop
         self._task = asyncio.create_task(self._loop())
 
+        # Paper mode: real-time SL/TP watchdog (live mode relies on exchange trigger orders)
+        if mode == "paper":
+            asyncio.create_task(self._paper_watchdog())
+
         log.info("Execution engine starting in %s mode", mode.upper())
         await self._notifier.send_bot_started(mode)
 
@@ -590,6 +594,39 @@ class ExecutionEngine:
 
                 await asyncio.sleep(60)  # brief pause before retry
 
+    async def _paper_watchdog(self):
+        """
+        Real-time SL/TP monitor for paper mode. Runs every 30s between candle closes.
+        Live mode does not need this — the exchange enforces SL/TP via trigger orders.
+        Uses the latest WebSocket mark price so positions are closed without waiting
+        for the next 4H candle close.
+        """
+        POLL_S = 30
+        log.info("Paper watchdog started (poll every %ds)", POLL_S)
+        while self.running:
+            await asyncio.sleep(POLL_S)
+            if not self.running or not self._position:
+                continue
+            mark = self._ws.latest_mark
+            if not mark or mark <= 0:
+                continue
+            sl   = self._position.get("stop_loss",  0.0)
+            tp   = self._position.get("take_profit", 0.0)
+            side = self._position.get("side")
+            if not side:
+                continue
+            reason = None
+            if sl > 0.0 and self._risk.should_stop_loss(side, mark, sl):
+                reason = "stop_loss"
+            elif tp > 0.0 and self._risk.should_take_profit(side, mark, tp):
+                reason = "take_profit"
+            if reason:
+                log.info(
+                    "Paper watchdog: %s triggered | side=%s mark=%.2f sl=%.2f tp=%.2f",
+                    reason, side, mark, sl, tp,
+                )
+                await self._close_position(mark, reason)
+
     async def _cycle(self):
         """One full inference cycle: fetch → features → C2 → LGBM → decide → execute → log."""
         cycle_start = datetime.now(timezone.utc)
@@ -606,6 +643,44 @@ class ExecutionEngine:
         # Prefer live WS OI if available, fall back to REST snapshot
         if ws_snap["ws_latest_oi"] > 0:
             snap["open_interest"] = ws_snap["ws_latest_oi"]
+
+        # ── Live: detect exchange-closed positions ────────────────────────────
+        # If the exchange fired a trigger order (SL/TP) between cycles, HL will
+        # show no open position while self._position is still set in memory.
+        # Without this check the bot would hold a ghost position indefinitely.
+        if self.mode == "live" and self._position:
+            wallet = os.getenv("HL_WALLET_ADDRESS", "")
+            if wallet:
+                try:
+                    hl_pos = await self._hl.get_open_position(wallet, SYMBOL)
+                    if hl_pos is None:
+                        # Position is gone on exchange — determine which level fired
+                        mark = snap["mark_price"]
+                        sl   = self._position.get("stop_loss",  0.0)
+                        tp   = self._position.get("take_profit", 0.0)
+                        side = self._position["side"]
+                        if sl > 0.0 and tp > 0.0:
+                            sl_dist = abs(mark - sl)
+                            tp_dist = abs(mark - tp)
+                            if sl_dist <= tp_dist:
+                                reason, exit_px = "stop_loss", sl
+                            else:
+                                reason, exit_px = "take_profit", tp
+                        elif sl > 0.0:
+                            reason, exit_px = "stop_loss", sl
+                        elif tp > 0.0:
+                            reason, exit_px = "take_profit", tp
+                        else:
+                            reason, exit_px = "exchange_close", mark
+                        log.warning(
+                            "Live sync: position gone on HL — exchange fired %s "
+                            "near %.2f (mark=%.2f). Closing internally.",
+                            reason, exit_px, mark,
+                        )
+                        await self._close_position(exit_px, reason)
+                        return   # skip inference for this cycle; nothing to manage
+                except Exception as _exc:
+                    log.warning("Live position sync check failed: %s", _exc)
 
         # Build liquidation df from WS accumulators (approximate)
         df_liq = _make_liq_df(ws_snap)
@@ -756,6 +831,7 @@ class ExecutionEngine:
         # Position management (SL/TP/trailing) continues normally during pause.
         _macro_event = self._calendar.is_in_pause_window(datetime.now(timezone.utc), cfg)
         if _macro_event:
+            _pre_macro_action = result.action   # capture signal before override
             result.action = "no_trade"
             result.reasoning.append(f"Macro pause: {_macro_event}")
             if self._macro_pause_active is None:
@@ -764,9 +840,42 @@ class ExecutionEngine:
                 asyncio.create_task(self._notifier.send_macro_pause_start(
                     _macro_event, cfg.macro_pause_window_min
                 ))
+            # Notify specifically if a real trading signal is being suppressed
+            if _pre_macro_action in ("long", "short") and self._position is None and allowed:
+                log.info(
+                    "Macro pause suppressed %s signal (event=%s mark=%.2f ens=%.1f%%)",
+                    _pre_macro_action.upper(), _macro_event,
+                    snap["mark_price"], result.confidence * 100,
+                )
+                try:
+                    db = get_supabase()
+                    db.table("events").insert({
+                        "severity": "warning",
+                        "kind":     "macro_trade_blocked",
+                        "message":  (
+                            f"⏸ Segnale {_pre_macro_action.upper()} bloccato da pausa macro "
+                            f"({_macro_event}) @ ${snap['mark_price']:,.2f}"
+                        ),
+                        "payload": {
+                            "event_name":   _macro_event,
+                            "signal":       _pre_macro_action,
+                            "mark_price":   snap["mark_price"],
+                            "ensemble_pct": round(result.confidence * 100, 1),
+                            "dir_prob":     round(result.directional_prob, 4),
+                        },
+                    }).execute()
+                except Exception as _exc:
+                    log.warning("macro_trade_blocked event insert failed: %s", _exc)
+                asyncio.create_task(self._notifier.send_macro_trade_blocked(
+                    event_name=_macro_event,
+                    signal_side=_pre_macro_action,
+                    ensemble_pct=result.confidence * 100,
+                    dir_prob=result.directional_prob,
+                    mark_price=snap["mark_price"],
+                ))
             if cfg.macro_pause_close_position and self._position:
                 log.info("Macro pause: closing open position as configured")
-                await self._close_position("macro_pause")
+                await self._close_position(snap["mark_price"], "macro_pause")
         elif self._macro_pause_active is not None:
             # Exited pause — notify once
             asyncio.create_task(self._notifier.send_macro_pause_end(self._macro_pause_active))
@@ -841,9 +950,12 @@ class ExecutionEngine:
                     hyp_rr=hyp_rr,
                 ))
 
-        # 9. Manage existing position (SL/TP + optional LightGBM mid-trade exit)
+        # 9. Manage existing position (SL/TP + optional LightGBM mid-trade exit).
+        # Use the freshest available mark price: the WS value is updated continuously
+        # and may differ significantly from snap["mark_price"] if Chronos inference was slow.
         if self._position:
-            await self._manage_position(snap["mark_price"], df_feat, c2_out)
+            fresh_mark = self._ws.latest_mark or snap["mark_price"]
+            await self._manage_position(fresh_mark, df_feat, c2_out)
 
         # 10. Heartbeat
         await self._risk.write_heartbeat()
@@ -1438,7 +1550,7 @@ class ExecutionEngine:
                 },
             }).execute()
             # Insert completed trade into trades table (feeds TradeLog UI)
-            _valid_reasons = {"stop_loss", "take_profit", "manual", "kill", "lgbm_exit", "max_hold_bars", "max_funding"}
+            _valid_reasons = {"stop_loss", "take_profit", "manual", "kill", "lgbm_exit", "max_hold_bars", "max_funding", "macro_pause", "exchange_close"}
             _reason_close = reason if reason in _valid_reasons else "manual"
             db.table("trades").insert({
                 "bot_id":          "default",

@@ -69,7 +69,8 @@ export const TradeLog: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     setLoadingEvents(tradeId);
     try {
       const r = await fetch(`${apiBase}/trade-events?trade_id=${tradeId}&limit=50`);
-      const data: TradeEvent[] = r.ok ? await r.json() : [];
+      const raw = r.ok ? await r.json() : [];
+      const data: TradeEvent[] = (Array.isArray(raw) ? raw : []).filter(Boolean);
       setTradeEvents(prev => ({ ...prev, [tradeId]: data }));
     } catch {
       setTradeEvents(prev => ({ ...prev, [tradeId]: [] }));
@@ -93,8 +94,8 @@ export const TradeLog: React.FC<{ apiBase: string }> = ({ apiBase }) => {
       fetch(`${apiBase}/trades?limit=100`).then(r => r.ok ? r.json() : []),
       fetch(`${apiBase}/inference-logs?limit=30`).then(r => r.ok ? r.json() : []),
     ]).then(([t, l]) => {
-      setTrades(t ?? []);
-      setLogs(l ?? []);
+      setTrades((Array.isArray(t) ? t : []).filter(Boolean));
+      setLogs((Array.isArray(l) ? l : []).filter(Boolean));
     }).catch(() => {}).finally(() => setLoading(false));
   }, [apiBase]);
 
@@ -162,7 +163,7 @@ export const TradeLog: React.FC<{ apiBase: string }> = ({ apiBase }) => {
 
       {/* ── Stats strip (only when trades exist) ──────────────────────────── */}
       {closed.length > 0 && (
-        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-4 xl:grid-cols-8 gap-3">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
           <Tooltip text="Numero totale di trade completati (con entrata e uscita)." pos="bottom">
             <StatChip label="Trade chiusi" value={String(closed.length)} />
           </Tooltip>
@@ -388,7 +389,7 @@ export const TradeLog: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                   <div className="flex items-center gap-4">
                     <DecisionBadge decision={log.decision} />
                     <span className="text-xs font-bold text-slate-500 dark:text-slate-400 font-mono">
-                      {new Date(log.time).toLocaleString('it-IT')}
+                      {log.time ? new Date(log.time).toLocaleString('it-IT') : '—'}
                     </span>
                     {log.forecast?.latency_ms && (
                       <span className="text-xs text-slate-400 dark:text-slate-500 font-mono hidden sm:inline px-2 py-0.5 bg-slate-100 dark:bg-white/5 rounded">
@@ -414,14 +415,15 @@ export const TradeLog: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                         {(log.reasoning ?? []).map((r, i) => (
                           <div key={i} className={`text-xs font-bold font-mono px-4 py-2.5 rounded-xl border transition-all ${
-                            r.startsWith('GATE') ? 'bg-rose-50 dark:bg-rose-500/10 text-rose-600 dark:text-rose-400 border-rose-100 dark:border-rose-500/20'
+                            !r ? 'bg-white dark:bg-white/5 text-slate-600 dark:text-slate-400 border-slate-100 dark:border-white/5'
+                            : r.startsWith('GATE') ? 'bg-rose-50 dark:bg-rose-500/10 text-rose-600 dark:text-rose-400 border-rose-100 dark:border-rose-500/20'
                             : r.startsWith('LONG') ? 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-100 dark:border-emerald-500/20'
                             : r.startsWith('SHORT') ? 'bg-rose-50 dark:bg-rose-500/10 text-rose-600 dark:text-rose-400 border-rose-100 dark:border-rose-500/20'
                             : r.startsWith('MTF') ? 'bg-indigo-50 dark:bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border-indigo-100 dark:border-indigo-500/20'
                             : r.startsWith('FILTER') ? 'bg-amber-50 dark:bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-100 dark:border-amber-500/20'
                             : 'bg-white dark:bg-white/5 text-slate-600 dark:text-slate-400 border-slate-100 dark:border-white/5'
                           }`}>
-                            <span className="opacity-40 mr-2">→</span> {r}
+                            <span className="opacity-40 mr-2">→</span> {r ?? ''}
                           </div>
                         ))}
                       </div>
@@ -467,7 +469,7 @@ export const TradeLog: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
                           {KEY_FEATURES.map(({ key, label, desc }) => {
                             const val = log.features[key];
-                            if (val === undefined) return null;
+                            if (val == null || typeof val !== 'number' || !isFinite(val)) return null;
                             return (
                               <FeatureCell
                                 key={key}
@@ -527,7 +529,7 @@ const TradeTimeline: React.FC<{
       return (
         <div key={ev.id} className="flex items-start gap-3 pl-2 text-xs">
           <span className="text-[10px] font-mono text-slate-400 w-28 shrink-0 pt-0.5">
-            {new Date(ev.time).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })}
+            {ev.time ? new Date(ev.time).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' }) : '—'}
           </span>
           <div className={`flex-1 px-3 py-2 border-l-2 rounded-r-xl ${meta.colorClass}`}>
             <span className="font-bold text-slate-700 dark:text-slate-300">{meta.icon} {meta.label}</span>
@@ -568,7 +570,7 @@ const TradeTimeline: React.FC<{
 // ── Sub-components ────────────────────────────────────────────────────────────
 
 const StatChip: React.FC<{ label: string; value: string; color?: string }> = ({ label, value, color = 'text-slate-900 dark:text-white' }) => (
-  <div className="elegant-card px-5 py-4 bg-white dark:bg-[#151E32]">
+  <div className="elegant-card w-full h-full px-5 py-4 bg-white dark:bg-[#151E32]">
     <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-1.5">{label}</p>
     <p className={`text-lg font-bold font-mono tracking-tight ${color}`}>{value}</p>
   </div>
