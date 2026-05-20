@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Tooltip } from './Tooltip';
 
 interface Config {
@@ -44,6 +44,31 @@ interface Config {
   macro_pause_nfp: boolean;
   macro_pause_ppi: boolean;
   macro_pause_jolts: boolean;
+  // Exit strategies
+  trailing_sl_enabled: boolean;
+  trailing_sl_activation: number;
+  partial_tp_enabled: boolean;
+  partial_tp_atr_mult: number;
+  partial_tp_pct: number;
+  lgbm_exit_enabled: boolean;
+  lgbm_exit_threshold: number;
+  lgbm_exit_min_hold_bars: number;
+  lgbm_exit_confirm_bars: number;
+  // Position management
+  be_sl_enabled: boolean;
+  be_sl_activation: number;
+  max_hold_bars_enabled: boolean;
+  max_hold_bars: number;
+  // Signal gates
+  adx_gate_enabled: boolean;
+  sweep_gate_enabled: boolean;
+  fvg_filter_enabled: boolean;
+  mtf_alignment_enabled: boolean;
+  chronos_weight: number;
+  recalibrated_uncertainty_thresholds: boolean;
+  // Extra exit flags (from HubSettings)
+  p10_sl_floor_enabled: boolean;
+  enhanced_exit_enabled: boolean;
 }
 
 const DEFAULTS: Config = {
@@ -61,7 +86,7 @@ const DEFAULTS: Config = {
   c2_uncertainty_gate_enabled: false,
   c2_uncertainty_threshold: 0.05,
   c2_cont_prob_gate_enabled: false,
-  c2_cont_prob_threshold: 0.10,
+  c2_cont_prob_threshold: 0.25,
   chronos_enabled: true,
   regime_bias_enabled: false,
   regime_bias_delta: 0.08,
@@ -89,6 +114,30 @@ const DEFAULTS: Config = {
   macro_pause_nfp: true,
   macro_pause_ppi: false,
   macro_pause_jolts: false,
+  // Exit strategies
+  trailing_sl_enabled: false,
+  trailing_sl_activation: 1.5,
+  partial_tp_enabled: false,
+  partial_tp_atr_mult: 1.5,
+  partial_tp_pct: 50.0,
+  lgbm_exit_enabled: false,
+  lgbm_exit_threshold: 0.30,
+  lgbm_exit_min_hold_bars: 6,
+  lgbm_exit_confirm_bars: 2,
+  // Position management
+  be_sl_enabled: false,
+  be_sl_activation: 1.0,
+  max_hold_bars_enabled: false,
+  max_hold_bars: 48,
+  // Signal gates
+  adx_gate_enabled: true,
+  sweep_gate_enabled: true,
+  fvg_filter_enabled: true,
+  mtf_alignment_enabled: true,
+  chronos_weight: 0.40,
+  recalibrated_uncertainty_thresholds: true,
+  p10_sl_floor_enabled: false,
+  enhanced_exit_enabled: false,
 };
 
 interface PruningMetrics {
@@ -141,6 +190,13 @@ interface RetrainMetrics {
   pruning?: PruningMetrics | null;
 }
 
+interface Preset {
+  id: number;
+  name: string;
+  params: Record<string, any>;
+  created_at?: string;
+}
+
 export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   const [config, setConfig]             = useState<Config>(DEFAULTS);
   const [saved, setSaved]               = useState(false);
@@ -166,6 +222,21 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     type: string; name: string; datetime_utc: string; days_away: number;
   }> | null>(null);
   const [macroEventsLoading, setMacroEventsLoading] = useState(false);
+  const [presets,         setPresets]         = useState<Preset[]>([]);
+  const [presetDropOpen,  setPresetDropOpen]  = useState(false);
+  const [appliedPreset,   setAppliedPreset]   = useState<string | null>(null);
+  const presetDropRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!presetDropOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (presetDropRef.current && !presetDropRef.current.contains(e.target as Node)) {
+        setPresetDropOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [presetDropOpen]);
 
   const loadFeatureImportance = () => {
     setFeatImportanceLoading(true);
@@ -226,8 +297,7 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     fetch(`${apiBase}/bot`)
       .then(r => r.ok ? r.json() : null)
       .then(d => d && setConfig(c => ({ ...c, ...d })))
-      .catch(() => {});
-    // Fetch bot status to populate model info and network config
+      .catch(e => console.error('[BotConfig] GET /bot failed:', e));
     fetch(`${apiBase}/bot/status`)
       .then(r => r.ok ? r.json() : null)
       .then(s => {
@@ -238,18 +308,20 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
         if (s.retrain_in_progress) setRetraining(true);
         if (s.lgbm_1h_loaded !== undefined) setLgbm1hLoaded(s.lgbm_1h_loaded);
       })
-      .catch(() => {});
-    // Auto-load feature importance, pruning stats and calibrator stats on mount
+      .catch(e => console.error('[BotConfig] GET /bot/status failed:', e));
     loadFeatureImportance();
     loadPruningStats();
     loadCalibratorStats();
-    // Load upcoming macro events
     setMacroEventsLoading(true);
     fetch(`${apiBase}/macro-events?days=60`)
       .then(r => r.ok ? r.json() : null)
       .then(d => d && setMacroEvents(d.events ?? []))
-      .catch(() => {})
+      .catch(e => console.error('[BotConfig] GET /macro-events failed:', e))
       .finally(() => setMacroEventsLoading(false));
+    fetch(`${apiBase}/presets`)
+      .then(r => r.ok ? r.json() : [])
+      .then(d => setPresets(Array.isArray(d) ? d : []))
+      .catch(e => console.error('[BotConfig] GET /presets failed:', e));
   }, [apiBase]);
 
   const handleRetrain = async () => {
@@ -296,6 +368,36 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     setConfig(c => ({ ...c, [key]: v }));
   };
 
+  const PRESET_SKIP = new Set([
+    'mode',
+    'retrain_every_n_cycles', 'wf_n_splits', 'wf_purge_gap',
+    'use_feature_pruning', 'feature_pruning_min_importance',
+    'use_chronos_calibration',
+    'use_1h_lgbm_gate', 'lgbm_1h_min_agreement', 'lgbm_1h_block_threshold',
+    'macro_pause_enabled', 'macro_pause_window_min', 'macro_pause_close_position',
+    'macro_pause_fomc', 'macro_pause_cpi', 'macro_pause_nfp', 'macro_pause_ppi', 'macro_pause_jolts',
+  ]);
+
+  const applyPreset = (preset: Preset) => {
+    setConfig(c => {
+      const next = { ...c };
+      for (const [k, v] of Object.entries(preset.params)) {
+        if (PRESET_SKIP.has(k) || !(k in DEFAULTS)) continue;
+        const expectedType = typeof DEFAULTS[k as keyof Config];
+        if (expectedType === 'boolean') {
+          (next as any)[k] = Boolean(v);
+        } else if (expectedType === 'number') {
+          (next as any)[k] = Number(v);
+        } else {
+          (next as any)[k] = v;
+        }
+      }
+      return next;
+    });
+    setAppliedPreset(preset.name);
+    setPresetDropOpen(false);
+  };
+
   const rr = (config.tp_atr_mult / config.sl_atr_mult).toFixed(2);
   const be = (1 / (1 + config.tp_atr_mult / config.sl_atr_mult) * 100).toFixed(1);
 
@@ -305,6 +407,67 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
         <h2 className="text-xl font-bold text-slate-900 dark:text-white uppercase tracking-tight">Parametri Operativi</h2>
         <p className="text-[11px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mt-1">Configurazione Strategia BTC-PERP · Trend Following 4h</p>
       </div>
+
+      {/* Preset Loader */}
+      {presets.length > 0 && (
+        <div className={`elegant-card p-5 bg-white dark:bg-[#151E32] ${presetDropOpen ? 'relative z-[100]' : ''}`}>
+          <div className="flex items-start justify-between gap-4 flex-wrap">
+            <div>
+              <h3 className="text-sm font-bold text-slate-900 dark:text-white uppercase tracking-tight">Carica Preset Backtest</h3>
+              <p className="text-[11px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mt-0.5 leading-relaxed">
+                Applica un preset salvato dal Backtest — mode, retrain e macro pause non vengono modificati
+              </p>
+            </div>
+            {appliedPreset && (
+              <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[10px] font-bold bg-indigo-50 dark:bg-indigo-500/15 text-indigo-600 dark:text-indigo-400 border border-indigo-200 dark:border-indigo-500/30 uppercase tracking-wide whitespace-nowrap">
+                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>
+                {appliedPreset}
+              </span>
+            )}
+          </div>
+          <div className="relative mt-4" ref={presetDropRef}>
+            <button
+              onClick={() => setPresetDropOpen(o => !o)}
+              className="w-full flex items-center justify-between gap-3 px-4 py-3 bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 rounded-xl text-sm font-medium text-slate-700 dark:text-slate-300 hover:border-indigo-400 dark:hover:border-indigo-500/50 transition-all"
+            >
+              <span className="text-[11px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest">
+                Seleziona preset…
+              </span>
+              <svg className={`w-4 h-4 text-slate-400 transition-transform ${presetDropOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+              </svg>
+            </button>
+            {presetDropOpen && (
+              <div className="absolute top-full left-0 right-0 mt-1 z-20 bg-white dark:bg-[#1A2438] border border-slate-200 dark:border-white/10 rounded-xl shadow-xl overflow-hidden">
+                {presets.map(p => (
+                  <button
+                    key={p.id}
+                    onClick={() => applyPreset(p)}
+                    className="w-full flex items-center justify-between gap-3 px-4 py-3 text-left hover:bg-indigo-50 dark:hover:bg-indigo-500/10 transition-colors border-b border-slate-100 dark:border-white/5 last:border-0"
+                  >
+                    <div>
+                      <p className="text-sm font-bold text-slate-800 dark:text-slate-200">{p.name}</p>
+                      {p.created_at && (
+                        <p className="text-[10px] text-slate-400 dark:text-slate-500 mt-0.5">
+                          {new Date(p.created_at).toLocaleDateString('it-IT', { day: '2-digit', month: '2-digit', year: '2-digit' })}
+                        </p>
+                      )}
+                    </div>
+                    <svg className="w-4 h-4 text-indigo-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                    </svg>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+          {appliedPreset && (
+            <p className="mt-3 text-[10px] text-slate-400 dark:text-slate-500 leading-relaxed">
+              Parametri applicati. Verifica i valori e premi <span className="font-bold text-slate-600 dark:text-slate-300">Applica e Salva</span> in fondo alla pagina per sincronizzarli sul bot.
+            </p>
+          )}
+        </div>
+      )}
 
       {/* Mode Selection */}
       <Section title="Ambiente di Esecuzione" description="Seleziona la modalità operativa del bot. Il Paper Trading simula l'esecuzione, il Live Trading opera con fondi reali.">
@@ -502,7 +665,6 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
         </div>
       </Section>
 
-      {/* AI Thresholds */}
       <Section title="Soglie Modelli Ensemble" description="Controllo del rigore dei segnali generati dall'AI. Valori più alti riducono la frequenza operativa aumentando la precisione.">
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-6">
           <Tooltip text="Soglia minima di probabilità direzionale (0–1) per aprire un trade." width="wide" pos="bottom">
@@ -514,6 +676,185 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
           <Tooltip text="Punteggio minimo del sistema Quantum Trade (0–100) richiesto come conferma." width="wide" pos="bottom">
             <NumInput label="Confluence confirmation" value={config.confluence_gate} min={0} max={100} step={5} onChange={upd('confluence_gate')} />
           </Tooltip>
+        </div>
+
+        {/* ── Signal Gate Toggles ── */}
+        <div className="mt-6 pt-6 border-t border-slate-100 dark:border-white/5">
+          <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-4">Filtri Segnale Attivi</p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            {([
+              { key: 'adx_gate_enabled',         label: 'ADX Gate',              desc: 'Blocca il trade se ADX < soglia (mercato senza trend)',       color: 'indigo' },
+              { key: 'sweep_gate_enabled',        label: 'Liquidity Sweep Gate',  desc: 'Richiede uno sweep di liquidità recente prima dell\'entrata', color: 'violet' },
+              { key: 'fvg_filter_enabled',        label: 'FVG Filter',            desc: 'Filtra entrate senza Fair Value Gap sul timeframe 4H',        color: 'purple' },
+              { key: 'mtf_alignment_enabled',     label: 'MTF Alignment',         desc: 'Richiede allineamento direzionale multi-timeframe',           color: 'blue'   },
+            ] as { key: keyof Config; label: string; desc: string; color: string }[]).map(({ key, label, desc, color }) => {
+              const active = config[key] as boolean;
+              return (
+                <label key={key} className="flex items-start gap-3 cursor-pointer group p-3 rounded-xl border transition-colors duration-200 hover:bg-slate-50 dark:hover:bg-white/[0.03] border-slate-100 dark:border-white/5">
+                  <div className="relative mt-0.5 flex-shrink-0">
+                    <input type="checkbox" className="sr-only" checked={active} onChange={e => setConfig(c => ({ ...c, [key]: e.target.checked }))} />
+                    <div className={`w-9 h-[18px] rounded-full transition-all duration-300 ${active ? `bg-${color}-600` : 'bg-slate-200 dark:bg-white/10'}`} />
+                    <div className={`absolute top-[3px] left-[3px] w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${active ? 'translate-x-[18px]' : ''}`} />
+                  </div>
+                  <div className="min-w-0">
+                    <p className={`text-xs font-bold leading-tight transition-colors ${active ? `text-${color}-600 dark:text-${color}-400` : 'text-slate-700 dark:text-slate-300'}`}>{label}</p>
+                    <p className="text-[10px] text-slate-400 dark:text-slate-500 leading-snug mt-0.5">{desc}</p>
+                  </div>
+                </label>
+              );
+            })}
+          </div>
+        </div>
+      </Section>
+
+      {/* Regime Bias */}
+      <Section title="Regime Bias — Threshold Asimmetrico" description="Penalizza i trade contro-trend richiedendo un segnale più forte. In regime bull, i short richiedono ensemble_prob > threshold + delta; in bear, i long richiedono lo stesso. Sideways = simmetrico.">
+        <div className={`flex flex-col gap-3 mb-6 pb-6 border-b transition-colors duration-200 ${config.regime_bias_enabled ? 'border-orange-200 dark:border-orange-500/25' : 'border-slate-100 dark:border-white/5'}`}>
+          <label className="flex items-center gap-3 cursor-pointer group">
+            <div className="relative">
+              <input type="checkbox" className="sr-only" checked={config.regime_bias_enabled} onChange={e => setConfig(c => ({ ...c, regime_bias_enabled: e.target.checked }))} />
+              <div className={`w-10 h-5 rounded-full transition-all duration-300 ${config.regime_bias_enabled ? 'bg-orange-600' : 'bg-slate-200 dark:bg-white/10'}`} />
+              <div className={`absolute top-1 left-1 w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.regime_bias_enabled ? 'translate-x-5' : ''}`} />
+            </div>
+            <div>
+              <p className={`text-sm font-bold transition-colors ${config.regime_bias_enabled ? 'text-orange-600 dark:text-orange-400' : 'text-slate-800 dark:text-slate-200 group-hover:text-orange-600 dark:group-hover:text-orange-400'}`}>
+                Threshold Asimmetrico
+                {config.regime_bias_enabled && <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-orange-100 dark:bg-orange-500/20 text-orange-600 dark:text-orange-400 uppercase tracking-wider">Attivo</span>}
+              </p>
+              <p className="text-[11px] text-slate-400 dark:text-slate-500 mt-0.5">
+                {config.regime_bias_enabled
+                  ? `Penalità +${config.regime_bias_delta} per trade contro-trend · size ×${config.regime_bias_size_factor}`
+                  : 'Soglia identica per long e short indipendentemente dal regime'}
+              </p>
+            </div>
+          </label>
+        </div>
+
+        {config.regime_bias_enabled && (
+          <>
+            {/* Forced regime selector */}
+            <div className="mb-6">
+              <Tooltip text="Scegli tu il regime di mercato manualmente, oppure lascia che sia il bot a rilevarlo automaticamente da EMA20+ADX. Con 'Neutro' il bias è attivo ma non penalizza nessuna direzione." width="wide" pos="bottom">
+                <p className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest mb-3">Regime di mercato</p>
+              </Tooltip>
+              <div className="grid grid-cols-4 gap-2">
+                {(['auto', 'bull', 'bear', 'neutral'] as const).map(r => {
+                  const labels: Record<string, string> = { auto: 'Auto', bull: 'Bull', bear: 'Bear', neutral: 'Neutro' };
+                  const active: Record<string, string> = {
+                    auto:    'bg-slate-800 dark:bg-white text-white dark:text-slate-900 border-slate-800 dark:border-white',
+                    bull:    'bg-emerald-600 text-white border-emerald-600 shadow-emerald-500/20',
+                    bear:    'bg-rose-600 text-white border-rose-600 shadow-rose-500/20',
+                    neutral: 'bg-slate-400 dark:bg-slate-500 text-white border-transparent',
+                  };
+                  const inactive = 'bg-slate-50 dark:bg-white/5 text-slate-400 dark:text-slate-500 border-slate-100 dark:border-white/10 hover:bg-slate-100 dark:hover:bg-white/10';
+                  return (
+                    <button
+                      key={r}
+                      onClick={() => setConfig(c => ({ ...c, forced_regime: r }))}
+                      className={`py-2.5 rounded-xl text-[10px] font-bold uppercase tracking-widest transition-all border shadow-sm ${config.forced_regime === r ? active[r] : inactive}`}
+                    >
+                      {labels[r]}
+                    </button>
+                  );
+                })}
+              </div>
+              {config.forced_regime !== 'auto' && (
+                <p className="text-[10px] font-bold mt-2 text-orange-600 dark:text-orange-400">
+                  {config.forced_regime === 'bull' && 'Regime BULL manuale — gli short richiedono soglia più alta'}
+                  {config.forced_regime === 'bear' && 'Regime BEAR manuale — i long richiedono soglia più alta'}
+                  {config.forced_regime === 'neutral' && 'Regime NEUTRO — nessun bias su nessuna direzione'}
+                </p>
+              )}
+            </div>
+
+            <div className="mb-4">
+              <Tooltip text="Delta aggiunto alla soglia direzionale per il lato contro-trend. Es. con threshold 0.62 e delta 0.08, in regime bull i short richiedono ensemble_prob > 0.70." width="wide" pos="bottom">
+                <label className="flex items-center justify-between mb-2">
+                  <span className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest">Penalità contro-trend (delta)</span>
+                  <span className="font-mono text-sm font-bold text-orange-600 dark:text-orange-400">+{config.regime_bias_delta.toFixed(2)}</span>
+                </label>
+              </Tooltip>
+              <input
+                type="range" min="0.01" max="0.20" step="0.01"
+                value={config.regime_bias_delta}
+                onChange={e => setConfig(c => ({ ...c, regime_bias_delta: parseFloat(e.target.value) }))}
+                className="w-full h-1.5 bg-slate-200 dark:bg-white/10 rounded-full appearance-none cursor-pointer accent-orange-600"
+              />
+              <div className="flex justify-between text-[9px] font-mono text-slate-400 dark:text-slate-500 mt-1">
+                <span>0.01</span><span>0.10</span><span>0.20</span>
+              </div>
+            </div>
+
+            <div>
+              <Tooltip text="Fattore di riduzione size per i trade contro-trend che superano comunque la soglia alzata. 1.0 = size piena, 0.5 = metà size." width="wide" pos="bottom">
+                <label className="flex items-center justify-between mb-2">
+                  <span className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest">Size factor contro-trend</span>
+                  <span className="font-mono text-sm font-bold text-orange-600 dark:text-orange-400">×{config.regime_bias_size_factor.toFixed(2)}</span>
+                </label>
+              </Tooltip>
+              <input
+                type="range" min="0.30" max="1.0" step="0.05"
+                value={config.regime_bias_size_factor}
+                onChange={e => setConfig(c => ({ ...c, regime_bias_size_factor: parseFloat(e.target.value) }))}
+                className="w-full h-1.5 bg-slate-200 dark:bg-white/10 rounded-full appearance-none cursor-pointer accent-orange-600"
+              />
+              <div className="flex justify-between text-[9px] font-mono text-slate-400 dark:text-slate-500 mt-1">
+                <span>0.30</span><span>0.65</span><span>1.0</span>
+              </div>
+            </div>
+          </>
+        )}
+      </Section>
+
+
+      {/* Chronos-2 — Modello Predittivo */}
+      <Section title="Chronos-2 — Modello Predittivo" description="Transformer time-series Chronos-2: controlla l'attivazione del modello, il peso nell'ensemble e i gate basati sulle previsioni quantili p10/p90/p50.">
+        {/* ── Master toggle for chronos_enabled ── */}
+        <div className={`flex flex-col gap-3 mb-6 pb-6 border-b transition-colors duration-200 ${config.chronos_enabled ? 'border-sky-200 dark:border-sky-500/25' : 'border-slate-100 dark:border-white/5'}`}>
+          <label className="flex items-center gap-3 cursor-pointer group">
+            <div className="relative">
+              <input type="checkbox" className="sr-only" checked={config.chronos_enabled} onChange={e => setConfig(c => ({ ...c, chronos_enabled: e.target.checked }))} />
+              <div className={`w-10 h-5 rounded-full transition-all duration-300 ${config.chronos_enabled ? 'bg-sky-600' : 'bg-slate-200 dark:bg-white/10'}`} />
+              <div className={`absolute top-1 left-1 w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.chronos_enabled ? 'translate-x-5' : ''}`} />
+            </div>
+            <div>
+              <p className={`text-sm font-bold transition-colors ${config.chronos_enabled ? 'text-sky-600 dark:text-sky-400' : 'text-slate-800 dark:text-slate-200 group-hover:text-sky-600 dark:group-hover:text-sky-400'}`}>
+                Abilita Chronos-2
+                {config.chronos_enabled && <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-sky-100 dark:bg-sky-500/20 text-sky-600 dark:text-sky-400 uppercase tracking-wider">Attivo</span>}
+              </p>
+              <p className="text-[11px] font-medium text-slate-400 dark:text-slate-500 leading-tight">
+                {config.chronos_enabled ? 'Modello transformer attivo — p10/p90 quantili usati per gates e SL/TP adattativi' : 'Disattivo — il bot usa solo LightGBM (peso 100%)'}
+              </p>
+            </div>
+          </label>
+          {config.chronos_enabled && (
+            <div className="pl-12 grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-4 mt-1">
+              <div>
+                <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-2">Peso Chronos nell'Ensemble</p>
+                <div className="flex items-center gap-3">
+                  <input
+                    type="range" min="0" max="1" step="0.05"
+                    value={config.chronos_weight}
+                    onChange={e => setConfig(c => ({ ...c, chronos_weight: parseFloat(e.target.value) }))}
+                    className="flex-1 h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/15 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3.5 [&::-webkit-slider-thumb]:h-3.5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-sky-500 [&::-webkit-slider-thumb]:shadow-sm [&::-webkit-slider-thumb]:cursor-pointer [&::-moz-range-thumb]:w-3.5 [&::-moz-range-thumb]:h-3.5 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-sky-500 [&::-moz-range-thumb]:border-0"
+                  />
+                  <span className="text-[11px] font-bold font-mono text-sky-600 dark:text-sky-400 w-10 text-right">{(config.chronos_weight * 100).toFixed(0)}%</span>
+                </div>
+                <p className="text-[10px] text-slate-400 dark:text-slate-500 mt-1">Resto assegnato a LightGBM</p>
+              </div>
+              <label className="flex items-start gap-3 cursor-pointer group p-3 rounded-xl border border-slate-100 dark:border-white/5 hover:bg-slate-50 dark:hover:bg-white/[0.03] transition-colors">
+                <div className="relative mt-0.5 flex-shrink-0">
+                  <input type="checkbox" className="sr-only" checked={config.recalibrated_uncertainty_thresholds} onChange={e => setConfig(c => ({ ...c, recalibrated_uncertainty_thresholds: e.target.checked }))} />
+                  <div className={`w-9 h-[18px] rounded-full transition-all duration-300 ${config.recalibrated_uncertainty_thresholds ? 'bg-teal-600' : 'bg-slate-200 dark:bg-white/10'}`} />
+                  <div className={`absolute top-[3px] left-[3px] w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.recalibrated_uncertainty_thresholds ? 'translate-x-[18px]' : ''}`} />
+                </div>
+                <div>
+                  <p className={`text-xs font-bold leading-tight ${config.recalibrated_uncertainty_thresholds ? 'text-teal-600 dark:text-teal-400' : 'text-slate-700 dark:text-slate-300'}`}>Soglie Uncertainty Ricalibrate</p>
+                  <p className="text-[10px] text-slate-400 dark:text-slate-500 leading-snug mt-0.5">Usa thresholds C2 ottimizzati sul dataset storico</p>
+                </div>
+              </label>
+            </div>
+          )}
         </div>
 
         {/* ── C2 Uncertainty Gate ── */}
@@ -703,7 +1044,7 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                 {/* Probability mapping */}
                 {calibratorStats?.fitted && calibratorStats.mapping && (
                   <div className="flex flex-wrap gap-x-3 gap-y-1 mt-1">
-                    {Object.entries(calibratorStats.mapping).map(([key, val]) => {
+                    {Object.entries(calibratorStats.mapping).map(([key, val]: [string, number]) => {
                       const raw = parseInt(key.replace('raw_', '')) / 100;
                       const delta = val - raw;
                       return (
@@ -740,109 +1081,10 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
             </div>
           )}
         </div>
+
       </Section>
 
-      {/* Regime Bias */}
-      <Section title="Regime Bias — Threshold Asimmetrico" description="Penalizza i trade contro-trend richiedendo un segnale più forte. In regime bull, i short richiedono ensemble_prob > threshold + delta; in bear, i long richiedono lo stesso. Sideways = simmetrico.">
-        <div className={`flex flex-col gap-3 mb-6 pb-6 border-b transition-colors duration-200 ${config.regime_bias_enabled ? 'border-orange-200 dark:border-orange-500/25' : 'border-slate-100 dark:border-white/5'}`}>
-          <label className="flex items-center gap-3 cursor-pointer group">
-            <div className="relative">
-              <input type="checkbox" className="sr-only" checked={config.regime_bias_enabled} onChange={e => setConfig(c => ({ ...c, regime_bias_enabled: e.target.checked }))} />
-              <div className={`w-10 h-5 rounded-full transition-all duration-300 ${config.regime_bias_enabled ? 'bg-orange-600' : 'bg-slate-200 dark:bg-white/10'}`} />
-              <div className={`absolute top-1 left-1 w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.regime_bias_enabled ? 'translate-x-5' : ''}`} />
-            </div>
-            <div>
-              <p className={`text-sm font-bold transition-colors ${config.regime_bias_enabled ? 'text-orange-600 dark:text-orange-400' : 'text-slate-800 dark:text-slate-200 group-hover:text-orange-600 dark:group-hover:text-orange-400'}`}>
-                Threshold Asimmetrico
-                {config.regime_bias_enabled && <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-orange-100 dark:bg-orange-500/20 text-orange-600 dark:text-orange-400 uppercase tracking-wider">Attivo</span>}
-              </p>
-              <p className="text-[11px] text-slate-400 dark:text-slate-500 mt-0.5">
-                {config.regime_bias_enabled
-                  ? `Penalità +${config.regime_bias_delta} per trade contro-trend · size ×${config.regime_bias_size_factor}`
-                  : 'Soglia identica per long e short indipendentemente dal regime'}
-              </p>
-            </div>
-          </label>
-        </div>
-
-        {config.regime_bias_enabled && (
-          <>
-            {/* Forced regime selector */}
-            <div className="mb-6">
-              <Tooltip text="Scegli tu il regime di mercato manualmente, oppure lascia che sia il bot a rilevarlo automaticamente da EMA20+ADX. Con 'Neutro' il bias è attivo ma non penalizza nessuna direzione." width="wide" pos="bottom">
-                <p className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest mb-3">Regime di mercato</p>
-              </Tooltip>
-              <div className="grid grid-cols-4 gap-2">
-                {(['auto', 'bull', 'bear', 'neutral'] as const).map(r => {
-                  const labels: Record<string, string> = { auto: 'Auto', bull: 'Bull', bear: 'Bear', neutral: 'Neutro' };
-                  const active: Record<string, string> = {
-                    auto:    'bg-slate-800 dark:bg-white text-white dark:text-slate-900 border-slate-800 dark:border-white',
-                    bull:    'bg-emerald-600 text-white border-emerald-600 shadow-emerald-500/20',
-                    bear:    'bg-rose-600 text-white border-rose-600 shadow-rose-500/20',
-                    neutral: 'bg-slate-400 dark:bg-slate-500 text-white border-transparent',
-                  };
-                  const inactive = 'bg-slate-50 dark:bg-white/5 text-slate-400 dark:text-slate-500 border-slate-100 dark:border-white/10 hover:bg-slate-100 dark:hover:bg-white/10';
-                  return (
-                    <button
-                      key={r}
-                      onClick={() => setConfig(c => ({ ...c, forced_regime: r }))}
-                      className={`py-2.5 rounded-xl text-[10px] font-bold uppercase tracking-widest transition-all border shadow-sm ${config.forced_regime === r ? active[r] : inactive}`}
-                    >
-                      {labels[r]}
-                    </button>
-                  );
-                })}
-              </div>
-              {config.forced_regime !== 'auto' && (
-                <p className="text-[10px] font-bold mt-2 text-orange-600 dark:text-orange-400">
-                  {config.forced_regime === 'bull' && 'Regime BULL manuale — gli short richiedono soglia più alta'}
-                  {config.forced_regime === 'bear' && 'Regime BEAR manuale — i long richiedono soglia più alta'}
-                  {config.forced_regime === 'neutral' && 'Regime NEUTRO — nessun bias su nessuna direzione'}
-                </p>
-              )}
-            </div>
-
-            <div className="mb-4">
-              <Tooltip text="Delta aggiunto alla soglia direzionale per il lato contro-trend. Es. con threshold 0.62 e delta 0.08, in regime bull i short richiedono ensemble_prob > 0.70." width="wide" pos="bottom">
-                <label className="flex items-center justify-between mb-2">
-                  <span className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest">Penalità contro-trend (delta)</span>
-                  <span className="font-mono text-sm font-bold text-orange-600 dark:text-orange-400">+{config.regime_bias_delta.toFixed(2)}</span>
-                </label>
-              </Tooltip>
-              <input
-                type="range" min="0.01" max="0.20" step="0.01"
-                value={config.regime_bias_delta}
-                onChange={e => setConfig(c => ({ ...c, regime_bias_delta: parseFloat(e.target.value) }))}
-                className="w-full h-1.5 bg-slate-200 dark:bg-white/10 rounded-full appearance-none cursor-pointer accent-orange-600"
-              />
-              <div className="flex justify-between text-[9px] font-mono text-slate-400 dark:text-slate-500 mt-1">
-                <span>0.01</span><span>0.10</span><span>0.20</span>
-              </div>
-            </div>
-
-            <div>
-              <Tooltip text="Fattore di riduzione size per i trade contro-trend che superano comunque la soglia alzata. 1.0 = size piena, 0.5 = metà size." width="wide" pos="bottom">
-                <label className="flex items-center justify-between mb-2">
-                  <span className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest">Size factor contro-trend</span>
-                  <span className="font-mono text-sm font-bold text-orange-600 dark:text-orange-400">×{config.regime_bias_size_factor.toFixed(2)}</span>
-                </label>
-              </Tooltip>
-              <input
-                type="range" min="0.30" max="1.0" step="0.05"
-                value={config.regime_bias_size_factor}
-                onChange={e => setConfig(c => ({ ...c, regime_bias_size_factor: parseFloat(e.target.value) }))}
-                className="w-full h-1.5 bg-slate-200 dark:bg-white/10 rounded-full appearance-none cursor-pointer accent-orange-600"
-              />
-              <div className="flex justify-between text-[9px] font-mono text-slate-400 dark:text-slate-500 mt-1">
-                <span>0.30</span><span>0.65</span><span>1.0</span>
-              </div>
-            </div>
-          </>
-        )}
-      </Section>
-
-      {/* LightGBM Model */}
-      <Section title="LightGBM — Modello Direzionale" description="Il modello di machine learning viene riaddestrato automaticamente ogni 120 candele (~30 giorni). Usa il retrain manuale per aggiornarlo prima di avviare il bot dopo un periodo di inattività.">
+      <Section title="LightGBM — Modello, Retraining & Gate" description="Gestione completa del modello LightGBM 4H: stato, retrain manuale, frequenza automatica, walk-forward e gate secondario 1H.">
         {/* Model status row */}
         <div className="flex items-center justify-between mb-5">
           <div className="flex items-center gap-3">
@@ -939,13 +1181,7 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
         <p className="text-[10px] text-slate-400 dark:text-slate-500 text-center mt-2">
           Addestra il modello sugli ultimi 500 candles 4h · non interrompe il bot
         </p>
-      </Section>
-
-      {/* Walk-forward & Retraining */}
-      <Section
-        title="Retraining Automatico LightGBM"
-        description="Controlla la frequenza di riaddestramento del modello e la configurazione della walk-forward cross-validation. Parametri aggressivi permettono al modello di adattarsi più velocemente ai nuovi regimi di mercato."
-      >
+        <div className="my-6 border-t border-slate-100 dark:border-white/5" />
         {/* retrain_every_n_cycles */}
         <div className="space-y-2 mb-6">
           <div className="flex items-center justify-between">
@@ -1034,6 +1270,193 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
             </svg>
             <p className="text-[10px] text-slate-400 dark:text-slate-500 leading-relaxed">
               Stai usando i valori di default. Per un adattamento più aggressivo ai regimi: <span className="font-mono font-bold">retrain=40 · fold=8 · gap=8</span>
+            </p>
+          </div>
+        )}
+        <div className="my-6 border-t border-slate-100 dark:border-white/5" />
+        {/* Toggle */}
+        <div className={`flex flex-col gap-3 mb-6 pb-6 border-b transition-colors duration-200 ${config.use_1h_lgbm_gate ? 'border-violet-200 dark:border-violet-500/25' : 'border-slate-100 dark:border-white/5'}`}>
+          <div className="flex items-center justify-between gap-4">
+            <Tooltip
+              text="Quando attivo, ogni segnale 4H (long/short) viene filtrato dal modello 1H: se P(direzione)_1H ≥ min_agreement → confermato; se block_threshold ≤ P < min_agreement → permesso con size ×0.70; se P < block_threshold → bloccato. Fail-safe: se il modello 1H non esiste o si verifica un errore, il trade procede normalmente senza il gate."
+              width="wide"
+              pos="bottom"
+            >
+              <label className="flex items-center gap-3 cursor-pointer group">
+                <div className="relative">
+                  <input
+                    type="checkbox"
+                    className="sr-only"
+                    checked={config.use_1h_lgbm_gate}
+                    onChange={e => setConfig(c => ({ ...c, use_1h_lgbm_gate: e.target.checked }))}
+                  />
+                  <div className={`w-10 h-5 rounded-full transition-all duration-300 ${config.use_1h_lgbm_gate ? 'bg-violet-600' : 'bg-slate-200 dark:bg-white/10'}`} />
+                  <div className={`absolute top-1 left-1 w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.use_1h_lgbm_gate ? 'translate-x-5' : ''}`} />
+                </div>
+                <div>
+                  <p className={`text-sm font-bold transition-colors ${config.use_1h_lgbm_gate ? 'text-violet-600 dark:text-violet-400' : 'text-slate-800 dark:text-slate-200 group-hover:text-violet-600 dark:group-hover:text-violet-400'}`}>
+                    Abilita Gate LightGBM 1H
+                    {config.use_1h_lgbm_gate && (
+                      <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-violet-100 dark:bg-violet-500/20 text-violet-600 dark:text-violet-400 uppercase tracking-wider">Attivo</span>
+                    )}
+                  </p>
+                  <p className="text-[11px] font-medium text-slate-400 dark:text-slate-500 leading-tight">
+                    {config.use_1h_lgbm_gate ? 'Segnali 4H filtrati da conferma 1H — tre fasce: block / reduce ×0.70 / pass' : 'Filtra i segnali 4H con un modello LightGBM su candele orarie'}
+                  </p>
+                </div>
+              </label>
+            </Tooltip>
+
+            {/* Model status + Train button */}
+            <div className="flex items-center gap-2 flex-shrink-0">
+              <div className="flex items-center gap-1.5">
+                <div className={`w-2 h-2 rounded-full ${lgbm1hLoaded === true ? 'bg-emerald-500' : lgbm1hLoaded === false ? 'bg-rose-400' : 'bg-slate-300 dark:bg-slate-600'}`} />
+                <span className="text-[10px] font-medium text-slate-500 dark:text-slate-400">
+                  {lgbm1hLoaded === true ? 'Modello caricato' : lgbm1hLoaded === false ? 'Non addestrato' : '—'}
+                </span>
+              </div>
+              <Tooltip text="Addestra il modello LightGBM 1H su 2000 candele orarie (feature identiche al modello 4H, target: close[+1] > close[0] su 1H). Il processo dura 20–60s e non interrompe il bot. Dopo il primo addestramento, verrà ri-addestrato automaticamente ad ogni retrain 4H quando il gate è attivo." width="wide" pos="top">
+                <button
+                  onClick={handleRetrain1h}
+                  disabled={lgbm1hRetraining}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-bold bg-violet-600 hover:bg-violet-700 disabled:opacity-50 disabled:cursor-not-allowed text-white transition-colors"
+                >
+                  {lgbm1hRetraining ? (
+                    <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/>
+                    </svg>
+                  ) : (
+                    <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+                    </svg>
+                  )}
+                  {lgbm1hRetraining ? 'Addestro…' : lgbm1hLoaded ? 'Ri-addestra 1H' : 'Addestra 1H'}
+                </button>
+              </Tooltip>
+            </div>
+          </div>
+
+          {/* Retrain result */}
+          {lgbm1hResult && (
+            <div className={`flex items-center gap-3 px-3 py-2 rounded-lg text-[11px] font-medium border ${
+              lgbm1hResult.status === 'ok'
+                ? 'bg-violet-50 dark:bg-violet-500/10 border-violet-200 dark:border-violet-500/30 text-violet-700 dark:text-violet-400'
+                : 'bg-rose-50 dark:bg-rose-500/10 border-rose-200 dark:border-rose-500/30 text-rose-700 dark:text-rose-400'
+            }`}>
+              {lgbm1hResult.status === 'ok' ? (
+                <>
+                  <span>✓ Modello 1H addestrato</span>
+                  <span className="text-slate-400 dark:text-slate-500">·</span>
+                  <span>OOS acc <span className="font-bold font-mono">{lgbm1hResult.oos_accuracy !== undefined ? `${(lgbm1hResult.oos_accuracy * 100).toFixed(1)}%` : '—'}</span></span>
+                  <span className="text-slate-400 dark:text-slate-500">·</span>
+                  <span>{lgbm1hResult.n_features} feature</span>
+                  <span className="text-slate-400 dark:text-slate-500">·</span>
+                  <span>{lgbm1hResult.elapsed_s}s</span>
+                </>
+              ) : (
+                <span>✕ Errore durante l'addestramento del modello 1H</span>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Threshold sliders — only shown when gate is enabled */}
+        {config.use_1h_lgbm_gate && (
+          <div className="space-y-6">
+            {/* Min agreement */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <Tooltip
+                  text="Probabilità minima P(direzione)_1H per confermare il trade a size piena. Se P(direzione) è tra block_threshold e questo valore, il trade viene permesso con size ridotta al 70%. Deve essere > block_threshold. Valore consigliato per iniziare: 52%."
+                  width="wide"
+                  pos="bottom"
+                >
+                  <span className="text-[10px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest cursor-help">
+                    Accordo minimo 1H
+                  </span>
+                </Tooltip>
+                <span className="font-mono text-sm font-bold text-violet-600 dark:text-violet-400">
+                  {(config.lgbm_1h_min_agreement * 100).toFixed(0)}%
+                  <span className="text-[10px] font-normal text-slate-400 dark:text-slate-500 ml-1">→ size piena</span>
+                </span>
+              </div>
+              <input
+                type="range" min={50} max={70} step={1}
+                value={Math.round(config.lgbm_1h_min_agreement * 100)}
+                onChange={e => setConfig(c => ({ ...c, lgbm_1h_min_agreement: parseInt(e.target.value) / 100 }))}
+                className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/15 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3.5 [&::-webkit-slider-thumb]:h-3.5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-violet-500 [&::-webkit-slider-thumb]:shadow-sm [&::-webkit-slider-thumb]:cursor-pointer [&::-moz-range-thumb]:w-3.5 [&::-moz-range-thumb]:h-3.5 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-violet-500 [&::-moz-range-thumb]:border-0"
+              />
+              <div className="flex justify-between text-[9px] font-mono text-slate-400 dark:text-slate-500">
+                <span>50%</span><span>60%</span><span>70%</span>
+              </div>
+            </div>
+
+            {/* Block threshold */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <Tooltip
+                  text="Se P(direzione)_1H scende sotto questa soglia, il trade viene bloccato completamente (no_trade). Deve essere < accordo minimo. Valore consigliato per iniziare: 42–45%. Abbassare se il gate blocca troppi segnali (>30%)."
+                  width="wide"
+                  pos="bottom"
+                >
+                  <span className="text-[10px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest cursor-help">
+                    Soglia di blocco 1H
+                  </span>
+                </Tooltip>
+                <span className="font-mono text-sm font-bold text-rose-500 dark:text-rose-400">
+                  {(config.lgbm_1h_block_threshold * 100).toFixed(0)}%
+                  <span className="text-[10px] font-normal text-slate-400 dark:text-slate-500 ml-1">→ trade bloccato</span>
+                </span>
+              </div>
+              <input
+                type="range" min={30} max={50} step={1}
+                value={Math.round(config.lgbm_1h_block_threshold * 100)}
+                onChange={e => setConfig(c => ({ ...c, lgbm_1h_block_threshold: parseInt(e.target.value) / 100 }))}
+                className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/15 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3.5 [&::-webkit-slider-thumb]:h-3.5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-rose-500 [&::-webkit-slider-thumb]:shadow-sm [&::-webkit-slider-thumb]:cursor-pointer [&::-moz-range-thumb]:w-3.5 [&::-moz-range-thumb]:h-3.5 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-rose-500 [&::-moz-range-thumb]:border-0"
+              />
+              <div className="flex justify-between text-[9px] font-mono text-slate-400 dark:text-slate-500">
+                <span>30%</span><span>40%</span><span>50%</span>
+              </div>
+            </div>
+
+            {/* Visual bands summary */}
+            <div className="bg-slate-50 dark:bg-white/[0.03] border border-slate-100 dark:border-white/8 rounded-xl px-4 py-3">
+              <p className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest mb-2">Fasce attive</p>
+              <div className="space-y-1.5">
+                <div className="flex items-center gap-2">
+                  <div className="w-2.5 h-2.5 rounded-full bg-emerald-500 flex-shrink-0" />
+                  <span className="text-[11px] text-slate-600 dark:text-slate-300">
+                    P ≥ <span className="font-mono font-bold">{(config.lgbm_1h_min_agreement * 100).toFixed(0)}%</span>
+                    <span className="text-slate-400 dark:text-slate-500 ml-2">→ Trade confermato, size piena</span>
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <div className="w-2.5 h-2.5 rounded-full bg-amber-400 flex-shrink-0" />
+                  <span className="text-[11px] text-slate-600 dark:text-slate-300">
+                    <span className="font-mono font-bold">{(config.lgbm_1h_block_threshold * 100).toFixed(0)}%</span>
+                    <span className="text-slate-400 dark:text-slate-500 mx-1">≤ P &lt;</span>
+                    <span className="font-mono font-bold">{(config.lgbm_1h_min_agreement * 100).toFixed(0)}%</span>
+                    <span className="text-slate-400 dark:text-slate-500 ml-2">→ Permesso, size ×0.70</span>
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <div className="w-2.5 h-2.5 rounded-full bg-rose-500 flex-shrink-0" />
+                  <span className="text-[11px] text-slate-600 dark:text-slate-300">
+                    P &lt; <span className="font-mono font-bold">{(config.lgbm_1h_block_threshold * 100).toFixed(0)}%</span>
+                    <span className="text-slate-400 dark:text-slate-500 ml-2">→ Trade bloccato</span>
+                  </span>
+                </div>
+              </div>
+              {config.lgbm_1h_block_threshold >= config.lgbm_1h_min_agreement && (
+                <div className="mt-2 text-[10px] font-bold text-amber-600 dark:text-amber-400">
+                  ⚠ Soglia di blocco ≥ accordo minimo: la fascia "reduce" scompare. Abbassa il blocco o alza l'accordo.
+                </div>
+              )}
+            </div>
+
+            <p className="text-[10px] text-slate-400 dark:text-slate-500 leading-relaxed">
+              Avvia con valori conservativi <span className="font-mono">accordo=52% · blocco=42%</span>. Monitora: se il gate blocca &gt;30% dei segnali abbassa il blocco; se blocca &lt;10% alzalo. Dopo validazione live, considera il punto 5 (estensione backtest).
             </p>
           </div>
         )}
@@ -1327,199 +1750,6 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
         )}
       </Section>
 
-      {/* Gate LightGBM 1H */}
-      <Section
-        title="Gate LightGBM 1H"
-        description="Un secondo modello LightGBM addestrato su candele 1H conferma o blocca i segnali del modello 4H principale. Riduce i falsi segnali in momenti di disaccordo tra i due timeframe. Richiede un addestramento iniziale con il pulsante dedicato."
-      >
-        {/* Toggle */}
-        <div className={`flex flex-col gap-3 mb-6 pb-6 border-b transition-colors duration-200 ${config.use_1h_lgbm_gate ? 'border-violet-200 dark:border-violet-500/25' : 'border-slate-100 dark:border-white/5'}`}>
-          <div className="flex items-center justify-between gap-4">
-            <Tooltip
-              text="Quando attivo, ogni segnale 4H (long/short) viene filtrato dal modello 1H: se P(direzione)_1H ≥ min_agreement → confermato; se block_threshold ≤ P < min_agreement → permesso con size ×0.70; se P < block_threshold → bloccato. Fail-safe: se il modello 1H non esiste o si verifica un errore, il trade procede normalmente senza il gate."
-              width="wide"
-              pos="bottom"
-            >
-              <label className="flex items-center gap-3 cursor-pointer group">
-                <div className="relative">
-                  <input
-                    type="checkbox"
-                    className="sr-only"
-                    checked={config.use_1h_lgbm_gate}
-                    onChange={e => setConfig(c => ({ ...c, use_1h_lgbm_gate: e.target.checked }))}
-                  />
-                  <div className={`w-10 h-5 rounded-full transition-all duration-300 ${config.use_1h_lgbm_gate ? 'bg-violet-600' : 'bg-slate-200 dark:bg-white/10'}`} />
-                  <div className={`absolute top-1 left-1 w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.use_1h_lgbm_gate ? 'translate-x-5' : ''}`} />
-                </div>
-                <div>
-                  <p className={`text-sm font-bold transition-colors ${config.use_1h_lgbm_gate ? 'text-violet-600 dark:text-violet-400' : 'text-slate-800 dark:text-slate-200 group-hover:text-violet-600 dark:group-hover:text-violet-400'}`}>
-                    Abilita Gate LightGBM 1H
-                    {config.use_1h_lgbm_gate && (
-                      <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-violet-100 dark:bg-violet-500/20 text-violet-600 dark:text-violet-400 uppercase tracking-wider">Attivo</span>
-                    )}
-                  </p>
-                  <p className="text-[11px] font-medium text-slate-400 dark:text-slate-500 leading-tight">
-                    {config.use_1h_lgbm_gate ? 'Segnali 4H filtrati da conferma 1H — tre fasce: block / reduce ×0.70 / pass' : 'Filtra i segnali 4H con un modello LightGBM su candele orarie'}
-                  </p>
-                </div>
-              </label>
-            </Tooltip>
-
-            {/* Model status + Train button */}
-            <div className="flex items-center gap-2 flex-shrink-0">
-              <div className="flex items-center gap-1.5">
-                <div className={`w-2 h-2 rounded-full ${lgbm1hLoaded === true ? 'bg-emerald-500' : lgbm1hLoaded === false ? 'bg-rose-400' : 'bg-slate-300 dark:bg-slate-600'}`} />
-                <span className="text-[10px] font-medium text-slate-500 dark:text-slate-400">
-                  {lgbm1hLoaded === true ? 'Modello caricato' : lgbm1hLoaded === false ? 'Non addestrato' : '—'}
-                </span>
-              </div>
-              <Tooltip text="Addestra il modello LightGBM 1H su 2000 candele orarie (feature identiche al modello 4H, target: close[+1] > close[0] su 1H). Il processo dura 20–60s e non interrompe il bot. Dopo il primo addestramento, verrà ri-addestrato automaticamente ad ogni retrain 4H quando il gate è attivo." width="wide" pos="top">
-                <button
-                  onClick={handleRetrain1h}
-                  disabled={lgbm1hRetraining}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-bold bg-violet-600 hover:bg-violet-700 disabled:opacity-50 disabled:cursor-not-allowed text-white transition-colors"
-                >
-                  {lgbm1hRetraining ? (
-                    <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
-                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
-                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/>
-                    </svg>
-                  ) : (
-                    <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
-                    </svg>
-                  )}
-                  {lgbm1hRetraining ? 'Addestro…' : lgbm1hLoaded ? 'Ri-addestra 1H' : 'Addestra 1H'}
-                </button>
-              </Tooltip>
-            </div>
-          </div>
-
-          {/* Retrain result */}
-          {lgbm1hResult && (
-            <div className={`flex items-center gap-3 px-3 py-2 rounded-lg text-[11px] font-medium border ${
-              lgbm1hResult.status === 'ok'
-                ? 'bg-violet-50 dark:bg-violet-500/10 border-violet-200 dark:border-violet-500/30 text-violet-700 dark:text-violet-400'
-                : 'bg-rose-50 dark:bg-rose-500/10 border-rose-200 dark:border-rose-500/30 text-rose-700 dark:text-rose-400'
-            }`}>
-              {lgbm1hResult.status === 'ok' ? (
-                <>
-                  <span>✓ Modello 1H addestrato</span>
-                  <span className="text-slate-400 dark:text-slate-500">·</span>
-                  <span>OOS acc <span className="font-bold font-mono">{lgbm1hResult.oos_accuracy !== undefined ? `${(lgbm1hResult.oos_accuracy * 100).toFixed(1)}%` : '—'}</span></span>
-                  <span className="text-slate-400 dark:text-slate-500">·</span>
-                  <span>{lgbm1hResult.n_features} feature</span>
-                  <span className="text-slate-400 dark:text-slate-500">·</span>
-                  <span>{lgbm1hResult.elapsed_s}s</span>
-                </>
-              ) : (
-                <span>✕ Errore durante l'addestramento del modello 1H</span>
-              )}
-            </div>
-          )}
-        </div>
-
-        {/* Threshold sliders — only shown when gate is enabled */}
-        {config.use_1h_lgbm_gate && (
-          <div className="space-y-6">
-            {/* Min agreement */}
-            <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <Tooltip
-                  text="Probabilità minima P(direzione)_1H per confermare il trade a size piena. Se P(direzione) è tra block_threshold e questo valore, il trade viene permesso con size ridotta al 70%. Deve essere > block_threshold. Valore consigliato per iniziare: 52%."
-                  width="wide"
-                  pos="bottom"
-                >
-                  <span className="text-[10px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest cursor-help">
-                    Accordo minimo 1H
-                  </span>
-                </Tooltip>
-                <span className="font-mono text-sm font-bold text-violet-600 dark:text-violet-400">
-                  {(config.lgbm_1h_min_agreement * 100).toFixed(0)}%
-                  <span className="text-[10px] font-normal text-slate-400 dark:text-slate-500 ml-1">→ size piena</span>
-                </span>
-              </div>
-              <input
-                type="range" min={50} max={70} step={1}
-                value={Math.round(config.lgbm_1h_min_agreement * 100)}
-                onChange={e => setConfig(c => ({ ...c, lgbm_1h_min_agreement: parseInt(e.target.value) / 100 }))}
-                className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/15 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3.5 [&::-webkit-slider-thumb]:h-3.5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-violet-500 [&::-webkit-slider-thumb]:shadow-sm [&::-webkit-slider-thumb]:cursor-pointer [&::-moz-range-thumb]:w-3.5 [&::-moz-range-thumb]:h-3.5 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-violet-500 [&::-moz-range-thumb]:border-0"
-              />
-              <div className="flex justify-between text-[9px] font-mono text-slate-400 dark:text-slate-500">
-                <span>50%</span><span>60%</span><span>70%</span>
-              </div>
-            </div>
-
-            {/* Block threshold */}
-            <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <Tooltip
-                  text="Se P(direzione)_1H scende sotto questa soglia, il trade viene bloccato completamente (no_trade). Deve essere < accordo minimo. Valore consigliato per iniziare: 42–45%. Abbassare se il gate blocca troppi segnali (>30%)."
-                  width="wide"
-                  pos="bottom"
-                >
-                  <span className="text-[10px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest cursor-help">
-                    Soglia di blocco 1H
-                  </span>
-                </Tooltip>
-                <span className="font-mono text-sm font-bold text-rose-500 dark:text-rose-400">
-                  {(config.lgbm_1h_block_threshold * 100).toFixed(0)}%
-                  <span className="text-[10px] font-normal text-slate-400 dark:text-slate-500 ml-1">→ trade bloccato</span>
-                </span>
-              </div>
-              <input
-                type="range" min={30} max={50} step={1}
-                value={Math.round(config.lgbm_1h_block_threshold * 100)}
-                onChange={e => setConfig(c => ({ ...c, lgbm_1h_block_threshold: parseInt(e.target.value) / 100 }))}
-                className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/15 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3.5 [&::-webkit-slider-thumb]:h-3.5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-rose-500 [&::-webkit-slider-thumb]:shadow-sm [&::-webkit-slider-thumb]:cursor-pointer [&::-moz-range-thumb]:w-3.5 [&::-moz-range-thumb]:h-3.5 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-rose-500 [&::-moz-range-thumb]:border-0"
-              />
-              <div className="flex justify-between text-[9px] font-mono text-slate-400 dark:text-slate-500">
-                <span>30%</span><span>40%</span><span>50%</span>
-              </div>
-            </div>
-
-            {/* Visual bands summary */}
-            <div className="bg-slate-50 dark:bg-white/[0.03] border border-slate-100 dark:border-white/8 rounded-xl px-4 py-3">
-              <p className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest mb-2">Fasce attive</p>
-              <div className="space-y-1.5">
-                <div className="flex items-center gap-2">
-                  <div className="w-2.5 h-2.5 rounded-full bg-emerald-500 flex-shrink-0" />
-                  <span className="text-[11px] text-slate-600 dark:text-slate-300">
-                    P ≥ <span className="font-mono font-bold">{(config.lgbm_1h_min_agreement * 100).toFixed(0)}%</span>
-                    <span className="text-slate-400 dark:text-slate-500 ml-2">→ Trade confermato, size piena</span>
-                  </span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <div className="w-2.5 h-2.5 rounded-full bg-amber-400 flex-shrink-0" />
-                  <span className="text-[11px] text-slate-600 dark:text-slate-300">
-                    <span className="font-mono font-bold">{(config.lgbm_1h_block_threshold * 100).toFixed(0)}%</span>
-                    <span className="text-slate-400 dark:text-slate-500 mx-1">≤ P &lt;</span>
-                    <span className="font-mono font-bold">{(config.lgbm_1h_min_agreement * 100).toFixed(0)}%</span>
-                    <span className="text-slate-400 dark:text-slate-500 ml-2">→ Permesso, size ×0.70</span>
-                  </span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <div className="w-2.5 h-2.5 rounded-full bg-rose-500 flex-shrink-0" />
-                  <span className="text-[11px] text-slate-600 dark:text-slate-300">
-                    P &lt; <span className="font-mono font-bold">{(config.lgbm_1h_block_threshold * 100).toFixed(0)}%</span>
-                    <span className="text-slate-400 dark:text-slate-500 ml-2">→ Trade bloccato</span>
-                  </span>
-                </div>
-              </div>
-              {config.lgbm_1h_block_threshold >= config.lgbm_1h_min_agreement && (
-                <div className="mt-2 text-[10px] font-bold text-amber-600 dark:text-amber-400">
-                  ⚠ Soglia di blocco ≥ accordo minimo: la fascia "reduce" scompare. Abbassa il blocco o alza l'accordo.
-                </div>
-              )}
-            </div>
-
-            <p className="text-[10px] text-slate-400 dark:text-slate-500 leading-relaxed">
-              Avvia con valori conservativi <span className="font-mono">accordo=52% · blocco=42%</span>. Monitora: se il gate blocca &gt;30% dei segnali abbassa il blocco; se blocca &lt;10% alzalo. Dopo validazione live, considera il punto 5 (estensione backtest).
-            </p>
-          </div>
-        )}
-      </Section>
-
       {/* ── Macro Event Pause ──────────────────────────────────────────────── */}
       <Section
         title="Pausa Macro Eventi"
@@ -1677,6 +1907,228 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
             </div>
           </div>
         )}
+      </Section>
+
+      {/* Exit Strategies */}
+      <Section title="Strategie di Uscita" description="Gestione attiva delle posizioni aperte: trailing stop, presa parziale di profitto, uscita AI e limiti temporali.">
+
+        {/* Trailing SL */}
+        <div className={`flex flex-col gap-3 pb-6 border-b transition-colors duration-200 ${config.trailing_sl_enabled ? 'border-orange-200 dark:border-orange-500/25' : 'border-slate-100 dark:border-white/5'}`}>
+          <label className="flex items-center gap-3 cursor-pointer group">
+            <div className="relative">
+              <input type="checkbox" className="sr-only" checked={config.trailing_sl_enabled} onChange={e => setConfig(c => ({ ...c, trailing_sl_enabled: e.target.checked }))} />
+              <div className={`w-10 h-5 rounded-full transition-all duration-300 ${config.trailing_sl_enabled ? 'bg-orange-500' : 'bg-slate-200 dark:bg-white/10'}`} />
+              <div className={`absolute top-1 left-1 w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.trailing_sl_enabled ? 'translate-x-5' : ''}`} />
+            </div>
+            <div>
+              <p className={`text-sm font-bold transition-colors ${config.trailing_sl_enabled ? 'text-orange-600 dark:text-orange-400' : 'text-slate-800 dark:text-slate-200 group-hover:text-orange-600 dark:group-hover:text-orange-400'}`}>
+                Trailing Stop Loss
+                {config.trailing_sl_enabled && <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-orange-100 dark:bg-orange-500/20 text-orange-600 dark:text-orange-400 uppercase tracking-wider">Attivo</span>}
+              </p>
+              <p className="text-[11px] font-medium text-slate-400 dark:text-slate-500 leading-tight">Sposta lo SL al massimo favorevole man mano che il prezzo avanza</p>
+            </div>
+          </label>
+          {config.trailing_sl_enabled && (
+            <div className="pl-12 grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-4">
+              <div>
+                <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-2">Attivazione (× ATR)</p>
+                <div className="flex items-center gap-3">
+                  <input type="range" min="0.5" max="3" step="0.1" value={config.trailing_sl_activation}
+                    onChange={e => setConfig(c => ({ ...c, trailing_sl_activation: parseFloat(e.target.value) }))}
+                    className="flex-1 h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/15 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3.5 [&::-webkit-slider-thumb]:h-3.5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-orange-500 [&::-webkit-slider-thumb]:cursor-pointer [&::-moz-range-thumb]:w-3.5 [&::-moz-range-thumb]:h-3.5 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-orange-500 [&::-moz-range-thumb]:border-0" />
+                  <span className="text-[11px] font-bold font-mono text-orange-600 dark:text-orange-400 w-10 text-right">{config.trailing_sl_activation.toFixed(1)}×</span>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Breakeven SL */}
+        <div className={`flex flex-col gap-3 mt-6 pb-6 border-b transition-colors duration-200 ${config.be_sl_enabled ? 'border-sky-200 dark:border-sky-500/25' : 'border-slate-100 dark:border-white/5'}`}>
+          <label className="flex items-center gap-3 cursor-pointer group">
+            <div className="relative">
+              <input type="checkbox" className="sr-only" checked={config.be_sl_enabled} onChange={e => setConfig(c => ({ ...c, be_sl_enabled: e.target.checked }))} />
+              <div className={`w-10 h-5 rounded-full transition-all duration-300 ${config.be_sl_enabled ? 'bg-sky-500' : 'bg-slate-200 dark:bg-white/10'}`} />
+              <div className={`absolute top-1 left-1 w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.be_sl_enabled ? 'translate-x-5' : ''}`} />
+            </div>
+            <div>
+              <p className={`text-sm font-bold transition-colors ${config.be_sl_enabled ? 'text-sky-600 dark:text-sky-400' : 'text-slate-800 dark:text-slate-200 group-hover:text-sky-600 dark:group-hover:text-sky-400'}`}>
+                Breakeven Stop Loss
+                {config.be_sl_enabled && <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-sky-100 dark:bg-sky-500/20 text-sky-600 dark:text-sky-400 uppercase tracking-wider">Attivo</span>}
+              </p>
+              <p className="text-[11px] font-medium text-slate-400 dark:text-slate-500 leading-tight">Sposta lo SL a breakeven quando il profitto raggiunge la soglia</p>
+            </div>
+          </label>
+          {config.be_sl_enabled && (
+            <div className="pl-12">
+              <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-2">Attivazione (× ATR)</p>
+              <div className="flex items-center gap-3">
+                <input type="range" min="0.3" max="3" step="0.1" value={config.be_sl_activation}
+                  onChange={e => setConfig(c => ({ ...c, be_sl_activation: parseFloat(e.target.value) }))}
+                  className="flex-1 h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/15 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3.5 [&::-webkit-slider-thumb]:h-3.5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-sky-500 [&::-webkit-slider-thumb]:cursor-pointer [&::-moz-range-thumb]:w-3.5 [&::-moz-range-thumb]:h-3.5 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-sky-500 [&::-moz-range-thumb]:border-0" />
+                <span className="text-[11px] font-bold font-mono text-sky-600 dark:text-sky-400 w-10 text-right">{config.be_sl_activation.toFixed(1)}×</span>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Partial TP */}
+        <div className={`flex flex-col gap-3 mt-6 pb-6 border-b transition-colors duration-200 ${config.partial_tp_enabled ? 'border-emerald-200 dark:border-emerald-500/25' : 'border-slate-100 dark:border-white/5'}`}>
+          <label className="flex items-center gap-3 cursor-pointer group">
+            <div className="relative">
+              <input type="checkbox" className="sr-only" checked={config.partial_tp_enabled} onChange={e => setConfig(c => ({ ...c, partial_tp_enabled: e.target.checked }))} />
+              <div className={`w-10 h-5 rounded-full transition-all duration-300 ${config.partial_tp_enabled ? 'bg-emerald-600' : 'bg-slate-200 dark:bg-white/10'}`} />
+              <div className={`absolute top-1 left-1 w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.partial_tp_enabled ? 'translate-x-5' : ''}`} />
+            </div>
+            <div>
+              <p className={`text-sm font-bold transition-colors ${config.partial_tp_enabled ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-800 dark:text-slate-200 group-hover:text-emerald-600 dark:group-hover:text-emerald-400'}`}>
+                Presa Parziale di Profitto
+                {config.partial_tp_enabled && <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-emerald-100 dark:bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 uppercase tracking-wider">Attivo</span>}
+              </p>
+              <p className="text-[11px] font-medium text-slate-400 dark:text-slate-500 leading-tight">Chiude una quota della posizione al primo target ATR</p>
+            </div>
+          </label>
+          {config.partial_tp_enabled && (
+            <div className="pl-12 grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-4">
+              <div>
+                <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-2">Target (× ATR)</p>
+                <div className="flex items-center gap-3">
+                  <input type="range" min="0.5" max="3" step="0.1" value={config.partial_tp_atr_mult}
+                    onChange={e => setConfig(c => ({ ...c, partial_tp_atr_mult: parseFloat(e.target.value) }))}
+                    className="flex-1 h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/15 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3.5 [&::-webkit-slider-thumb]:h-3.5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-emerald-500 [&::-webkit-slider-thumb]:cursor-pointer [&::-moz-range-thumb]:w-3.5 [&::-moz-range-thumb]:h-3.5 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-emerald-500 [&::-moz-range-thumb]:border-0" />
+                  <span className="text-[11px] font-bold font-mono text-emerald-600 dark:text-emerald-400 w-10 text-right">{config.partial_tp_atr_mult.toFixed(1)}×</span>
+                </div>
+              </div>
+              <div>
+                <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-2">Quota da chiudere</p>
+                <div className="flex items-center gap-3">
+                  <input type="range" min="10" max="80" step="5" value={config.partial_tp_pct}
+                    onChange={e => setConfig(c => ({ ...c, partial_tp_pct: parseFloat(e.target.value) }))}
+                    className="flex-1 h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/15 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3.5 [&::-webkit-slider-thumb]:h-3.5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-emerald-500 [&::-webkit-slider-thumb]:cursor-pointer [&::-moz-range-thumb]:w-3.5 [&::-moz-range-thumb]:h-3.5 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-emerald-500 [&::-moz-range-thumb]:border-0" />
+                  <span className="text-[11px] font-bold font-mono text-emerald-600 dark:text-emerald-400 w-12 text-right">{config.partial_tp_pct.toFixed(0)}%</span>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* LightGBM Exit */}
+        <div className={`flex flex-col gap-3 mt-6 pb-6 border-b transition-colors duration-200 ${config.lgbm_exit_enabled ? 'border-violet-200 dark:border-violet-500/25' : 'border-slate-100 dark:border-white/5'}`}>
+          <label className="flex items-center gap-3 cursor-pointer group">
+            <div className="relative">
+              <input type="checkbox" className="sr-only" checked={config.lgbm_exit_enabled} onChange={e => setConfig(c => ({ ...c, lgbm_exit_enabled: e.target.checked }))} />
+              <div className={`w-10 h-5 rounded-full transition-all duration-300 ${config.lgbm_exit_enabled ? 'bg-violet-600' : 'bg-slate-200 dark:bg-white/10'}`} />
+              <div className={`absolute top-1 left-1 w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.lgbm_exit_enabled ? 'translate-x-5' : ''}`} />
+            </div>
+            <div>
+              <p className={`text-sm font-bold transition-colors ${config.lgbm_exit_enabled ? 'text-violet-600 dark:text-violet-400' : 'text-slate-800 dark:text-slate-200 group-hover:text-violet-600 dark:group-hover:text-violet-400'}`}>
+                Uscita AI — LightGBM Exit
+                {config.lgbm_exit_enabled && <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-violet-100 dark:bg-violet-500/20 text-violet-600 dark:text-violet-400 uppercase tracking-wider">Attivo</span>}
+              </p>
+              <p className="text-[11px] font-medium text-slate-400 dark:text-slate-500 leading-tight">Chiude la posizione quando LightGBM rileva inversione imminente</p>
+            </div>
+          </label>
+          {config.lgbm_exit_enabled && (
+            <>
+            <div className="pl-12 grid grid-cols-1 sm:grid-cols-3 gap-x-8 gap-y-4">
+              <div>
+                <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-2">Soglia Uscita</p>
+                <div className="flex items-center gap-3">
+                  <input type="range" min="0.1" max="0.6" step="0.01" value={config.lgbm_exit_threshold}
+                    onChange={e => setConfig(c => ({ ...c, lgbm_exit_threshold: parseFloat(e.target.value) }))}
+                    className="flex-1 h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/15 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3.5 [&::-webkit-slider-thumb]:h-3.5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-violet-500 [&::-webkit-slider-thumb]:cursor-pointer [&::-moz-range-thumb]:w-3.5 [&::-moz-range-thumb]:h-3.5 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-violet-500 [&::-moz-range-thumb]:border-0" />
+                  <span className="text-[11px] font-bold font-mono text-violet-600 dark:text-violet-400 w-10 text-right">{config.lgbm_exit_threshold.toFixed(2)}</span>
+                </div>
+              </div>
+              <div>
+                <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-2">Min Hold (bar)</p>
+                <div className="flex items-center gap-3">
+                  <input type="range" min="1" max="24" step="1" value={config.lgbm_exit_min_hold_bars}
+                    onChange={e => setConfig(c => ({ ...c, lgbm_exit_min_hold_bars: parseInt(e.target.value) }))}
+                    className="flex-1 h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/15 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3.5 [&::-webkit-slider-thumb]:h-3.5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-violet-500 [&::-webkit-slider-thumb]:cursor-pointer [&::-moz-range-thumb]:w-3.5 [&::-moz-range-thumb]:h-3.5 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-violet-500 [&::-moz-range-thumb]:border-0" />
+                  <span className="text-[11px] font-bold font-mono text-violet-600 dark:text-violet-400 w-10 text-right">{config.lgbm_exit_min_hold_bars}</span>
+                </div>
+              </div>
+              <div>
+                <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-2">Conferma (bar)</p>
+                <div className="flex items-center gap-3">
+                  <input type="range" min="1" max="5" step="1" value={config.lgbm_exit_confirm_bars}
+                    onChange={e => setConfig(c => ({ ...c, lgbm_exit_confirm_bars: parseInt(e.target.value) }))}
+                    className="flex-1 h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/15 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3.5 [&::-webkit-slider-thumb]:h-3.5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-violet-500 [&::-webkit-slider-thumb]:cursor-pointer [&::-moz-range-thumb]:w-3.5 [&::-moz-range-thumb]:h-3.5 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-violet-500 [&::-moz-range-thumb]:border-0" />
+                  <span className="text-[11px] font-bold font-mono text-violet-600 dark:text-violet-400 w-10 text-right">{config.lgbm_exit_confirm_bars}</span>
+                </div>
+              </div>
+            </div>
+            {/* Enhanced Exit sub-toggle */}
+            <div className="pl-12 pt-3 border-t border-violet-100 dark:border-violet-500/15 mt-1">
+              <label className="flex items-center gap-3 cursor-pointer group">
+                <div className="relative">
+                  <input type="checkbox" className="sr-only" checked={config.enhanced_exit_enabled} onChange={e => setConfig(c => ({ ...c, enhanced_exit_enabled: e.target.checked }))} />
+                  <div className={`w-9 h-[18px] rounded-full transition-all duration-300 ${config.enhanced_exit_enabled ? 'bg-violet-400' : 'bg-slate-200 dark:bg-white/10'}`} />
+                  <div className={`absolute top-[3px] left-[3px] w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.enhanced_exit_enabled ? 'translate-x-[18px]' : ''}`} />
+                </div>
+                <div>
+                  <p className={`text-xs font-bold transition-colors ${config.enhanced_exit_enabled ? 'text-violet-500 dark:text-violet-300' : 'text-slate-600 dark:text-slate-400'}`}>
+                    Enhanced Exit (Chronos p50 confirm)
+                  </p>
+                  <p className="text-[10px] text-slate-400 dark:text-slate-500 leading-snug">Richiede che il p50 di Chronos abbia attraversato il prezzo di entrata prima di uscire</p>
+                </div>
+              </label>
+            </div>
+            </>
+          )}
+        </div>
+
+        {/* P10 SL Floor */}
+        <div className={`flex flex-col gap-3 mt-6 pb-6 border-b transition-colors duration-200 ${config.p10_sl_floor_enabled ? 'border-amber-200 dark:border-amber-500/25' : 'border-slate-100 dark:border-white/5'}`}>
+          <label className="flex items-center gap-3 cursor-pointer group">
+            <div className="relative">
+              <input type="checkbox" className="sr-only" checked={config.p10_sl_floor_enabled} onChange={e => setConfig(c => ({ ...c, p10_sl_floor_enabled: e.target.checked }))} disabled={!config.chronos_enabled} />
+              <div className={`w-10 h-5 rounded-full transition-all duration-300 ${config.p10_sl_floor_enabled ? 'bg-amber-500' : 'bg-slate-200 dark:bg-white/10'} ${!config.chronos_enabled ? 'opacity-40' : ''}`} />
+              <div className={`absolute top-1 left-1 w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.p10_sl_floor_enabled ? 'translate-x-5' : ''}`} />
+            </div>
+            <div>
+              <p className={`text-sm font-bold transition-colors ${config.p10_sl_floor_enabled ? 'text-amber-600 dark:text-amber-400' : !config.chronos_enabled ? 'text-slate-400 dark:text-slate-600' : 'text-slate-800 dark:text-slate-200 group-hover:text-amber-600 dark:group-hover:text-amber-400'}`}>
+                P10 SL Floor (Chronos)
+                {config.p10_sl_floor_enabled && <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-amber-100 dark:bg-amber-500/20 text-amber-600 dark:text-amber-400 uppercase tracking-wider">Attivo</span>}
+              </p>
+              <p className="text-[11px] font-medium text-slate-400 dark:text-slate-500 leading-tight">
+                {!config.chronos_enabled ? 'Richiede Chronos-2 attivo' : 'Usa il p10 Chronos come floor per lo SL — migliora R:R quando la forecast è confidenti'}
+              </p>
+            </div>
+          </label>
+        </div>
+
+        {/* Max Hold Bars */}
+        <div className={`flex flex-col gap-3 mt-6 transition-colors duration-200`}>
+          <label className="flex items-center gap-3 cursor-pointer group">
+            <div className="relative">
+              <input type="checkbox" className="sr-only" checked={config.max_hold_bars_enabled} onChange={e => setConfig(c => ({ ...c, max_hold_bars_enabled: e.target.checked }))} />
+              <div className={`w-10 h-5 rounded-full transition-all duration-300 ${config.max_hold_bars_enabled ? 'bg-rose-500' : 'bg-slate-200 dark:bg-white/10'}`} />
+              <div className={`absolute top-1 left-1 w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.max_hold_bars_enabled ? 'translate-x-5' : ''}`} />
+            </div>
+            <div>
+              <p className={`text-sm font-bold transition-colors ${config.max_hold_bars_enabled ? 'text-rose-600 dark:text-rose-400' : 'text-slate-800 dark:text-slate-200 group-hover:text-rose-600 dark:group-hover:text-rose-400'}`}>
+                Max Hold Time
+                {config.max_hold_bars_enabled && <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-rose-100 dark:bg-rose-500/20 text-rose-600 dark:text-rose-400 uppercase tracking-wider">Attivo</span>}
+              </p>
+              <p className="text-[11px] font-medium text-slate-400 dark:text-slate-500 leading-tight">Chiude forzatamente la posizione dopo N candele 4H</p>
+            </div>
+          </label>
+          {config.max_hold_bars_enabled && (
+            <div className="pl-12">
+              <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-2">
+                Max candele ({(config.max_hold_bars * 4)}h ≈ {(config.max_hold_bars / 6).toFixed(1)} giorni)
+              </p>
+              <div className="flex items-center gap-3">
+                <input type="range" min="6" max="120" step="6" value={config.max_hold_bars}
+                  onChange={e => setConfig(c => ({ ...c, max_hold_bars: parseInt(e.target.value) }))}
+                  className="flex-1 h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/15 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3.5 [&::-webkit-slider-thumb]:h-3.5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-rose-500 [&::-webkit-slider-thumb]:cursor-pointer [&::-moz-range-thumb]:w-3.5 [&::-moz-range-thumb]:h-3.5 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-rose-500 [&::-moz-range-thumb]:border-0" />
+                <span className="text-[11px] font-bold font-mono text-rose-600 dark:text-rose-400 w-16 text-right">{config.max_hold_bars} bar</span>
+              </div>
+            </div>
+          )}
+        </div>
       </Section>
 
       {/* Action Footer */}
