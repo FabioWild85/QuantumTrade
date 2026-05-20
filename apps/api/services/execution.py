@@ -112,6 +112,15 @@ class BotConfig:
         self.use_1h_lgbm_gate               = kw.get("use_1h_lgbm_gate",               False)
         self.lgbm_1h_min_agreement          = kw.get("lgbm_1h_min_agreement",          0.52)
         self.lgbm_1h_block_threshold        = kw.get("lgbm_1h_block_threshold",        0.45)
+        # Macro Event Pause — block new entries (and optionally close) during high-impact events
+        self.macro_pause_enabled        = kw.get("macro_pause_enabled",        False)
+        self.macro_pause_window_min     = kw.get("macro_pause_window_min",     60)
+        self.macro_pause_close_position = kw.get("macro_pause_close_position", False)
+        self.macro_pause_fomc           = kw.get("macro_pause_fomc",           True)
+        self.macro_pause_cpi            = kw.get("macro_pause_cpi",            True)
+        self.macro_pause_nfp            = kw.get("macro_pause_nfp",            True)
+        self.macro_pause_ppi            = kw.get("macro_pause_ppi",            False)
+        self.macro_pause_jolts          = kw.get("macro_pause_jolts",          False)
 
     def model_dump(self) -> dict:
         return self.__dict__
@@ -155,6 +164,13 @@ class ExecutionEngine:
         self._task: Optional[asyncio.Task]         = None
         self._last_retrain_metrics: Optional[dict] = None
         self._last_cycle_signals:   Optional[dict] = None
+        self._macro_pause_active:   Optional[str]  = None
+
+        # Economic calendar (loaded once at startup)
+        from services.economic_calendar import get_calendar
+        self._calendar = get_calendar()
+        # Kick off FOMC auto-refresh for next year in the background
+        asyncio.create_task(self._calendar.try_refresh_fomc())
 
     # ── Config ────────────────────────────────────────────────────────────────
 
@@ -495,6 +511,7 @@ class ExecutionEngine:
             "retrain_in_progress":      _retrain_lock.locked(),
             "last_retrain":             self._last_retrain_metrics,
             "last_cycle_signals":       self._last_cycle_signals,
+            "macro_pause_active":       self._macro_pause_active,
             "config":                   self.config.model_dump(),
             "regime_signal":            regime_data,
         }
@@ -733,6 +750,27 @@ class ExecutionEngine:
         _raw_id = str(uuid.uuid4())[:12]
         inference_id = await self._log_inference(_raw_id, latest, c2_out, lgbm_prob, result, covars)
         # inference_id is None if log write failed; orders insert will use NULL FK (safe)
+
+        # ── Macro Event Pause ─────────────────────────────────────────────────
+        # Override result.action → no_trade if we're inside a pause window.
+        # Position management (SL/TP/trailing) continues normally during pause.
+        _macro_event = self._calendar.is_in_pause_window(datetime.now(timezone.utc), cfg)
+        if _macro_event:
+            result.action = "no_trade"
+            result.reasoning.append(f"Macro pause: {_macro_event}")
+            if self._macro_pause_active is None:
+                # Entered pause — notify once
+                self._macro_pause_active = _macro_event
+                asyncio.create_task(self._notifier.send_macro_pause_start(
+                    _macro_event, cfg.macro_pause_window_min
+                ))
+            if cfg.macro_pause_close_position and self._position:
+                log.info("Macro pause: closing open position as configured")
+                await self._close_position("macro_pause")
+        elif self._macro_pause_active is not None:
+            # Exited pause — notify once
+            asyncio.create_task(self._notifier.send_macro_pause_end(self._macro_pause_active))
+            self._macro_pause_active = None
 
         if result.action != "no_trade" and allowed and self._position is None:
             await self._open_position(result, snap, atr, inference_id)

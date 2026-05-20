@@ -105,7 +105,7 @@ ssh -i ~/.ssh/id_ed25519 root@77.42.84.8 "systemctl status nginx"
 | Errore | Causa | Soluzione |
 |--------|-------|-----------|
 | `Operation timed out` su `45.76.131.253` | IP sbagliato (vecchio server) | Usare `77.42.84.8` |
-| Modifiche frontend non visibili sul sito | Deploy su `/var/www/` invece di `/opt/` | Usare `/opt/quantum-trade/dist/` |
+| Modifiche frontend non visibili sul sito | Deploy su `/var/www/` invece di `/opt/` | Usare **sempre** `/opt/quantum-trade/dist/` — `/var/www/` NON è servito da nginx |
 | Modifiche frontend non visibili dopo deploy corretto | Cache del browser | `Cmd+Shift+R` per hard refresh |
 | `dist/` non trovata | Vite mette l'output in `dist/` nella root del progetto, non in `apps/web/dist/` | Rsync da `/Users/fabiowild/Desktop/Quantum Trade/dist/` |
 | Backend crash `exit-code 127` dopo deploy | rsync ha copiato `.venv` macOS sul server Linux, sovrascrivendo i binari | Usare sempre `--exclude='.venv'` nell'rsync del backend. Ripristino: `rm -rf .venv && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt` |

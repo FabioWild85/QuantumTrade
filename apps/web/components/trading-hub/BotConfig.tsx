@@ -35,6 +35,15 @@ interface Config {
   use_1h_lgbm_gate: boolean;
   lgbm_1h_min_agreement: number;
   lgbm_1h_block_threshold: number;
+  // Macro Event Pause
+  macro_pause_enabled: boolean;
+  macro_pause_window_min: number;
+  macro_pause_close_position: boolean;
+  macro_pause_fomc: boolean;
+  macro_pause_cpi: boolean;
+  macro_pause_nfp: boolean;
+  macro_pause_ppi: boolean;
+  macro_pause_jolts: boolean;
 }
 
 const DEFAULTS: Config = {
@@ -71,6 +80,15 @@ const DEFAULTS: Config = {
   use_1h_lgbm_gate: false,
   lgbm_1h_min_agreement: 0.52,
   lgbm_1h_block_threshold: 0.45,
+  // Macro Event Pause
+  macro_pause_enabled: false,
+  macro_pause_window_min: 60,
+  macro_pause_close_position: false,
+  macro_pause_fomc: true,
+  macro_pause_cpi: true,
+  macro_pause_nfp: true,
+  macro_pause_ppi: false,
+  macro_pause_jolts: false,
 };
 
 interface PruningMetrics {
@@ -144,6 +162,10 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     status: string; oos_accuracy?: number; oos_log_loss?: number;
     n_features?: number; elapsed_s?: number; train_rows?: number;
   } | null>(null);
+  const [macroEvents, setMacroEvents] = useState<Array<{
+    type: string; name: string; datetime_utc: string; days_away: number;
+  }> | null>(null);
+  const [macroEventsLoading, setMacroEventsLoading] = useState(false);
 
   const loadFeatureImportance = () => {
     setFeatImportanceLoading(true);
@@ -221,6 +243,13 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     loadFeatureImportance();
     loadPruningStats();
     loadCalibratorStats();
+    // Load upcoming macro events
+    setMacroEventsLoading(true);
+    fetch(`${apiBase}/macro-events?days=60`)
+      .then(r => r.ok ? r.json() : null)
+      .then(d => d && setMacroEvents(d.events ?? []))
+      .catch(() => {})
+      .finally(() => setMacroEventsLoading(false));
   }, [apiBase]);
 
   const handleRetrain = async () => {
@@ -1487,6 +1516,165 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
             <p className="text-[10px] text-slate-400 dark:text-slate-500 leading-relaxed">
               Avvia con valori conservativi <span className="font-mono">accordo=52% · blocco=42%</span>. Monitora: se il gate blocca &gt;30% dei segnali abbassa il blocco; se blocca &lt;10% alzalo. Dopo validazione live, considera il punto 5 (estensione backtest).
             </p>
+          </div>
+        )}
+      </Section>
+
+      {/* ── Macro Event Pause ──────────────────────────────────────────────── */}
+      <Section
+        title="Pausa Macro Eventi"
+        description="Blocca nuove aperture (e opzionalmente chiude la posizione) durante la finestra di un evento ad alto impatto."
+      >
+        {/* Master toggle */}
+        <div className="flex items-center justify-between mb-5">
+          <div>
+            <p className="text-xs font-bold text-slate-700 dark:text-slate-200">Attiva Pausa</p>
+            <p className="text-[10px] text-slate-400 dark:text-slate-500 mt-0.5">
+              Il bot non aprirà nuovi trade durante gli eventi selezionati
+            </p>
+          </div>
+          <button
+            onClick={() => setConfig(c => ({ ...c, macro_pause_enabled: !c.macro_pause_enabled }))}
+            className={`relative inline-flex h-6 w-11 flex-shrink-0 rounded-full border-2 border-transparent transition-colors duration-200 focus:outline-none ${
+              config.macro_pause_enabled ? 'bg-indigo-600' : 'bg-slate-200 dark:bg-slate-700'
+            }`}
+          >
+            <span className={`inline-block h-5 w-5 rounded-full bg-white shadow transform transition-transform duration-200 ${
+              config.macro_pause_enabled ? 'translate-x-5' : 'translate-x-0'
+            }`} />
+          </button>
+        </div>
+
+        {config.macro_pause_enabled && (
+          <div className="space-y-5">
+            {/* Window slider */}
+            <div>
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest">
+                  Finestra ±{config.macro_pause_window_min} min prima/dopo
+                </span>
+                <span className="text-xs font-bold font-mono text-indigo-500 dark:text-indigo-400">
+                  {config.macro_pause_window_min} min
+                </span>
+              </div>
+              <input
+                type="range" min={15} max={180} step={15}
+                value={config.macro_pause_window_min}
+                onChange={e => setConfig(c => ({ ...c, macro_pause_window_min: parseInt(e.target.value) }))}
+                className="w-full accent-indigo-500"
+              />
+              <div className="flex justify-between text-[9px] font-mono text-slate-400 dark:text-slate-500 mt-1">
+                <span>15 min</span><span>1h</span><span>2h</span><span>3h</span>
+              </div>
+            </div>
+
+            {/* Event sub-toggles */}
+            <div>
+              <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-3">
+                Eventi abilitati
+              </p>
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                {([
+                  { key: 'macro_pause_fomc',  label: 'FOMC',  desc: '8×/anno · 🔴 Alto' },
+                  { key: 'macro_pause_cpi',   label: 'CPI',   desc: 'Mensile · 🔴 Alto' },
+                  { key: 'macro_pause_nfp',   label: 'NFP',   desc: '1° Ven · 🔴 Alto' },
+                  { key: 'macro_pause_ppi',   label: 'PPI',   desc: 'Mensile · 🟡 Medio' },
+                  { key: 'macro_pause_jolts', label: 'JOLTS', desc: 'Mensile · 🟡 Medio' },
+                ] as Array<{ key: keyof Config; label: string; desc: string }>).map(({ key, label, desc }) => (
+                  <button
+                    key={key}
+                    onClick={() => setConfig(c => ({ ...c, [key]: !c[key] }))}
+                    className={`flex flex-col items-start px-3 py-2.5 rounded-xl border text-left transition-all ${
+                      config[key]
+                        ? 'bg-indigo-50 dark:bg-indigo-500/10 border-indigo-200 dark:border-indigo-500/30 text-indigo-700 dark:text-indigo-400'
+                        : 'bg-slate-50 dark:bg-white/5 border-slate-100 dark:border-white/8 text-slate-400 dark:text-slate-500'
+                    }`}
+                  >
+                    <span className="text-xs font-bold">{config[key] ? '✓ ' : ''}{label}</span>
+                    <span className="text-[9px] opacity-70 mt-0.5">{desc}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Position behavior toggle */}
+            <div className="bg-slate-50 dark:bg-white/5 rounded-xl p-4 border border-slate-100 dark:border-white/8">
+              <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-3">
+                Gestione posizione aperta
+              </p>
+              <div className="flex flex-col gap-2">
+                {[
+                  { val: false, label: 'Blocca solo nuove aperture', desc: 'La posizione esistente rimane aperta — SL/TP gestiti normalmente' },
+                  { val: true,  label: 'Chiudi anche la posizione aperta', desc: '⚠ Chiusura immediata alla prima rilevazione della finestra evento' },
+                ].map(({ val, label, desc }) => (
+                  <button
+                    key={String(val)}
+                    onClick={() => setConfig(c => ({ ...c, macro_pause_close_position: val }))}
+                    className={`flex items-start gap-3 px-3 py-2.5 rounded-xl border text-left transition-all ${
+                      config.macro_pause_close_position === val
+                        ? val
+                          ? 'bg-amber-50 dark:bg-amber-500/10 border-amber-300 dark:border-amber-500/30'
+                          : 'bg-emerald-50 dark:bg-emerald-500/10 border-emerald-200 dark:border-emerald-500/30'
+                        : 'bg-slate-50 dark:bg-white/5 border-slate-100 dark:border-white/8 opacity-50'
+                    }`}
+                  >
+                    <span className={`mt-0.5 w-3.5 h-3.5 rounded-full border-2 flex-shrink-0 ${
+                      config.macro_pause_close_position === val
+                        ? val ? 'border-amber-500 bg-amber-500' : 'border-emerald-500 bg-emerald-500'
+                        : 'border-slate-300 dark:border-slate-600'
+                    }`} />
+                    <div>
+                      <p className="text-xs font-bold text-slate-700 dark:text-slate-200">{label}</p>
+                      <p className="text-[10px] text-slate-400 dark:text-slate-500 mt-0.5">{desc}</p>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Upcoming events preview */}
+            <div>
+              <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-2">
+                Prossimi eventi (60 giorni)
+              </p>
+              {macroEventsLoading ? (
+                <p className="text-[10px] text-slate-400 dark:text-slate-500 font-mono animate-pulse">Caricamento…</p>
+              ) : macroEvents && macroEvents.length > 0 ? (
+                <div className="space-y-1.5">
+                  {(() => {
+                    const typeMap: Record<string, keyof Config> = {
+                      fomc: 'macro_pause_fomc', cpi: 'macro_pause_cpi',
+                      nfp: 'macro_pause_nfp',  ppi: 'macro_pause_ppi',
+                      jolts: 'macro_pause_jolts',
+                    };
+                    return macroEvents.slice(0, 6).map((e, i) => {
+                      const enabled = config[typeMap[e.type]] as boolean;
+                      const dt = new Date(e.datetime_utc);
+                      return (
+                        <div key={i} className={`flex items-center justify-between px-3 py-2 rounded-lg border text-[10px] font-mono transition-opacity ${
+                          enabled
+                            ? 'bg-rose-50 dark:bg-rose-500/8 border-rose-100 dark:border-rose-500/20'
+                            : 'bg-slate-50 dark:bg-white/5 border-slate-100 dark:border-white/8 opacity-35'
+                        }`}>
+                          <span className="font-bold text-slate-700 dark:text-slate-200">
+                            {enabled ? '' : '✗ '}{e.name}
+                          </span>
+                          <span className="text-slate-500 dark:text-slate-400">
+                            {dt.toLocaleDateString('it-IT', { day: '2-digit', month: 'short', timeZone: 'UTC' })}{' '}
+                            {dt.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit', timeZone: 'UTC' })} UTC
+                          </span>
+                          <span className={`font-bold ${e.days_away <= 3 ? 'text-rose-600 dark:text-rose-400' : 'text-slate-500 dark:text-slate-400'}`}>
+                            {e.days_away <= 0.04 ? '🔴 ORA' : `${e.days_away.toFixed(0)}g`}
+                          </span>
+                        </div>
+                      );
+                    });
+                  })()}
+                </div>
+              ) : (
+                <p className="text-[10px] text-slate-400 dark:text-slate-500 font-mono">Nessun evento nei prossimi 60 giorni.</p>
+              )}
+            </div>
           </div>
         )}
       </Section>

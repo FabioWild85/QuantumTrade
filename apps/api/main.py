@@ -200,6 +200,15 @@ class BotConfig(BaseModel):
     use_1h_lgbm_gate:               bool  = Field(False)
     lgbm_1h_min_agreement:          float = Field(0.52, ge=0.50, le=0.70)
     lgbm_1h_block_threshold:        float = Field(0.45, ge=0.30, le=0.50)
+    # Macro Event Pause
+    macro_pause_enabled:        bool  = Field(False)
+    macro_pause_window_min:     int   = Field(60, ge=15, le=240)
+    macro_pause_close_position: bool  = Field(False)
+    macro_pause_fomc:           bool  = Field(True)
+    macro_pause_cpi:            bool  = Field(True)
+    macro_pause_nfp:            bool  = Field(True)
+    macro_pause_ppi:            bool  = Field(False)
+    macro_pause_jolts:          bool  = Field(False)
 
 
 class StartBotRequest(BaseModel):
@@ -291,6 +300,21 @@ async def bot_stop():
     _persist_running_state(False)
     _log_event("bot_stopped", "Bot fermato dall'utente", "info")
     return {"status": "stopped"}
+
+
+@app.get("/macro-events")
+async def macro_events(days: int = 30):
+    """Return upcoming macro events for the next N days (default 30)."""
+    from services.economic_calendar import get_calendar
+    cal = get_calendar()
+    events = cal.get_upcoming(days_ahead=min(days, 180))
+    # Mark which events are currently paused based on engine config
+    pause_active = engine._macro_pause_active if engine else None
+    return {
+        "events":       events,
+        "pause_active": pause_active,
+        "total":        len(events),
+    }
 
 
 @app.post("/bot/position/close")

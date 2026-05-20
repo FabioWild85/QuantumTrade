@@ -115,6 +115,7 @@ class TelegramNotifier:
             "lgbm_exit":    "LightGBM Exit",
             "max_hold_bars": "Max Hold Time",
             "kill":         "Kill Switch",
+            "macro_pause":  "Pausa Macro Evento",
         }
         reason_label = reason_labels.get(reason, reason)
         lines = [
@@ -229,6 +230,21 @@ class TelegramNotifier:
             f"P(dir):       <code>{dir_prob:.1%}</code>\n"
             f"Motivo:       <code>{last_reason}</code>\n"
             f"<i>Segnale ignorato — posizione {open_side.upper()} in corso</i>"
+        )
+
+    async def send_macro_pause_start(self, event_name: str, window_min: int):
+        await self._send(
+            f"⏸ <b>PAUSA MACRO ATTIVATA</b>\n"
+            f"Evento:   <code>{event_name}</code>\n"
+            f"Finestra: <code>±{window_min} min</code>\n"
+            f"<i>Nuove aperture bloccate durante la finestra evento</i>"
+        )
+
+    async def send_macro_pause_end(self, event_name: str):
+        await self._send(
+            f"▶️ <b>PAUSA MACRO TERMINATA</b>\n"
+            f"Evento: <code>{event_name}</code>\n"
+            f"<i>Bot ripreso — aperture normali al prossimo ciclo</i>"
         )
 
     async def send_daily_summary(

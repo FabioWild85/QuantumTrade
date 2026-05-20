@@ -58,6 +58,7 @@ interface BotStatus {
     reasoning: string[];
     updated_at: string;
   } | null;
+  macro_pause_active?: string | null;
 }
 
 interface InferenceLog {
@@ -510,6 +511,21 @@ export const Monitor: React.FC<{ apiBase: string }> = ({ apiBase }) => {
           )}
         </div>
       </div>
+
+      {/* ── Macro Pause Banner ────────────────────────────────────────────── */}
+      {status?.macro_pause_active && (
+        <div className="elegant-card px-5 py-3.5 bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/30 flex items-center gap-3">
+          <span className="text-lg">⏸</span>
+          <div>
+            <p className="text-xs font-bold text-amber-800 dark:text-amber-300 uppercase tracking-wider">
+              Pausa Macro Attiva — {status.macro_pause_active}
+            </p>
+            <p className="text-[10px] text-amber-700 dark:text-amber-400 mt-0.5">
+              Nuove aperture bloccate durante la finestra evento · SL/TP posizione attiva operativi
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* ── Open position — Live Trade Card ───────────────────────────────── */}
       {pos && (
