@@ -248,3 +248,88 @@ class RiskManager:
             db.table("bot_configs").update({"last_heartbeat": now}).eq("name", bot_id).execute()
         except Exception as e:
             log.warning(f"Heartbeat write failed: {e}")
+
+
+# ── Structural SL helper (shared by live execution and backtesting) ────────────
+
+def apply_structural_sl(
+    params: TradeParams,
+    features: dict,
+    entry_price: float,
+    ob_proximity_atr: float = 2.0,
+    ob_buffer_pct: float = 0.3,
+) -> tuple[bool, str]:
+    """
+    Widens params.stop_loss when an active Order Block is within ob_proximity_atr
+    ATR units of entry in the SL direction, placing the SL ob_buffer_pct beyond
+    the OB absolute price level.
+
+    ob_dist fields are ATR-normalized (not percentage); ob_proximity_atr is the
+    max distance in ATR units to trigger the override.
+
+    Only ever widens — never tightens — the SL.
+    Rescales params.size_usd and params.size_contracts proportionally to keep
+    dollar risk constant after the SL adjustment.
+
+    Returns (applied: bool, log_msg: str) for caller logging/reasoning.
+    Modifies params in-place.
+    """
+    is_short = params.side == "short"
+    orig_sl  = params.stop_loss
+
+    if is_short:
+        ob_active = float(features.get("ob_bear_active") or 0)
+        ob_dist   = features.get("ob_bear_dist")    # ATR-normalized distance above entry
+        ob_inside = float(features.get("ob_bear_inside") or 0)
+        ob_top_px = features.get("ob_bear_top_px")  # absolute top price of the bear OB
+        _ob_dist_f  = float(ob_dist)  if ob_dist  is not None else -1.0
+        _ob_top_f   = float(ob_top_px) if ob_top_px is not None else 0.0
+        if (
+            ob_active == 1.0
+            and ob_inside == 0.0
+            and 0 < _ob_dist_f < ob_proximity_atr   # within N ATR
+            and _ob_top_f > 0                        # valid price level (NaN → 0.0 cast → False)
+        ):
+            ob_sl = _ob_top_f * (1.0 + ob_buffer_pct / 100.0)
+            if ob_sl > params.stop_loss:
+                params.stop_loss = ob_sl
+                msg = (
+                    f"StructuralSL: bear OB top={_ob_top_f:.2f} ({_ob_dist_f:.2f} ATR above) → "
+                    f"SL={ob_sl:.2f} (was {orig_sl:.2f})"
+                )
+                _rescale_size(params, orig_sl, entry_price)
+                return True, msg
+    else:
+        ob_active = float(features.get("ob_bull_active") or 0)
+        ob_dist   = features.get("ob_bull_dist")    # ATR-normalized distance below entry
+        ob_inside = float(features.get("ob_bull_inside") or 0)
+        ob_bot_px = features.get("ob_bull_bot_px")  # absolute bottom price of the bull OB
+        _ob_dist_f = float(ob_dist)  if ob_dist  is not None else -1.0
+        _ob_bot_f  = float(ob_bot_px) if ob_bot_px is not None else 0.0
+        if (
+            ob_active == 1.0
+            and ob_inside == 0.0
+            and 0 < _ob_dist_f < ob_proximity_atr
+            and _ob_bot_f > 0
+        ):
+            ob_sl = _ob_bot_f * (1.0 - ob_buffer_pct / 100.0)
+            if ob_sl < params.stop_loss:
+                params.stop_loss = ob_sl
+                msg = (
+                    f"StructuralSL: bull OB bot={_ob_bot_f:.2f} ({_ob_dist_f:.2f} ATR below) → "
+                    f"SL={ob_sl:.2f} (was {orig_sl:.2f})"
+                )
+                _rescale_size(params, orig_sl, entry_price)
+                return True, msg
+
+    return False, ""
+
+
+def _rescale_size(params: TradeParams, orig_sl: float, entry_price: float) -> None:
+    """Scale down position size proportionally to a widened SL, keeping dollar risk constant."""
+    orig_dist = abs(orig_sl - entry_price)
+    new_dist  = abs(params.stop_loss - entry_price)
+    if orig_dist > 0 and new_dist > 0:
+        scale                 = orig_dist / new_dist
+        params.size_usd       *= scale
+        params.size_contracts *= scale

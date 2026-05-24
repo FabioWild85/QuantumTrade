@@ -1329,6 +1329,12 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   const [dynamicSlTpBlend,         setDynamicSlTpBlend]         = useState('0.50');
   const [recalibratedUncertainty,  setRecalibratedUncertainty]  = useState(true);
   const [p10SlFloor,               setP10SlFloor]               = useState(false);
+  // CVD Absorption Filter
+  const [absorptionFilter,    setAbsorptionFilter]    = useState(false);
+  const [absorptionZThresh,   setAbsorptionZThresh]   = useState('2.0');
+  // Signal quality filters
+  const [exhaustionGuard, setExhaustionGuard] = useState(true);
+  const [structuralSl,    setStructuralSl]    = useState(true);
   // Regime Bias
   const [regimeBias,          setRegimeBias]          = useState(false);
   const [regimeBiasDelta,     setRegimeBiasDelta]     = useState('0.08');
@@ -1417,6 +1423,10 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     if (p.dynamic_sl_tp_blend                     !== undefined) setDynamicSlTpBlend(String(p.dynamic_sl_tp_blend));
     if (p.recalibrated_uncertainty_thresholds     !== undefined) setRecalibratedUncertainty(!!p.recalibrated_uncertainty_thresholds);
     if (p.p10_sl_floor_enabled                    !== undefined) setP10SlFloor(!!p.p10_sl_floor_enabled);
+    if (p.absorption_filter_enabled !== undefined) setAbsorptionFilter(!!p.absorption_filter_enabled);
+    if (p.absorption_z_threshold    !== undefined) setAbsorptionZThresh(String(p.absorption_z_threshold));
+    if (p.exhaustion_guard_enabled  !== undefined) setExhaustionGuard(!!p.exhaustion_guard_enabled);
+    if (p.structural_sl_enabled     !== undefined) setStructuralSl(!!p.structural_sl_enabled);
     if (p.regime_bias_enabled     !== undefined) setRegimeBias(!!p.regime_bias_enabled);
     if (p.regime_bias_delta       !== undefined) setRegimeBiasDelta(String(p.regime_bias_delta));
     if (p.regime_bias_size_factor !== undefined) setRegimeBiasSizeFactor(String(p.regime_bias_size_factor));
@@ -1618,6 +1628,12 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     regime_bias_delta:             parseFloat(regimeBiasDelta),
     regime_bias_size_factor:       parseFloat(regimeBiasSizeFactor),
     forced_regime:                 forcedRegime,
+    // CVD Absorption Filter
+    absorption_filter_enabled:     absorptionFilter,
+    absorption_z_threshold:        parseFloat(absorptionZThresh),
+    // Signal quality filters
+    exhaustion_guard_enabled:      exhaustionGuard,
+    structural_sl_enabled:         structuralSl,
   });
 
   const downloadConfig = () => {
@@ -2484,6 +2500,39 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                   <Toggle label="Liquidity Sweep Filter" desc="Evita ingressi su falsi breakout di liquidità" checked={advSweepEnabled} onChange={setAdvSweepEnabled} />
                   <Toggle label="Fair Value Gap (SMC)" desc="Filtra ingressi contro zone di inefficienza" checked={advFvgEnabled} onChange={setAdvFvgEnabled} />
                   <Toggle label="MTF Daily Alignment" desc="Verifica allineamento con trend primario daily" checked={advMtfEnabled} onChange={setAdvMtfEnabled} />
+                  <div className="border-t border-slate-200 dark:border-white/5 pt-4 space-y-4">
+                    <Toggle
+                      label="CVD Absorption Filter"
+                      desc="Alto volume senza movimento di prezzo → threshold +0.03 (assorbimento istituzionale)"
+                      checked={absorptionFilter}
+                      onChange={setAbsorptionFilter}
+                    />
+                    {absorptionFilter && (
+                      <div className="pl-1">
+                        <Tooltip text="Soglia Z-Score oltre cui scatta il boost +0.03. Valori più bassi = filtro più sensibile." pos="top" width="wide">
+                          <NumInput
+                            label="Soglia Absorption Z-Score"
+                            value={absorptionZThresh}
+                            onChange={setAbsorptionZThresh}
+                            step="0.1" min="0.5" max="5.0"
+                            unit="σ"
+                          />
+                        </Tooltip>
+                      </div>
+                    )}
+                    <Toggle
+                      label="Exhaustion Guard"
+                      desc="RSI < 28 o ret_48 < −6% → threshold +0.06 (blocca entrate in zona esaurimento)"
+                      checked={exhaustionGuard}
+                      onChange={setExhaustionGuard}
+                    />
+                    <Toggle
+                      label="Structural SL (OB-aware)"
+                      desc="Posiziona lo SL oltre l'Order Block attivo più vicino — size ridotta proporzionalmente"
+                      checked={structuralSl}
+                      onChange={setStructuralSl}
+                    />
+                  </div>
                 </div>
               </section>
 

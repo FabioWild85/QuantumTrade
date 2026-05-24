@@ -53,6 +53,9 @@ class DecisionEngine:
         regime_bias_delta: float = 0.08,
         regime_bias_size_factor: float = 1.0,
         forced_regime: str = "auto",
+        absorption_filter_enabled: bool = False,
+        absorption_z_threshold: float = 2.0,
+        exhaustion_guard_enabled: bool = True,
     ):
         self.directional_threshold       = directional_threshold
         self.adx_gate                    = adx_gate
@@ -70,6 +73,9 @@ class DecisionEngine:
         self.regime_bias_delta           = regime_bias_delta
         self.regime_bias_size_factor     = regime_bias_size_factor
         self.forced_regime               = forced_regime
+        self.absorption_filter_enabled   = absorption_filter_enabled
+        self.absorption_z_threshold      = absorption_z_threshold
+        self.exhaustion_guard_enabled    = exhaustion_guard_enabled
 
     def decide(
         self,
@@ -90,11 +96,13 @@ class DecisionEngine:
         Returns DecisionResult with action and full reasoning audit trail.
         """
         reasoning = []
-        adx    = features.get("adx_14", 0.0)
-        rv_72  = features.get("rv_72", 0.0)
-        sweep  = features.get("sweep", 0.0)
+        adx      = features.get("adx_14", 0.0)
+        rv_72    = features.get("rv_72", 0.0)
+        sweep    = features.get("sweep", 0.0)
         fvg_bear = features.get("fvg_bear", 0.0)
         fvg_bull = features.get("fvg_bull", 0.0)
+        rsi_14   = features.get("rsi_14", 50.0)
+        ret_48   = features.get("ret_48", 0.0)
         d_regime = features.get("d_regime", 0)
 
         # Manual override: forced_regime takes precedence over auto-detected d_regime
@@ -185,6 +193,50 @@ class DecisionEngine:
                     f"threshold_long={threshold_long:.2f} (+{self.regime_bias_delta:.2f}), "
                     f"threshold_short={threshold_short:.2f}"
                 )
+
+        # ── Exhaustion Guard: RSI extreme + extended ret_48 ──────────────────
+        if self.exhaustion_guard_enabled:
+            _exh_short_conds: list[str] = []
+            _exh_long_conds:  list[str] = []
+
+            if rsi_14 < 28:
+                _exh_short_conds.append(f"RSI {rsi_14:.1f} < 28")
+            if ret_48 < -0.06:
+                _exh_short_conds.append(f"ret_48 {ret_48*100:.1f}% < -6%")
+            if rsi_14 > 72:
+                _exh_long_conds.append(f"RSI {rsi_14:.1f} > 72")
+            if ret_48 > 0.06:
+                _exh_long_conds.append(f"ret_48 {ret_48*100:.1f}% > +6%")
+
+            _exh_short_boost = 0.06 if _exh_short_conds else 0.0
+            _exh_long_boost  = 0.06 if _exh_long_conds  else 0.0
+
+            if _exh_short_conds:
+                reasoning.append(
+                    f"ExhaustionGuard [{' & '.join(_exh_short_conds)}] → "
+                    f"short threshold +{_exh_short_boost:.2f} (bounce/pullback risk)"
+                )
+            if _exh_long_conds:
+                reasoning.append(
+                    f"ExhaustionGuard [{' & '.join(_exh_long_conds)}] → "
+                    f"long threshold +{_exh_long_boost:.2f} (pullback risk)"
+                )
+
+            threshold_short += _exh_short_boost
+            threshold_long  += _exh_long_boost
+
+        # ── Absorption Filter ─────────────────────────────────────────────────
+        # High volume + low price movement → institutions absorbing order flow.
+        # absorption_z > threshold means anomalous volume-to-move ratio; raises
+        # conviction requirement by +0.03 in both directions.
+        absorption_z = float(features.get("absorption_z") or 0.0)
+        if self.absorption_filter_enabled and absorption_z > self.absorption_z_threshold:
+            threshold_long  += 0.03
+            threshold_short += 0.03
+            reasoning.append(
+                f"AbsorptionFilter: absorption_z={absorption_z:.2f} > "
+                f"{self.absorption_z_threshold:.2f} — threshold +0.03 (high vol, low move)"
+            )
 
         # ── Confluence gate ───────────────────────────────────────────────────
         if confluence_score is not None and confluence_score < self.confluence_gate:

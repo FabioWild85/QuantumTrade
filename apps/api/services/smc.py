@@ -27,6 +27,14 @@ def detect_fvg(df: pd.DataFrame, min_gap_pct: float = 0.001) -> pd.DataFrame:
     # Shift by 1 so the signal is available starting from bar i+1, eliminating lookahead bias.
     d["fvg_bull"] = raw_bull.shift(1).fillna(0.0)
     d["fvg_bear"] = raw_bear.shift(1).fillna(0.0)
+
+    # Absolute price levels of each FVG zone (NaN where no FVG, ffill to carry forward).
+    # Bull FVG at bar i: gap between high[i-2] (bot) and low[i] (top).
+    # Bear FVG at bar i: gap between high[i] (bot) and low[i-2] (top).
+    d["fvg_bull_top_px"] = d["low"].where(d["fvg_bull"] == 1.0).ffill()
+    d["fvg_bull_bot_px"] = d["high"].shift(2).where(d["fvg_bull"] == 1.0).ffill()
+    d["fvg_bear_top_px"] = d["low"].shift(2).where(d["fvg_bear"] == 1.0).ffill()
+    d["fvg_bear_bot_px"] = d["high"].where(d["fvg_bear"] == 1.0).ffill()
     return d
 
 
@@ -104,6 +112,16 @@ def build_cvd_features(df: pd.DataFrame) -> pd.DataFrame:
         (price_slope > 0) & (delta_slope < 0), -1.0,
         np.where((price_slope < 0) & (delta_slope > 0), 1.0, 0.0),
     )
+
+    # ── Absorption Score ──────────────────────────────────────────────────────
+    # High volume / low price movement = institutions absorbing order flow.
+    # Z-scored on a 24-bar rolling window so values are temporally comparable.
+    body_size       = (d["close"] - d["open"]).abs()
+    atr_floor       = d["atr_14"] * 0.01          # prevents division by near-zero on doji
+    raw_absorption  = d["volume"] / (body_size + atr_floor)
+    roll_mean       = raw_absorption.rolling(24, min_periods=6).mean()
+    roll_std        = raw_absorption.rolling(24, min_periods=6).std().replace(0, np.nan)
+    d["absorption_z"] = (raw_absorption - roll_mean) / roll_std
     return d
 
 
@@ -173,6 +191,12 @@ def build_order_block_features(
     d["ob_bear_inside"] = ((d["close"] >= bear_ob_bot) & (d["close"] <= bear_ob_top)).astype(float)
     d["ob_bull_active"] = bull_ob_top.notna().astype(float)
     d["ob_bear_active"] = bear_ob_top.notna().astype(float)
+    # Absolute price levels — used by apply_structural_sl() and pullback entry.
+    # Not included in LGBM features (absolute prices are non-stationary).
+    d["ob_bull_top_px"] = bull_ob_top
+    d["ob_bull_bot_px"] = bull_ob_bot
+    d["ob_bear_top_px"] = bear_ob_top
+    d["ob_bear_bot_px"] = bear_ob_bot
     return d
 
 
@@ -306,7 +330,7 @@ FEATURE_GROUPS = {
         "ret_1", "ret_3", "ret_6", "ret_12", "ret_24", "ret_48",
         "rv_24", "rv_72", "vol_ma", "vol_ratio", "hl_range",
     ],
-    "cvd": ["delta_raw", "delta_ma8", "delta_ma24", "cvd_slope", "vol_imbalance", "delta_price_div"],
+    "cvd": ["delta_raw", "delta_ma8", "delta_ma24", "cvd_slope", "vol_imbalance", "delta_price_div", "absorption_z"],
     "ob":  ["ob_bull_dist", "ob_bear_dist", "ob_bull_age", "ob_bear_age",
              "ob_bull_inside", "ob_bear_inside", "ob_bull_active", "ob_bear_active"],
     "mtf": ["d_ema20_dist", "d_adx", "d_rsi", "d_regime", "mtf_aligned"],

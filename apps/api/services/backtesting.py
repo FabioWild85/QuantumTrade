@@ -16,7 +16,7 @@ import pandas as pd
 from services.hyperliquid_data import HyperliquidData
 from services.smc import build_all_features
 from services.decision import DecisionEngine, compute_qt_score
-from services.risk import RiskManager
+from services.risk import RiskManager, apply_structural_sl
 from services.trainer import load_correct_model
 
 log = logging.getLogger(__name__)
@@ -79,6 +79,12 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
     regime_bias_delta       = getattr(cfg, "regime_bias_delta",       0.08)
     regime_bias_size_factor = getattr(cfg, "regime_bias_size_factor", 1.0)
     forced_regime           = getattr(cfg, "forced_regime",           "auto")
+    # CVD Absorption Filter
+    absorption_filter_enabled = getattr(cfg, "absorption_filter_enabled", False)
+    absorption_z_threshold    = getattr(cfg, "absorption_z_threshold",    2.0)
+    # Signal quality filters
+    exhaustion_guard_enabled  = getattr(cfg, "exhaustion_guard_enabled",  True)
+    structural_sl_enabled     = getattr(cfg, "structural_sl_enabled",     True)
 
     hl = HyperliquidData()
 
@@ -151,6 +157,9 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
         regime_bias_delta=regime_bias_delta,
         regime_bias_size_factor=regime_bias_size_factor,
         forced_regime=forced_regime,
+        absorption_filter_enabled=absorption_filter_enabled,
+        absorption_z_threshold=absorption_z_threshold,
+        exhaustion_guard_enabled=exhaustion_guard_enabled,
     )
     risk = RiskManager(
         sl_atr_mult=sl_atr_mult,
@@ -441,6 +450,9 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                     recalibrated_uncertainty_thresholds=recalibrated_uncertainty_thresholds,
                     p10_sl_floor_enabled=p10_sl_floor_enabled and _p10_available,
                 )
+                # Structural SL: mirror live execution — place SL behind OB when within 2%.
+                if structural_sl_enabled:
+                    apply_structural_sl(params, result.features_snapshot, close_price)
                 effective_size_usd = params.size_usd * result.size_factor
                 fee_entry = effective_size_usd * HL_TAKER_FEE
                 equity   -= fee_entry

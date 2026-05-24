@@ -66,6 +66,12 @@ interface Config {
   mtf_alignment_enabled: boolean;
   chronos_weight: number;
   recalibrated_uncertainty_thresholds: boolean;
+  // CVD Absorption Filter
+  absorption_filter_enabled: boolean;
+  absorption_z_threshold: number;
+  // Signal quality filters (formerly hardcoded)
+  exhaustion_guard_enabled: boolean;
+  structural_sl_enabled: boolean;
   // Extra exit flags (from HubSettings)
   p10_sl_floor_enabled: boolean;
   enhanced_exit_enabled: boolean;
@@ -136,6 +142,12 @@ const DEFAULTS: Config = {
   mtf_alignment_enabled: true,
   chronos_weight: 0.40,
   recalibrated_uncertainty_thresholds: true,
+  // CVD Absorption Filter
+  absorption_filter_enabled: false,
+  absorption_z_threshold: 2.0,
+  // Signal quality filters
+  exhaustion_guard_enabled: true,
+  structural_sl_enabled: true,
   p10_sl_floor_enabled: false,
   enhanced_exit_enabled: false,
 };
@@ -703,6 +715,43 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                 </label>
               );
             })}
+          </div>
+
+          {/* ── CVD Absorption Filter ───────────────────────────────────────── */}
+          <div className={`mt-4 p-3 rounded-xl border transition-colors duration-200 ${config.absorption_filter_enabled ? 'border-teal-200 dark:border-teal-500/30 bg-teal-50/50 dark:bg-teal-500/5' : 'border-slate-100 dark:border-white/5'}`}>
+            <label className="flex items-start gap-3 cursor-pointer group">
+              <div className="relative mt-0.5 flex-shrink-0">
+                <input type="checkbox" className="sr-only" checked={config.absorption_filter_enabled} onChange={e => setConfig(c => ({ ...c, absorption_filter_enabled: e.target.checked }))} />
+                <div className={`w-9 h-[18px] rounded-full transition-all duration-300 ${config.absorption_filter_enabled ? 'bg-teal-600' : 'bg-slate-200 dark:bg-white/10'}`} />
+                <div className={`absolute top-[3px] left-[3px] w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.absorption_filter_enabled ? 'translate-x-[18px]' : ''}`} />
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className={`text-xs font-bold leading-tight transition-colors ${config.absorption_filter_enabled ? 'text-teal-600 dark:text-teal-400' : 'text-slate-700 dark:text-slate-300'}`}>
+                  CVD Absorption Filter
+                  {config.absorption_filter_enabled && <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-teal-100 dark:bg-teal-500/20 text-teal-600 dark:text-teal-400 uppercase tracking-wider">Attivo</span>}
+                </p>
+                <p className="text-[10px] text-slate-400 dark:text-slate-500 leading-snug mt-0.5">
+                  Alto volume senza movimento di prezzo = istituzionali che assorbono. Aggiunge +0.03 al threshold richiesto.
+                </p>
+              </div>
+            </label>
+            {config.absorption_filter_enabled && (
+              <div className="mt-3 pt-3 border-t border-teal-100 dark:border-teal-500/20">
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-[10px] font-medium text-slate-600 dark:text-slate-400">Soglia Z-Score</span>
+                  <span className="text-[10px] font-bold text-teal-600 dark:text-teal-400">{config.absorption_z_threshold.toFixed(1)}σ</span>
+                </div>
+                <input
+                  type="range" min={0.5} max={5.0} step={0.1}
+                  value={config.absorption_z_threshold}
+                  onChange={e => setConfig(c => ({ ...c, absorption_z_threshold: parseFloat(e.target.value) }))}
+                  className="w-full h-1 rounded-full appearance-none bg-teal-100 dark:bg-teal-900/40 accent-teal-500"
+                />
+                <p className="text-[9px] text-slate-400 dark:text-slate-500 mt-1">
+                  Boost +0.03 quando absorption_z supera questa soglia (volume anomalo rispetto alla norma recente)
+                </p>
+              </div>
+            )}
           </div>
         </div>
       </Section>
@@ -2128,6 +2177,49 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
               </div>
             </div>
           )}
+        </div>
+      </Section>
+
+      {/* ── Filtri Qualità Segnale ─────────────────────────────────────────── */}
+      <Section title="Filtri Qualità — Decision Engine" description="Protezioni avanzate contro entrate in condizioni sfavorevoli. Operano dopo il calcolo dell'ensemble probability e prima del segnale finale.">
+        <div className="space-y-3">
+
+          {/* Exhaustion Guard */}
+          <label className={`flex items-start gap-3 cursor-pointer group p-4 rounded-xl border transition-all duration-200 ${config.exhaustion_guard_enabled ? 'border-rose-200 dark:border-rose-500/30 bg-rose-50/40 dark:bg-rose-500/5' : 'border-slate-100 dark:border-white/5 hover:bg-slate-50 dark:hover:bg-white/[0.03]'}`}>
+            <div className="relative mt-0.5 flex-shrink-0">
+              <input type="checkbox" className="sr-only" checked={config.exhaustion_guard_enabled} onChange={e => setConfig(c => ({ ...c, exhaustion_guard_enabled: e.target.checked }))} />
+              <div className={`w-9 h-[18px] rounded-full transition-all duration-300 ${config.exhaustion_guard_enabled ? 'bg-rose-500' : 'bg-slate-200 dark:bg-white/10'}`} />
+              <div className={`absolute top-[3px] left-[3px] w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.exhaustion_guard_enabled ? 'translate-x-[18px]' : ''}`} />
+            </div>
+            <div className="min-w-0">
+              <p className={`text-xs font-bold leading-tight transition-colors ${config.exhaustion_guard_enabled ? 'text-rose-600 dark:text-rose-400' : 'text-slate-700 dark:text-slate-300'}`}>
+                Exhaustion Guard
+                {config.exhaustion_guard_enabled && <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-rose-100 dark:bg-rose-500/20 text-rose-600 dark:text-rose-400 uppercase tracking-wider">Attivo</span>}
+              </p>
+              <p className="text-[10px] text-slate-400 dark:text-slate-500 leading-snug mt-1">
+                Se <span className="font-mono text-slate-600 dark:text-slate-300">RSI 4H &lt; 28</span> o <span className="font-mono text-slate-600 dark:text-slate-300">ret_48 &lt; −6%</span> il threshold short aumenta <span className="font-mono text-slate-600 dark:text-slate-300">+0.06</span>. Speculare per long (<span className="font-mono text-slate-600 dark:text-slate-300">RSI &gt; 72</span> / <span className="font-mono text-slate-600 dark:text-slate-300">ret_48 &gt; +6%</span>). Blocca entrate in zone di esaurimento tecnico.
+              </p>
+            </div>
+          </label>
+
+          {/* Structural SL */}
+          <label className={`flex items-start gap-3 cursor-pointer group p-4 rounded-xl border transition-all duration-200 ${config.structural_sl_enabled ? 'border-violet-200 dark:border-violet-500/30 bg-violet-50/40 dark:bg-violet-500/5' : 'border-slate-100 dark:border-white/5 hover:bg-slate-50 dark:hover:bg-white/[0.03]'}`}>
+            <div className="relative mt-0.5 flex-shrink-0">
+              <input type="checkbox" className="sr-only" checked={config.structural_sl_enabled} onChange={e => setConfig(c => ({ ...c, structural_sl_enabled: e.target.checked }))} />
+              <div className={`w-9 h-[18px] rounded-full transition-all duration-300 ${config.structural_sl_enabled ? 'bg-violet-600' : 'bg-slate-200 dark:bg-white/10'}`} />
+              <div className={`absolute top-[3px] left-[3px] w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.structural_sl_enabled ? 'translate-x-[18px]' : ''}`} />
+            </div>
+            <div className="min-w-0">
+              <p className={`text-xs font-bold leading-tight transition-colors ${config.structural_sl_enabled ? 'text-violet-600 dark:text-violet-400' : 'text-slate-700 dark:text-slate-300'}`}>
+                Structural SL — OB-aware
+                {config.structural_sl_enabled && <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-violet-100 dark:bg-violet-500/20 text-violet-600 dark:text-violet-400 uppercase tracking-wider">Attivo</span>}
+              </p>
+              <p className="text-[10px] text-slate-400 dark:text-slate-500 leading-snug mt-1">
+                Se un Order Block attivo è entro <span className="font-mono text-slate-600 dark:text-slate-300">2 ATR</span> dall'entry nella direzione dello SL, posiziona lo stop <span className="font-mono text-slate-600 dark:text-slate-300">0.3%</span> oltre l'OB. Solo allarga lo SL (mai restringe) — size ridotta proporzionalmente per mantenere il rischio USD costante.
+              </p>
+            </div>
+          </label>
+
         </div>
       </Section>
 

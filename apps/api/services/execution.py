@@ -21,7 +21,7 @@ from services.hyperliquid_data import HyperliquidData
 from services.smc import build_all_features, ALL_FEATURES
 from services.chronos_model import ChronosForecaster
 from services.decision import DecisionEngine, DecisionResult, compute_qt_score
-from services.risk import RiskManager
+from services.risk import RiskManager, apply_structural_sl
 from services.notifications import TelegramNotifier
 from services.trainer import LGBMTrainer, load_model, load_correct_model, load_1h_model, _retrain_lock
 from services.covariates import update_covariates, get_latest_covariates
@@ -99,6 +99,12 @@ class BotConfig:
         self.regime_bias_delta       = kw.get("regime_bias_delta",       0.08)
         self.regime_bias_size_factor = kw.get("regime_bias_size_factor", 1.0)
         self.forced_regime           = kw.get("forced_regime",           "auto")
+        # CVD Absorption Filter
+        self.absorption_filter_enabled = kw.get("absorption_filter_enabled", False)
+        self.absorption_z_threshold    = kw.get("absorption_z_threshold",    2.0)
+        # Signal quality filters
+        self.exhaustion_guard_enabled  = kw.get("exhaustion_guard_enabled",  True)
+        self.structural_sl_enabled     = kw.get("structural_sl_enabled",     True)
         # Walk-forward & retraining parameters
         self.retrain_every_n_cycles  = kw.get("retrain_every_n_cycles",  120)
         self.wf_n_splits             = kw.get("wf_n_splits",             5)
@@ -771,6 +777,9 @@ class ExecutionEngine:
             regime_bias_delta           = cfg.regime_bias_delta,
             regime_bias_size_factor     = cfg.regime_bias_size_factor,
             forced_regime               = cfg.forced_regime,
+            absorption_filter_enabled   = cfg.absorption_filter_enabled,
+            absorption_z_threshold      = cfg.absorption_z_threshold,
+            exhaustion_guard_enabled    = cfg.exhaustion_guard_enabled,
         )
         result = decision_engine.decide(
             features=latest,
@@ -1146,6 +1155,15 @@ class ExecutionEngine:
         self._risk.sl_atr_mult       = _orig_sl
         self._risk.tp_atr_mult       = _orig_tp
         self._risk.position_size_pct = _orig_sz
+
+        # ── Structural SL override (OB-aware) ─────────────────────────────────
+        # Delegates to apply_structural_sl() in risk.py — shared with backtesting
+        # so live and backtest SL placement are always consistent.
+        if cfg.structural_sl_enabled:
+            _ob_applied, _ob_msg = apply_structural_sl(params, result.features_snapshot, price)
+            if _ob_applied:
+                log.info("StructuralSL [%s]: %s", result.action, _ob_msg)
+                result.reasoning.append(_ob_msg)
 
         # Apply regime bias size reduction for counter-trend trades
         eff_size_usd       = params.size_usd       * result.size_factor
