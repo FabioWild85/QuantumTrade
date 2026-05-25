@@ -42,6 +42,7 @@ class DecisionEngine:
         confluence_gate: float = 60.0,
         adx_gate_enabled: bool = True,
         sweep_gate_enabled: bool = True,
+        sweep_gate_directional: bool = False,
         fvg_filter_enabled: bool = True,
         mtf_alignment_enabled: bool = True,
         chronos_weight: float = 0.40,
@@ -62,6 +63,7 @@ class DecisionEngine:
         self.confluence_gate             = confluence_gate
         self.adx_gate_enabled            = adx_gate_enabled
         self.sweep_gate_enabled          = sweep_gate_enabled
+        self.sweep_gate_directional      = sweep_gate_directional
         self.fvg_filter_enabled          = fvg_filter_enabled
         self.mtf_alignment_enabled       = mtf_alignment_enabled
         self.chronos_weight              = chronos_weight
@@ -129,9 +131,19 @@ class DecisionEngine:
             return self._no_trade(reasoning, dir_prob, p10, p50, p90, features, c2_uncertainty)
 
         # ── Gating Level 2: Liquidity sweep (potential reversal) ─────────────
+        # In directional mode: pass through and defer the direction check until
+        # ensemble_prob is computed (below). The flag _sweep_dir_pending carries
+        # the detected sweep direction into the SweepConfluence block.
+        _sweep_dir_pending: Optional[str] = None
         if self.sweep_gate_enabled and sweep == 1.0:
-            reasoning.append("GATE: Liquidity sweep in last candle — waiting for direction confirmation")
-            return self._no_trade(reasoning, dir_prob, p10, p50, p90, features, c2_uncertainty)
+            if self.sweep_gate_directional:
+                _sweep_dir_pending = str(features.get("sweep_dir") or "none")
+                reasoning.append(
+                    f"SweepDetect: {_sweep_dir_pending} sweep — evaluating direction alignment"
+                )
+            else:
+                reasoning.append("GATE: Liquidity sweep in last candle — waiting for direction confirmation")
+                return self._no_trade(reasoning, dir_prob, p10, p50, p90, features, c2_uncertainty)
 
         # ── Gating Level 3: Chronos-2 uncertainty gate ───────────────────────
         if self.c2_uncertainty_gate_enabled and c2_uncertainty > 0:
@@ -237,6 +249,35 @@ class DecisionEngine:
                 f"AbsorptionFilter: absorption_z={absorption_z:.2f} > "
                 f"{self.absorption_z_threshold:.2f} — threshold +0.03 (high vol, low move)"
             )
+
+        # ── Sweep Confluence (directional mode) ──────────────────────────────
+        # Deferred from Gate Level 2: now that ensemble_prob is known, resolve
+        # whether the sweep direction confirms or conflicts with the model signal.
+        #
+        # buyside sweep  = smart money hunted retail stops ABOVE → bearish reversal expected
+        # sellside sweep = smart money hunted retail stops BELOW → bullish reversal expected
+        #
+        # Confirmed alignment  → threshold bonus −0.03 (higher-conviction entry)
+        # Direction conflicts  → block (sweep is a warning, not a green light)
+        if _sweep_dir_pending is not None:
+            if _sweep_dir_pending == "buyside" and ensemble_prob < 0.5:
+                threshold_short -= 0.03
+                reasoning.append(
+                    f"SweepConf: buyside sweep + bearish ({ensemble_prob:.3f}) → "
+                    f"short threshold −0.03 (liquidity above collected, reversal signal)"
+                )
+            elif _sweep_dir_pending == "sellside" and ensemble_prob > 0.5:
+                threshold_long -= 0.03
+                reasoning.append(
+                    f"SweepConf: sellside sweep + bullish ({ensemble_prob:.3f}) → "
+                    f"long threshold −0.03 (liquidity below collected, reversal signal)"
+                )
+            else:
+                reasoning.append(
+                    f"GATE: Sweep ({_sweep_dir_pending}) conflicts with ensemble "
+                    f"({ensemble_prob:.3f}) — no-trade"
+                )
+                return self._no_trade(reasoning, dir_prob, p10, p50, p90, features, c2_uncertainty)
 
         # ── Confluence gate ───────────────────────────────────────────────────
         if confluence_score is not None and confluence_score < self.confluence_gate:

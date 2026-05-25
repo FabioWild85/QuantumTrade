@@ -77,6 +77,7 @@ class BotConfig:
         self.chronos_weight          = kw.get("chronos_weight",          0.40)
         self.adx_gate_enabled        = kw.get("adx_gate_enabled",        True)
         self.sweep_gate_enabled      = kw.get("sweep_gate_enabled",      True)
+        self.sweep_gate_directional  = kw.get("sweep_gate_directional",  False)
         self.fvg_filter_enabled      = kw.get("fvg_filter_enabled",      True)
         self.mtf_alignment_enabled   = kw.get("mtf_alignment_enabled",   True)
         # ── Advanced exit ─────────────────────────────────────────────────────
@@ -766,6 +767,7 @@ class ExecutionEngine:
             confluence_gate             = cfg.confluence_gate,
             adx_gate_enabled            = cfg.adx_gate_enabled,
             sweep_gate_enabled          = cfg.sweep_gate_enabled,
+            sweep_gate_directional      = cfg.sweep_gate_directional,
             fvg_filter_enabled          = cfg.fvg_filter_enabled,
             mtf_alignment_enabled       = cfg.mtf_alignment_enabled,
             chronos_weight              = cfg.chronos_weight if self.config.chronos_enabled else 0.0,

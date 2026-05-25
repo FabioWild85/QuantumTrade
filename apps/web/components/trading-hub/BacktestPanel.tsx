@@ -1329,6 +1329,8 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   const [dynamicSlTpBlend,         setDynamicSlTpBlend]         = useState('0.50');
   const [recalibratedUncertainty,  setRecalibratedUncertainty]  = useState(true);
   const [p10SlFloor,               setP10SlFloor]               = useState(false);
+  // Sweep Confluence directional mode
+  const [sweepDirectional, setSweepDirectional] = useState(false);
   // CVD Absorption Filter
   const [absorptionFilter,    setAbsorptionFilter]    = useState(false);
   const [absorptionZThresh,   setAbsorptionZThresh]   = useState('2.0');
@@ -1423,6 +1425,7 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     if (p.dynamic_sl_tp_blend                     !== undefined) setDynamicSlTpBlend(String(p.dynamic_sl_tp_blend));
     if (p.recalibrated_uncertainty_thresholds     !== undefined) setRecalibratedUncertainty(!!p.recalibrated_uncertainty_thresholds);
     if (p.p10_sl_floor_enabled                    !== undefined) setP10SlFloor(!!p.p10_sl_floor_enabled);
+    if (p.sweep_gate_directional    !== undefined) setSweepDirectional(!!p.sweep_gate_directional);
     if (p.absorption_filter_enabled !== undefined) setAbsorptionFilter(!!p.absorption_filter_enabled);
     if (p.absorption_z_threshold    !== undefined) setAbsorptionZThresh(String(p.absorption_z_threshold));
     if (p.exhaustion_guard_enabled  !== undefined) setExhaustionGuard(!!p.exhaustion_guard_enabled);
@@ -1628,6 +1631,8 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     regime_bias_delta:             parseFloat(regimeBiasDelta),
     regime_bias_size_factor:       parseFloat(regimeBiasSizeFactor),
     forced_regime:                 forcedRegime,
+    // Sweep Confluence directional mode
+    sweep_gate_directional:        sweepDirectional,
     // CVD Absorption Filter
     absorption_filter_enabled:     absorptionFilter,
     absorption_z_threshold:        parseFloat(absorptionZThresh),
@@ -1774,7 +1779,8 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   const advancedActive = trailingSL || partialTP;
   const drawerHasCustom = trailingSL || partialTP || lgbmExit || useChronos || advBeSL || advMaxHold
     || !advAdxEnabled || !advSweepEnabled || !advFvgEnabled || !advMtfEnabled
-    || c2UncertaintyGate || c2ContProbGate || regimeBias;
+    || c2UncertaintyGate || c2ContProbGate || regimeBias
+    || sweepDirectional || absorptionFilter || !exhaustionGuard || !structuralSl;
 
   return (
     <>
@@ -2498,6 +2504,16 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                 <div className="space-y-4 bg-slate-50 dark:bg-white/[0.02] p-4 rounded-2xl border border-slate-100 dark:border-white/5">
                   <Toggle label="Trend Strength Filter" desc="Usa l'ADX per evitare mercati laterali" checked={advAdxEnabled} onChange={setAdvAdxEnabled} />
                   <Toggle label="Liquidity Sweep Filter" desc="Evita ingressi su falsi breakout di liquidità" checked={advSweepEnabled} onChange={setAdvSweepEnabled} />
+                  {advSweepEnabled && (
+                    <div className="pl-4 border-l-2 border-violet-200 dark:border-violet-500/30 ml-1">
+                      <Toggle
+                        label="↳ Modalità Direzionale (Stop Hunt)"
+                        desc="Sweep confermato dalla direzione del modello → bonus −0.03 threshold. Conflitto → blocco."
+                        checked={sweepDirectional}
+                        onChange={setSweepDirectional}
+                      />
+                    </div>
+                  )}
                   <Toggle label="Fair Value Gap (SMC)" desc="Filtra ingressi contro zone di inefficienza" checked={advFvgEnabled} onChange={setAdvFvgEnabled} />
                   <Toggle label="MTF Daily Alignment" desc="Verifica allineamento con trend primario daily" checked={advMtfEnabled} onChange={setAdvMtfEnabled} />
                   <div className="border-t border-slate-200 dark:border-white/5 pt-4 space-y-4">

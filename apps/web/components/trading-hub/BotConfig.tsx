@@ -62,6 +62,7 @@ interface Config {
   // Signal gates
   adx_gate_enabled: boolean;
   sweep_gate_enabled: boolean;
+  sweep_gate_directional: boolean;
   fvg_filter_enabled: boolean;
   mtf_alignment_enabled: boolean;
   chronos_weight: number;
@@ -138,6 +139,7 @@ const DEFAULTS: Config = {
   // Signal gates
   adx_gate_enabled: true,
   sweep_gate_enabled: true,
+  sweep_gate_directional: false,
   fvg_filter_enabled: true,
   mtf_alignment_enabled: true,
   chronos_weight: 0.40,
@@ -717,8 +719,35 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
             })}
           </div>
 
+          {/* ── Sweep Gate Directional Mode ────────────────────────────────── */}
+          {config.sweep_gate_enabled && (
+            <div className={`mt-3 p-3 rounded-xl border transition-colors duration-200 ${config.sweep_gate_directional ? 'border-violet-200 dark:border-violet-500/30 bg-violet-50/40 dark:bg-violet-500/5' : 'border-slate-100 dark:border-white/5'}`}>
+              <Tooltip text="Quando attivo: un buyside sweep + ensemble bearish riduce il threshold short di 0.03 (bonus per stop hunt istituzionale). Un sellside sweep + ensemble bullish riduce il long threshold di 0.03. Conflitto sweep/direzione → no-trade. Disattivo: qualsiasi sweep blocca sempre il trade." width="wide" pos="bottom">
+              <label className="flex items-start gap-3 cursor-pointer group">
+                <div className="relative mt-0.5 flex-shrink-0">
+                  <input type="checkbox" className="sr-only" checked={config.sweep_gate_directional} onChange={e => setConfig(c => ({ ...c, sweep_gate_directional: e.target.checked }))} />
+                  <div className={`w-9 h-[18px] rounded-full transition-all duration-300 ${config.sweep_gate_directional ? 'bg-violet-600' : 'bg-slate-200 dark:bg-white/10'}`} />
+                  <div className={`absolute top-[3px] left-[3px] w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.sweep_gate_directional ? 'translate-x-[18px]' : ''}`} />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className={`text-xs font-bold leading-tight transition-colors ${config.sweep_gate_directional ? 'text-violet-600 dark:text-violet-400' : 'text-slate-700 dark:text-slate-300'}`}>
+                    Sweep Confluence — Modalità Direzionale
+                    {config.sweep_gate_directional && <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-violet-100 dark:bg-violet-500/20 text-violet-600 dark:text-violet-400 uppercase tracking-wider">Attivo</span>}
+                  </p>
+                  <p className="text-[10px] text-slate-400 dark:text-slate-500 leading-snug mt-0.5">
+                    {config.sweep_gate_directional
+                      ? 'Sweep confermato nella direzione del modello → bonus −0.03 al threshold. Conflitto → blocco. Identifica stop hunt istituzionale.'
+                      : 'Disabilitato: qualsiasi sweep blocca il trade (comportamento attuale). Attiva per convertire lo sweep da blocco a segnale direzionale.'}
+                  </p>
+                </div>
+              </label>
+              </Tooltip>
+            </div>
+          )}
+
           {/* ── CVD Absorption Filter ───────────────────────────────────────── */}
           <div className={`mt-4 p-3 rounded-xl border transition-colors duration-200 ${config.absorption_filter_enabled ? 'border-teal-200 dark:border-teal-500/30 bg-teal-50/50 dark:bg-teal-500/5' : 'border-slate-100 dark:border-white/5'}`}>
+            <Tooltip text="absorption_z = volume / (|close−open| + ATR×0.01), z-scored su 24 barre. Valori alti indicano volume anomalo con movimento minimo: segnale di accumulo istituzionale. Attivo aggiunge +0.03 al threshold quando z supera la soglia configurata." width="wide" pos="bottom">
             <label className="flex items-start gap-3 cursor-pointer group">
               <div className="relative mt-0.5 flex-shrink-0">
                 <input type="checkbox" className="sr-only" checked={config.absorption_filter_enabled} onChange={e => setConfig(c => ({ ...c, absorption_filter_enabled: e.target.checked }))} />
@@ -735,6 +764,7 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                 </p>
               </div>
             </label>
+            </Tooltip>
             {config.absorption_filter_enabled && (
               <div className="mt-3 pt-3 border-t border-teal-100 dark:border-teal-500/20">
                 <div className="flex items-center justify-between mb-1">
@@ -2185,6 +2215,7 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
         <div className="space-y-3">
 
           {/* Exhaustion Guard */}
+          <Tooltip text="Protezione contro entrate in zone di esaurimento tecnico. RSI 4H < 28 o ret_48 < −6% (ipervenduto/caduta prolungata): threshold short +0.06. RSI > 72 o ret_48 > +6% (ipercomprato/rally prolungato): threshold long +0.06. Riduce il rischio di entrare nella direzione di un rimbalzo imminente." width="wide" pos="bottom">
           <label className={`flex items-start gap-3 cursor-pointer group p-4 rounded-xl border transition-all duration-200 ${config.exhaustion_guard_enabled ? 'border-rose-200 dark:border-rose-500/30 bg-rose-50/40 dark:bg-rose-500/5' : 'border-slate-100 dark:border-white/5 hover:bg-slate-50 dark:hover:bg-white/[0.03]'}`}>
             <div className="relative mt-0.5 flex-shrink-0">
               <input type="checkbox" className="sr-only" checked={config.exhaustion_guard_enabled} onChange={e => setConfig(c => ({ ...c, exhaustion_guard_enabled: e.target.checked }))} />
@@ -2201,8 +2232,10 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
               </p>
             </div>
           </label>
+          </Tooltip>
 
           {/* Structural SL */}
+          <Tooltip text="Posiziona lo SL dietro l'Order Block attivo più vicino (entro 2 ATR dall'entry). Per short: SL = ob_bear_top_px × 1.003. Per long: SL = ob_bull_bot_px × 0.997. Lo SL viene solo allargato (mai ristretto); la size viene ridotta proporzionalmente per mantenere il rischio USD invariato." width="wide" pos="top">
           <label className={`flex items-start gap-3 cursor-pointer group p-4 rounded-xl border transition-all duration-200 ${config.structural_sl_enabled ? 'border-violet-200 dark:border-violet-500/30 bg-violet-50/40 dark:bg-violet-500/5' : 'border-slate-100 dark:border-white/5 hover:bg-slate-50 dark:hover:bg-white/[0.03]'}`}>
             <div className="relative mt-0.5 flex-shrink-0">
               <input type="checkbox" className="sr-only" checked={config.structural_sl_enabled} onChange={e => setConfig(c => ({ ...c, structural_sl_enabled: e.target.checked }))} />
@@ -2219,6 +2252,7 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
               </p>
             </div>
           </label>
+          </Tooltip>
 
         </div>
       </Section>

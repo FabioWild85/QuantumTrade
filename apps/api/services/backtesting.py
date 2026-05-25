@@ -56,7 +56,8 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
     # Advanced signal controls
     confluence_gate        = getattr(cfg, "confluence_gate",        0.0)
     adx_gate_enabled       = getattr(cfg, "adx_gate_enabled",       True)
-    sweep_gate_enabled     = getattr(cfg, "sweep_gate_enabled",     True)
+    sweep_gate_enabled         = getattr(cfg, "sweep_gate_enabled",         True)
+    sweep_gate_directional     = getattr(cfg, "sweep_gate_directional",     False)
     fvg_filter_enabled     = getattr(cfg, "fvg_filter_enabled",     True)
     mtf_alignment_enabled  = getattr(cfg, "mtf_alignment_enabled",  True)
     chronos_weight         = getattr(cfg, "chronos_weight",         0.40)
@@ -146,6 +147,7 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
         confluence_gate=confluence_gate,
         adx_gate_enabled=adx_gate_enabled,
         sweep_gate_enabled=sweep_gate_enabled,
+        sweep_gate_directional=sweep_gate_directional,
         fvg_filter_enabled=fvg_filter_enabled,
         mtf_alignment_enabled=mtf_alignment_enabled,
         chronos_weight=chronos_weight if use_chronos else 0.0,

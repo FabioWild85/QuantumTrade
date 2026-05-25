@@ -167,6 +167,7 @@ class BotConfig(BaseModel):
     chronos_weight: float = Field(0.40, ge=0.0, le=0.9)
     adx_gate_enabled: bool = Field(True)
     sweep_gate_enabled: bool = Field(True)
+    sweep_gate_directional: bool = Field(False)
     fvg_filter_enabled: bool = Field(True)
     mtf_alignment_enabled: bool = Field(True)
     # Advanced exit
