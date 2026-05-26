@@ -54,7 +54,7 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
     use_binance              = getattr(req,  "use_binance",              True)
     use_chronos              = getattr(req,  "use_chronos",              False)
     # Advanced signal controls
-    confluence_gate        = getattr(cfg, "confluence_gate",        0.0)
+    confluence_gate        = getattr(cfg, "confluence_gate",        60.0)
     adx_gate_enabled       = getattr(cfg, "adx_gate_enabled",       True)
     sweep_gate_enabled         = getattr(cfg, "sweep_gate_enabled",         True)
     sweep_gate_directional     = getattr(cfg, "sweep_gate_directional",     False)

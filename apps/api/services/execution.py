@@ -263,6 +263,9 @@ class ExecutionEngine:
             if self.mode == "live":
                 try:
                     await self._submit_close_order()
+                    snap  = await self._hl.get_market_snapshot(SYMBOL)
+                    price = snap.get("mark_price", self._position["entry_price"])
+                    await self._close_position(price, "kill")
                     positions_closed = 1
                 except Exception as exc:
                     log.error("Kill: close order failed: %s", exc)
@@ -273,7 +276,7 @@ class ExecutionEngine:
                 await self._close_position(price, "kill")
                 positions_closed = 1
 
-        self._position = None
+        self._position = None  # safety net if _close_position was never reached
         log.warning("KILL SWITCH activated")
         return {"orders_cancelled": orders_cancelled, "positions_closed": positions_closed}
 
@@ -685,6 +688,7 @@ class ExecutionEngine:
                             reason, exit_px, mark,
                         )
                         await self._close_position(exit_px, reason)
+                        self._cycle_count += 1
                         return   # skip inference for this cycle; nothing to manage
                 except Exception as _exc:
                     log.warning("Live position sync check failed: %s", _exc)
@@ -1654,7 +1658,23 @@ class ExecutionEngine:
             )
             log.info("Live entry order submitted: %s", result)
 
-            # Native SL trigger order
+            # Extract actual filled size — IOC orders may fill partially
+            try:
+                status_0 = result.get("response", {}).get("data", {}).get("statuses", [{}])[0]
+                filled_info = status_0.get("filled", {})
+                filled_sz = float(filled_info.get("totalSz", 0)) if filled_info else 0.0
+            except (ValueError, TypeError, IndexError):
+                filled_sz = 0.0
+
+            if filled_sz <= 0:
+                log.warning("Live entry IOC: zero fill — aborting position open")
+                return None
+
+            if abs(filled_sz - size) > 1e-6:
+                log.warning("Live entry IOC partial fill: requested %.4f, filled %.4f — SL sized to fill", size, filled_sz)
+                size = filled_sz
+
+            # Native SL trigger order — sized to actual fill
             sl_is_buy = not is_buy
             _sl_seed = (_seed + b"_sl")
             sl_cloid = "0x" + hashlib.md5(_sl_seed).hexdigest()
@@ -1736,13 +1756,14 @@ class ExecutionEngine:
 
     @staticmethod
     def _safe_float(v):
-        """Convert to float, returning None for NaN/Inf/None (not JSON-safe or DB-safe)."""
+        """Convert to float, returning None for NaN/Inf/None/non-numeric (not JSON-safe or DB-safe)."""
         if v is None:
             return None
         if hasattr(v, "__float__"):
             f = float(v)
             return None if (math.isnan(f) or math.isinf(f)) else f
-        return str(v)
+        log.warning("_safe_float: non-numeric value dropped: %r (%s)", v, type(v).__name__)
+        return None
 
     async def _log_inference(
         self,

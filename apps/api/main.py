@@ -782,13 +782,13 @@ async def backtest_start(req: BacktestRequest, background_tasks: BackgroundTasks
             if "backtest_cancelled" in str(e) or cancel_event.is_set():
                 backtest_jobs[job_id] = {"status": "cancelled", "result": {"error": "Backtest annullato"}, "_ts": _t2.time()}
             else:
-                logger.error(f"Backtest job {job_id} failed: {e}")
+                log.error(f"Backtest job {job_id} failed: {e}")
                 backtest_jobs[job_id] = {"status": "error", "result": {"error": str(e)}, "_ts": _t2.time()}
         except Exception as e:
             if cancel_event.is_set():
                 backtest_jobs[job_id] = {"status": "cancelled", "result": {"error": "Backtest annullato"}, "_ts": _t2.time()}
             else:
-                logger.error(f"Backtest job {job_id} failed: {e}")
+                log.error(f"Backtest job {job_id} failed: {e}")
                 backtest_jobs[job_id] = {"status": "error", "result": {"error": str(e)}, "_ts": _t2.time()}
         finally:
             if _active_job_id == job_id:
