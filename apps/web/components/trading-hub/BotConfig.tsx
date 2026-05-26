@@ -70,9 +70,23 @@ interface Config {
   // CVD Absorption Filter
   absorption_filter_enabled: boolean;
   absorption_z_threshold: number;
+  // Dual ATR
+  dual_atr_enabled: boolean;
   // Signal quality filters (formerly hardcoded)
   exhaustion_guard_enabled: boolean;
   structural_sl_enabled: boolean;
+  ob_buffer_pct: number;
+  ob_buffer_min_atr: number;
+  // Late Entry Distance Filter
+  late_entry_filter_enabled: boolean;
+  late_entry_max_ob_dist: number;
+  // Path Obstruction Gate
+  path_obstruction_enabled: boolean;
+  path_obstruction_max_dist: number;
+  // Consecutive Bars Filter
+  consec_bars_filter_enabled: boolean;
+  consec_bars_max_long: number;
+  consec_bars_max_short: number;
   // Extra exit flags (from HubSettings)
   p10_sl_floor_enabled: boolean;
   enhanced_exit_enabled: boolean;
@@ -147,9 +161,22 @@ const DEFAULTS: Config = {
   // CVD Absorption Filter
   absorption_filter_enabled: false,
   absorption_z_threshold: 2.0,
+  // Dual ATR
+  dual_atr_enabled: false,
   // Signal quality filters
   exhaustion_guard_enabled: true,
   structural_sl_enabled: true,
+  ob_buffer_pct: 0.3,
+  ob_buffer_min_atr: 0.0,
+  // Late Entry Distance Filter
+  late_entry_filter_enabled: false,
+  late_entry_max_ob_dist: 3.0,
+  // Path Obstruction Gate
+  path_obstruction_enabled: false,
+  path_obstruction_max_dist: 1.5,
+  consec_bars_filter_enabled: false,
+  consec_bars_max_long: 8,
+  consec_bars_max_short: 8,
   p10_sl_floor_enabled: false,
   enhanced_exit_enabled: false,
 };
@@ -2214,6 +2241,26 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
       <Section title="Filtri Qualità — Decision Engine" description="Protezioni avanzate contro entrate in condizioni sfavorevoli. Operano dopo il calcolo dell'ensemble probability e prima del segnale finale.">
         <div className="space-y-3">
 
+          {/* Dual ATR */}
+          <Tooltip text="Usa ATR_21 (periodo più lungo, più smooth) per calcolare la distanza dello Stop Loss, e ATR_14 (reattivo) per il Take Profit. Vantaggi: in periodi di spike di volatilità, ATR_14 si gonfia temporaneamente e allarga lo SL eccessivamente. ATR_21 reagisce meno agli spike singoli, producendo uno SL più stabile e un R:R migliore. La size aumenta leggermente perché lo SL è più stretto. TP rimane invariato." width="wide" pos="bottom">
+          <label className={`flex items-start gap-3 cursor-pointer group p-4 rounded-xl border transition-all duration-200 ${config.dual_atr_enabled ? 'border-cyan-200 dark:border-cyan-500/30 bg-cyan-50/40 dark:bg-cyan-500/5' : 'border-slate-100 dark:border-white/5 hover:bg-slate-50 dark:hover:bg-white/[0.03]'}`}>
+            <div className="relative mt-0.5 flex-shrink-0">
+              <input type="checkbox" className="sr-only" checked={config.dual_atr_enabled} onChange={e => setConfig(c => ({ ...c, dual_atr_enabled: e.target.checked }))} />
+              <div className={`w-9 h-[18px] rounded-full transition-all duration-300 ${config.dual_atr_enabled ? 'bg-cyan-600' : 'bg-slate-200 dark:bg-white/10'}`} />
+              <div className={`absolute top-[3px] left-[3px] w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.dual_atr_enabled ? 'translate-x-[18px]' : ''}`} />
+            </div>
+            <div className="min-w-0">
+              <p className={`text-xs font-bold leading-tight transition-colors ${config.dual_atr_enabled ? 'text-cyan-600 dark:text-cyan-400' : 'text-slate-700 dark:text-slate-300'}`}>
+                Dual ATR — SL su ATR_21, TP su ATR_14
+                {config.dual_atr_enabled && <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-cyan-100 dark:bg-cyan-500/20 text-cyan-600 dark:text-cyan-400 uppercase tracking-wider">Attivo</span>}
+              </p>
+              <p className="text-[10px] text-slate-400 dark:text-slate-500 leading-snug mt-1">
+                SL usa <span className="font-mono text-slate-600 dark:text-slate-300">ATR_21</span> (smooth, meno sensibile agli spike) — TP usa <span className="font-mono text-slate-600 dark:text-slate-300">ATR_14</span> (reattivo). SL più stabile, R:R migliorato.
+              </p>
+            </div>
+          </label>
+          </Tooltip>
+
           {/* Exhaustion Guard */}
           <Tooltip text="Protezione contro entrate in zone di esaurimento tecnico. RSI 4H < 28 o ret_48 < −6% (ipervenduto/caduta prolungata): threshold short +0.06. RSI > 72 o ret_48 > +6% (ipercomprato/rally prolungato): threshold long +0.06. Riduce il rischio di entrare nella direzione di un rimbalzo imminente." width="wide" pos="bottom">
           <label className={`flex items-start gap-3 cursor-pointer group p-4 rounded-xl border transition-all duration-200 ${config.exhaustion_guard_enabled ? 'border-rose-200 dark:border-rose-500/30 bg-rose-50/40 dark:bg-rose-500/5' : 'border-slate-100 dark:border-white/5 hover:bg-slate-50 dark:hover:bg-white/[0.03]'}`}>
@@ -2253,6 +2300,88 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
             </div>
           </label>
           </Tooltip>
+          {config.structural_sl_enabled && (
+            <div className="px-4 pb-2 flex flex-col gap-2">
+              <NumInput label="OB Buffer %" value={config.ob_buffer_pct} onChange={v => setConfig(c => ({ ...c, ob_buffer_pct: v }))} step={0.1} min={0.0} max={2.0} />
+              <NumInput label="OB Buffer Min ATR (0 = disabilitato)" value={config.ob_buffer_min_atr} onChange={v => setConfig(c => ({ ...c, ob_buffer_min_atr: v }))} step={0.05} min={0.0} max={1.0} />
+            </div>
+          )}
+
+          {/* Late Entry Distance Filter */}
+          <Tooltip text="Blocca l'entry se il prezzo è già troppo lontano dall'Order Block che ha generato il momentum. ob_bull_dist = (close − OB_mid) / ATR_14: se supera la soglia e l'OB è attivo, il segnale viene scartato. Evita entrate tardive dove il momentum è già esaurito e il R:R è compromesso. Inattivo se nessun OB è rilevato." width="wide" pos="top">
+          <label className={`flex items-start gap-3 cursor-pointer group p-4 rounded-xl border transition-all duration-200 ${config.late_entry_filter_enabled ? 'border-amber-200 dark:border-amber-500/30 bg-amber-50/40 dark:bg-amber-500/5' : 'border-slate-100 dark:border-white/5 hover:bg-slate-50 dark:hover:bg-white/[0.03]'}`}>
+            <div className="relative mt-0.5 flex-shrink-0">
+              <input type="checkbox" className="sr-only" checked={config.late_entry_filter_enabled} onChange={e => setConfig(c => ({ ...c, late_entry_filter_enabled: e.target.checked }))} />
+              <div className={`w-9 h-[18px] rounded-full transition-all duration-300 ${config.late_entry_filter_enabled ? 'bg-amber-500' : 'bg-slate-200 dark:bg-white/10'}`} />
+              <div className={`absolute top-[3px] left-[3px] w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.late_entry_filter_enabled ? 'translate-x-[18px]' : ''}`} />
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className={`text-xs font-bold leading-tight transition-colors ${config.late_entry_filter_enabled ? 'text-amber-600 dark:text-amber-400' : 'text-slate-700 dark:text-slate-300'}`}>
+                Late Entry Filter — OB Distance
+                {config.late_entry_filter_enabled && <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-amber-100 dark:bg-amber-500/20 text-amber-600 dark:text-amber-400 uppercase tracking-wider">Attivo</span>}
+              </p>
+              <p className="text-[10px] text-slate-400 dark:text-slate-500 leading-snug mt-1">
+                Salta l'entry se il prezzo è &gt; <span className="font-mono text-slate-600 dark:text-slate-300">{config.late_entry_max_ob_dist} ATR</span> dall'Order Block — momentum già esaurito.
+              </p>
+            </div>
+          </label>
+          </Tooltip>
+          {config.late_entry_filter_enabled && (
+            <div className="px-4 pb-2">
+              <NumInput label="Distanza Massima OB (ATR)" value={config.late_entry_max_ob_dist} onChange={v => setConfig(c => ({ ...c, late_entry_max_ob_dist: v }))} step={0.5} min={1.0} max={8.0} />
+            </div>
+          )}
+
+          {/* Path Obstruction Gate */}
+          <Tooltip text="Blocca long se c'è un Bear Order Block (resistenza) a meno di N ATR sopra l'entry. Blocca short se c'è un Bull Order Block (supporto) a meno di N ATR sotto. ob_bear_dist = (OB_mid − close) / ATR_14: valore piccolo positivo = resistenza appena sopra. Inattivo se nessun OB attivo nella direzione contraria." width="wide" pos="top">
+          <label className={`flex items-start gap-3 cursor-pointer group p-4 rounded-xl border transition-all duration-200 ${config.path_obstruction_enabled ? 'border-orange-200 dark:border-orange-500/30 bg-orange-50/40 dark:bg-orange-500/5' : 'border-slate-100 dark:border-white/5 hover:bg-slate-50 dark:hover:bg-white/[0.03]'}`}>
+            <div className="relative mt-0.5 flex-shrink-0">
+              <input type="checkbox" className="sr-only" checked={config.path_obstruction_enabled} onChange={e => setConfig(c => ({ ...c, path_obstruction_enabled: e.target.checked }))} />
+              <div className={`w-9 h-[18px] rounded-full transition-all duration-300 ${config.path_obstruction_enabled ? 'bg-orange-500' : 'bg-slate-200 dark:bg-white/10'}`} />
+              <div className={`absolute top-[3px] left-[3px] w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.path_obstruction_enabled ? 'translate-x-[18px]' : ''}`} />
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className={`text-xs font-bold leading-tight transition-colors ${config.path_obstruction_enabled ? 'text-orange-600 dark:text-orange-400' : 'text-slate-700 dark:text-slate-300'}`}>
+                Path Obstruction Gate — OB Overhead
+                {config.path_obstruction_enabled && <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-orange-100 dark:bg-orange-500/20 text-orange-600 dark:text-orange-400 uppercase tracking-wider">Attivo</span>}
+              </p>
+              <p className="text-[10px] text-slate-400 dark:text-slate-500 leading-snug mt-1">
+                Blocca long/short se una struttura contraria è entro <span className="font-mono text-slate-600 dark:text-slate-300">{config.path_obstruction_max_dist} ATR</span> — OB resistenza/supporto che ostacola il percorso.
+              </p>
+            </div>
+          </label>
+          </Tooltip>
+          {config.path_obstruction_enabled && (
+            <div className="px-4 pb-2">
+              <NumInput label="Distanza Massima OB Contrario (ATR)" value={config.path_obstruction_max_dist} onChange={v => setConfig(c => ({ ...c, path_obstruction_max_dist: v }))} step={0.5} min={0.5} max={4.0} />
+            </div>
+          )}
+
+          {/* Consecutive Bars Filter */}
+          <Tooltip text="Blocca l'entry se il trend ha troppi bar consecutivi nella stessa direzione — il momentum è già prezzato e il rischio di pullback è elevato. consec_bars > 0 = bar bullish consecutive, < 0 = bearish. Inattivo se consec_bars_filter_enabled = false." width="wide" pos="top">
+          <label className={`flex items-start gap-3 cursor-pointer group p-4 rounded-xl border transition-all duration-200 ${config.consec_bars_filter_enabled ? 'border-rose-200 dark:border-rose-500/30 bg-rose-50/40 dark:bg-rose-500/5' : 'border-slate-100 dark:border-white/5 hover:bg-slate-50 dark:hover:bg-white/[0.03]'}`}>
+            <div className="relative mt-0.5 flex-shrink-0">
+              <input type="checkbox" className="sr-only" checked={config.consec_bars_filter_enabled} onChange={e => setConfig(c => ({ ...c, consec_bars_filter_enabled: e.target.checked }))} />
+              <div className={`w-9 h-[18px] rounded-full transition-all duration-300 ${config.consec_bars_filter_enabled ? 'bg-rose-500' : 'bg-slate-200 dark:bg-white/10'}`} />
+              <div className={`absolute top-[3px] left-[3px] w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.consec_bars_filter_enabled ? 'translate-x-[18px]' : ''}`} />
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className={`text-xs font-bold leading-tight transition-colors ${config.consec_bars_filter_enabled ? 'text-rose-600 dark:text-rose-400' : 'text-slate-700 dark:text-slate-300'}`}>
+                Consecutive Bars Filter — Trend Age
+                {config.consec_bars_filter_enabled && <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-rose-100 dark:bg-rose-500/20 text-rose-600 dark:text-rose-400 uppercase tracking-wider">Attivo</span>}
+              </p>
+              <p className="text-[10px] text-slate-400 dark:text-slate-500 leading-snug mt-1">
+                Salta long se ≥ <span className="font-mono text-slate-600 dark:text-slate-300">{config.consec_bars_max_long}</span> bar bull consecutivi — salta short se ≥ <span className="font-mono text-slate-600 dark:text-slate-300">{config.consec_bars_max_short}</span> bar bear. Trend troppo esteso.
+              </p>
+            </div>
+          </label>
+          </Tooltip>
+          {config.consec_bars_filter_enabled && (
+            <div className="px-4 pb-2 flex flex-col gap-2">
+              <NumInput label="Max Bar Bull Consecutivi (Long)" value={config.consec_bars_max_long} onChange={v => setConfig(c => ({ ...c, consec_bars_max_long: v }))} step={1} min={3} max={20} />
+              <NumInput label="Max Bar Bear Consecutivi (Short)" value={config.consec_bars_max_short} onChange={v => setConfig(c => ({ ...c, consec_bars_max_short: v }))} step={1} min={3} max={20} />
+            </div>
+          )}
 
         </div>
       </Section>

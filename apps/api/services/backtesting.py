@@ -86,6 +86,19 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
     # Signal quality filters
     exhaustion_guard_enabled  = getattr(cfg, "exhaustion_guard_enabled",  True)
     structural_sl_enabled     = getattr(cfg, "structural_sl_enabled",     True)
+    ob_buffer_pct             = getattr(cfg, "ob_buffer_pct",             0.3)
+    ob_buffer_min_atr         = getattr(cfg, "ob_buffer_min_atr",         0.0)
+    # Dual ATR for SL
+    dual_atr_enabled          = getattr(cfg, "dual_atr_enabled",          False)
+    # Late Entry Distance Filter
+    late_entry_filter_enabled = getattr(cfg, "late_entry_filter_enabled", False)
+    late_entry_max_ob_dist    = getattr(cfg, "late_entry_max_ob_dist",    3.0)
+    # Path Obstruction Gate
+    path_obstruction_enabled  = getattr(cfg, "path_obstruction_enabled",  False)
+    path_obstruction_max_dist = getattr(cfg, "path_obstruction_max_dist", 1.5)
+    consec_bars_filter_enabled = getattr(cfg, "consec_bars_filter_enabled", False)
+    consec_bars_max_long       = getattr(cfg, "consec_bars_max_long",       8)
+    consec_bars_max_short      = getattr(cfg, "consec_bars_max_short",      8)
 
     hl = HyperliquidData()
 
@@ -162,6 +175,13 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
         absorption_filter_enabled=absorption_filter_enabled,
         absorption_z_threshold=absorption_z_threshold,
         exhaustion_guard_enabled=exhaustion_guard_enabled,
+        late_entry_filter_enabled=late_entry_filter_enabled,
+        late_entry_max_ob_dist=late_entry_max_ob_dist,
+        path_obstruction_enabled=path_obstruction_enabled,
+        path_obstruction_max_dist=path_obstruction_max_dist,
+        consec_bars_filter_enabled=consec_bars_filter_enabled,
+        consec_bars_max_long=consec_bars_max_long,
+        consec_bars_max_short=consec_bars_max_short,
     )
     risk = RiskManager(
         sl_atr_mult=sl_atr_mult,
@@ -191,6 +211,8 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
         features = row.to_dict()
         atr_raw  = features.get("atr_14")
         atr      = float(atr_raw) if (atr_raw is not None and pd.notna(atr_raw) and atr_raw > 0) else float(row["close"]) * 0.01
+        atr_21_raw = features.get("atr_21")
+        atr_sl   = (float(atr_21_raw) if (dual_atr_enabled and atr_21_raw is not None and pd.notna(atr_21_raw) and float(atr_21_raw) > 0) else None)
 
         # ── Funding accrual while in position ────────────────────────────────
         if position and i % FUNDING_INTERVAL_BARS == 0 and funding_col:
@@ -444,6 +466,7 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                     entry_price=close_price,
                     atr=atr,
                     equity_usd=equity,
+                    sl_atr=atr_sl,
                     c2_p10=c2_out.get("c2_p10") if _needs_quantiles else None,
                     c2_p90=c2_out.get("c2_p90") if _needs_quantiles else None,
                     c2_uncertainty=c2_out.get("c2_uncertainty") if _use_dynamic else None,
@@ -454,7 +477,11 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                 )
                 # Structural SL: mirror live execution — place SL behind OB when within 2%.
                 if structural_sl_enabled:
-                    apply_structural_sl(params, result.features_snapshot, close_price)
+                    apply_structural_sl(
+                        params, result.features_snapshot, close_price,
+                        ob_buffer_pct=ob_buffer_pct,
+                        ob_buffer_min_atr=ob_buffer_min_atr,
+                    )
                 effective_size_usd = params.size_usd * result.size_factor
                 fee_entry = effective_size_usd * HL_TAKER_FEE
                 equity   -= fee_entry

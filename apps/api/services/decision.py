@@ -57,6 +57,13 @@ class DecisionEngine:
         absorption_filter_enabled: bool = False,
         absorption_z_threshold: float = 2.0,
         exhaustion_guard_enabled: bool = True,
+        late_entry_filter_enabled: bool = False,
+        late_entry_max_ob_dist: float = 3.0,
+        path_obstruction_enabled: bool = False,
+        path_obstruction_max_dist: float = 1.5,
+        consec_bars_filter_enabled: bool = False,
+        consec_bars_max_long: int = 8,
+        consec_bars_max_short: int = 8,
     ):
         self.directional_threshold       = directional_threshold
         self.adx_gate                    = adx_gate
@@ -78,6 +85,13 @@ class DecisionEngine:
         self.absorption_filter_enabled   = absorption_filter_enabled
         self.absorption_z_threshold      = absorption_z_threshold
         self.exhaustion_guard_enabled    = exhaustion_guard_enabled
+        self.late_entry_filter_enabled    = late_entry_filter_enabled
+        self.late_entry_max_ob_dist       = late_entry_max_ob_dist
+        self.path_obstruction_enabled      = path_obstruction_enabled
+        self.path_obstruction_max_dist     = path_obstruction_max_dist
+        self.consec_bars_filter_enabled    = consec_bars_filter_enabled
+        self.consec_bars_max_long          = consec_bars_max_long
+        self.consec_bars_max_short         = consec_bars_max_short
 
     def decide(
         self,
@@ -290,6 +304,42 @@ class DecisionEngine:
             if self.fvg_filter_enabled and fvg_bear == 1.0:
                 reasoning.append("FILTER: Bearish FVG detected overhead — skipping long entry")
                 return self._no_trade(reasoning, dir_prob, p10, p50, p90, features, c2_uncertainty)
+
+            # Late entry filter: skip if price is too far above the bull OB midpoint.
+            # ob_bull_dist = (close - OB_mid) / ATR_14 — large positive = late entry.
+            # Only active when a bull OB is present (ob_bull_active == 1.0).
+            if self.late_entry_filter_enabled:
+                _ob_bull_active = float(features.get("ob_bull_active") or 0.0)
+                _ob_bull_dist   = float(features.get("ob_bull_dist")   or 0.0)
+                if _ob_bull_active == 1.0 and _ob_bull_dist > self.late_entry_max_ob_dist:
+                    reasoning.append(
+                        f"FILTER: LateEntry — ob_bull_dist={_ob_bull_dist:.2f} ATR > "
+                        f"{self.late_entry_max_ob_dist:.1f} — entry too far from OB, skipping long"
+                    )
+                    return self._no_trade(reasoning, dir_prob, p10, p50, p90, features, c2_uncertainty)
+
+            # Path obstruction: skip long if a bear OB (resistance) is too close overhead.
+            # ob_bear_dist = (bear_OB_mid - close) / ATR_14 — small positive = just above entry.
+            # Only active when a bear OB is present (ob_bear_active == 1.0).
+            if self.path_obstruction_enabled:
+                _obs_bear_active = float(features.get("ob_bear_active") or 0.0)
+                _obs_bear_dist   = float(features.get("ob_bear_dist")   or 999.0)
+                if _obs_bear_active == 1.0 and 0 < _obs_bear_dist < self.path_obstruction_max_dist:
+                    reasoning.append(
+                        f"FILTER: PathObstruction — bear OB at {_obs_bear_dist:.2f} ATR overhead "
+                        f"< {self.path_obstruction_max_dist:.1f} — resistance blocks long path"
+                    )
+                    return self._no_trade(reasoning, dir_prob, p10, p50, p90, features, c2_uncertainty)
+
+            if self.consec_bars_filter_enabled:
+                _consec = float(features.get("consec_bars") or 0.0)
+                if _consec >= self.consec_bars_max_long:
+                    reasoning.append(
+                        f"FILTER: ConsecBars — {int(_consec)} consecutive bull bars ≥ "
+                        f"{self.consec_bars_max_long} — trend extended, skip long"
+                    )
+                    return self._no_trade(reasoning, dir_prob, p10, p50, p90, features, c2_uncertainty)
+
             # C2 p50 note: logged for transparency but does NOT veto the trade.
             # A hard p50 veto was found to cancel valid LGBM signals whenever Chronos
             # was slightly off, costing ~8% performance versus Chronos-off in backtests.
@@ -322,6 +372,42 @@ class DecisionEngine:
             if self.fvg_filter_enabled and fvg_bull == 1.0:
                 reasoning.append("FILTER: Bullish FVG detected below — skipping short entry")
                 return self._no_trade(reasoning, dir_prob, p10, p50, p90, features, c2_uncertainty)
+
+            # Late entry filter: skip if price is too far below the bear OB midpoint.
+            # ob_bear_dist = (OB_mid - close) / ATR_14 — large positive = late entry.
+            # Only active when a bear OB is present (ob_bear_active == 1.0).
+            if self.late_entry_filter_enabled:
+                _ob_bear_active = float(features.get("ob_bear_active") or 0.0)
+                _ob_bear_dist   = float(features.get("ob_bear_dist")   or 0.0)
+                if _ob_bear_active == 1.0 and _ob_bear_dist > self.late_entry_max_ob_dist:
+                    reasoning.append(
+                        f"FILTER: LateEntry — ob_bear_dist={_ob_bear_dist:.2f} ATR > "
+                        f"{self.late_entry_max_ob_dist:.1f} — entry too far from OB, skipping short"
+                    )
+                    return self._no_trade(reasoning, dir_prob, p10, p50, p90, features, c2_uncertainty)
+
+            # Path obstruction: skip short if a bull OB (support) is too close below.
+            # ob_bull_dist = (close - bull_OB_mid) / ATR_14 — small positive = just below entry.
+            # Only active when a bull OB is present (ob_bull_active == 1.0).
+            if self.path_obstruction_enabled:
+                _obs_bull_active = float(features.get("ob_bull_active") or 0.0)
+                _obs_bull_dist   = float(features.get("ob_bull_dist")   or 999.0)
+                if _obs_bull_active == 1.0 and 0 < _obs_bull_dist < self.path_obstruction_max_dist:
+                    reasoning.append(
+                        f"FILTER: PathObstruction — bull OB at {_obs_bull_dist:.2f} ATR below "
+                        f"< {self.path_obstruction_max_dist:.1f} — support blocks short path"
+                    )
+                    return self._no_trade(reasoning, dir_prob, p10, p50, p90, features, c2_uncertainty)
+
+            if self.consec_bars_filter_enabled:
+                _consec = float(features.get("consec_bars") or 0.0)
+                if _consec <= -self.consec_bars_max_short:
+                    reasoning.append(
+                        f"FILTER: ConsecBars — {int(abs(_consec))} consecutive bear bars ≥ "
+                        f"{self.consec_bars_max_short} — trend extended, skip short"
+                    )
+                    return self._no_trade(reasoning, dir_prob, p10, p50, p90, features, c2_uncertainty)
+
             # C2 p50 note: same reasoning as above — logged but does not veto.
             if p50 > 0 and p50 > current_price:
                 reasoning.append(f"NOTE: C2 median ({p50:.1f}) above entry — minor bullish bias in forecast")

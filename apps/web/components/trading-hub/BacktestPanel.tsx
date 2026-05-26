@@ -1334,9 +1334,20 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   // CVD Absorption Filter
   const [absorptionFilter,    setAbsorptionFilter]    = useState(false);
   const [absorptionZThresh,   setAbsorptionZThresh]   = useState('2.0');
+  // Dual ATR
+  const [dualAtr, setDualAtr] = useState(false);
   // Signal quality filters
-  const [exhaustionGuard, setExhaustionGuard] = useState(true);
-  const [structuralSl,    setStructuralSl]    = useState(true);
+  const [exhaustionGuard,    setExhaustionGuard]    = useState(true);
+  const [structuralSl,       setStructuralSl]       = useState(true);
+  const [obBufferPct,        setObBufferPct]        = useState('0.3');
+  const [obBufferMinAtr,     setObBufferMinAtr]     = useState('0.0');
+  const [lateEntryFilter,    setLateEntryFilter]    = useState(false);
+  const [lateEntryMaxObDist, setLateEntryMaxObDist] = useState('3.0');
+  const [pathObstruction,    setPathObstruction]    = useState(false);
+  const [pathObstMaxDist,    setPathObstMaxDist]    = useState('1.5');
+  const [consecBarsFilter,   setConsecBarsFilter]   = useState(false);
+  const [consecBarsMaxLong,  setConsecBarsMaxLong]  = useState('8');
+  const [consecBarsMaxShort, setConsecBarsMaxShort] = useState('8');
   // Regime Bias
   const [regimeBias,          setRegimeBias]          = useState(false);
   const [regimeBiasDelta,     setRegimeBiasDelta]     = useState('0.08');
@@ -1428,8 +1439,18 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     if (p.sweep_gate_directional    !== undefined) setSweepDirectional(!!p.sweep_gate_directional);
     if (p.absorption_filter_enabled !== undefined) setAbsorptionFilter(!!p.absorption_filter_enabled);
     if (p.absorption_z_threshold    !== undefined) setAbsorptionZThresh(String(p.absorption_z_threshold));
-    if (p.exhaustion_guard_enabled  !== undefined) setExhaustionGuard(!!p.exhaustion_guard_enabled);
-    if (p.structural_sl_enabled     !== undefined) setStructuralSl(!!p.structural_sl_enabled);
+    if (p.dual_atr_enabled           !== undefined) setDualAtr(!!p.dual_atr_enabled);
+    if (p.exhaustion_guard_enabled   !== undefined) setExhaustionGuard(!!p.exhaustion_guard_enabled);
+    if (p.structural_sl_enabled      !== undefined) setStructuralSl(!!p.structural_sl_enabled);
+    if (p.ob_buffer_pct              !== undefined) setObBufferPct(String(p.ob_buffer_pct));
+    if (p.ob_buffer_min_atr          !== undefined) setObBufferMinAtr(String(p.ob_buffer_min_atr));
+    if (p.late_entry_filter_enabled  !== undefined) setLateEntryFilter(!!p.late_entry_filter_enabled);
+    if (p.late_entry_max_ob_dist     !== undefined) setLateEntryMaxObDist(String(p.late_entry_max_ob_dist));
+    if (p.path_obstruction_enabled   !== undefined) setPathObstruction(!!p.path_obstruction_enabled);
+    if (p.path_obstruction_max_dist  !== undefined) setPathObstMaxDist(String(p.path_obstruction_max_dist));
+    if (p.consec_bars_filter_enabled !== undefined) setConsecBarsFilter(!!p.consec_bars_filter_enabled);
+    if (p.consec_bars_max_long       !== undefined) setConsecBarsMaxLong(String(p.consec_bars_max_long));
+    if (p.consec_bars_max_short      !== undefined) setConsecBarsMaxShort(String(p.consec_bars_max_short));
     if (p.regime_bias_enabled     !== undefined) setRegimeBias(!!p.regime_bias_enabled);
     if (p.regime_bias_delta       !== undefined) setRegimeBiasDelta(String(p.regime_bias_delta));
     if (p.regime_bias_size_factor !== undefined) setRegimeBiasSizeFactor(String(p.regime_bias_size_factor));
@@ -1636,9 +1657,20 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     // CVD Absorption Filter
     absorption_filter_enabled:     absorptionFilter,
     absorption_z_threshold:        parseFloat(absorptionZThresh),
+    // Dual ATR
+    dual_atr_enabled:              dualAtr,
     // Signal quality filters
     exhaustion_guard_enabled:      exhaustionGuard,
     structural_sl_enabled:         structuralSl,
+    ob_buffer_pct:                 parseFloat(obBufferPct),
+    ob_buffer_min_atr:             parseFloat(obBufferMinAtr),
+    late_entry_filter_enabled:     lateEntryFilter,
+    late_entry_max_ob_dist:        parseFloat(lateEntryMaxObDist),
+    path_obstruction_enabled:      pathObstruction,
+    path_obstruction_max_dist:     parseFloat(pathObstMaxDist),
+    consec_bars_filter_enabled:    consecBarsFilter,
+    consec_bars_max_long:          parseInt(consecBarsMaxLong),
+    consec_bars_max_short:         parseInt(consecBarsMaxShort),
   });
 
   const downloadConfig = () => {
@@ -1780,7 +1812,8 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   const drawerHasCustom = trailingSL || partialTP || lgbmExit || useChronos || advBeSL || advMaxHold
     || !advAdxEnabled || !advSweepEnabled || !advFvgEnabled || !advMtfEnabled
     || c2UncertaintyGate || c2ContProbGate || regimeBias
-    || sweepDirectional || absorptionFilter || !exhaustionGuard || !structuralSl;
+    || sweepDirectional || absorptionFilter || !exhaustionGuard || !structuralSl
+    || lateEntryFilter || pathObstruction || dualAtr || consecBarsFilter;
 
   return (
     <>
@@ -2548,6 +2581,100 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                       checked={structuralSl}
                       onChange={setStructuralSl}
                     />
+                    {structuralSl && (
+                      <div className="flex flex-col gap-2 px-1">
+                        <NumInput
+                          label="OB Buffer %"
+                          value={obBufferPct}
+                          onChange={setObBufferPct}
+                          step="0.1"
+                          min="0"
+                          max="2"
+                          unit="%"
+                        />
+                        <NumInput
+                          label="OB Buffer Min ATR (0 = off)"
+                          value={obBufferMinAtr}
+                          onChange={setObBufferMinAtr}
+                          step="0.05"
+                          min="0"
+                          max="1"
+                          unit="ATR"
+                        />
+                      </div>
+                    )}
+                    <Toggle
+                      label="Dual ATR — SL su ATR_21, TP su ATR_14"
+                      desc="SL calcolato su ATR_21 (smooth, meno sensibile agli spike) — TP su ATR_14 (reattivo). Produce SL più stabile e R:R migliorato."
+                      checked={dualAtr}
+                      onChange={setDualAtr}
+                    />
+                    <Toggle
+                      label="Late Entry Filter — OB Distance"
+                      desc="Salta l'entry se il prezzo è già troppo lontano dall'Order Block (ob_dist > soglia ATR)"
+                      checked={lateEntryFilter}
+                      onChange={setLateEntryFilter}
+                    />
+                    {lateEntryFilter && (
+                      <div className="pl-1">
+                        <Tooltip text="Distanza massima ATR-normalizzata tra il prezzo e il midpoint dell'Order Block. Se ob_bull_dist supera questa soglia e l'OB è attivo, il long viene saltato. Default 3.0 ATR." pos="top" width="wide">
+                          <NumInput
+                            label="Distanza Massima OB (ATR)"
+                            value={lateEntryMaxObDist}
+                            onChange={setLateEntryMaxObDist}
+                            step="0.5" min="1.0" max="8.0"
+                            unit="ATR"
+                          />
+                        </Tooltip>
+                      </div>
+                    )}
+                    <Toggle
+                      label="Path Obstruction Gate — OB Overhead"
+                      desc="Blocca long/short se un OB contrario è troppo vicino (resistenza/supporto che ostacola il percorso)"
+                      checked={pathObstruction}
+                      onChange={setPathObstruction}
+                    />
+                    {pathObstruction && (
+                      <div className="pl-1">
+                        <Tooltip text="Distanza massima ATR-normalizzata per considerare un OB contrario come ostacolo. Per long: se ob_bear_dist < soglia, il trade viene bloccato. Default 1.5 ATR." pos="top" width="wide">
+                          <NumInput
+                            label="Distanza Massima OB Contrario (ATR)"
+                            value={pathObstMaxDist}
+                            onChange={setPathObstMaxDist}
+                            step="0.5" min="0.5" max="4.0"
+                            unit="ATR"
+                          />
+                        </Tooltip>
+                      </div>
+                    )}
+                    <Toggle
+                      label="Consecutive Bars Filter — Trend Age"
+                      desc="Blocca long/short se ci sono troppi bar consecutivi nella stessa direzione (trend esteso, alto rischio pullback)"
+                      checked={consecBarsFilter}
+                      onChange={setConsecBarsFilter}
+                    />
+                    {consecBarsFilter && (
+                      <div className="pl-1 flex flex-col gap-2">
+                        <Tooltip text="Numero massimo di bar bullish consecutivi prima che un long venga bloccato. Default 8. Range 3–20." pos="top" width="wide">
+                          <NumInput
+                            label="Max Bar Bull Consecutivi (Long)"
+                            value={consecBarsMaxLong}
+                            onChange={setConsecBarsMaxLong}
+                            step="1" min="3" max="20"
+                            unit="bar"
+                          />
+                        </Tooltip>
+                        <Tooltip text="Numero massimo di bar bearish consecutivi prima che uno short venga bloccato. Default 8. Range 3–20." pos="top" width="wide">
+                          <NumInput
+                            label="Max Bar Bear Consecutivi (Short)"
+                            value={consecBarsMaxShort}
+                            onChange={setConsecBarsMaxShort}
+                            step="1" min="3" max="20"
+                            unit="bar"
+                          />
+                        </Tooltip>
+                      </div>
+                    )}
                   </div>
                 </div>
               </section>

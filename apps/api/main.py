@@ -195,6 +195,20 @@ class BotConfig(BaseModel):
     # Signal quality filters
     exhaustion_guard_enabled:  bool  = Field(True)
     structural_sl_enabled:     bool  = Field(True)
+    ob_buffer_pct:             float = Field(0.3, ge=0.0, le=2.0)
+    ob_buffer_min_atr:         float = Field(0.0, ge=0.0, le=1.0)
+    # Dual ATR: separate ATR periods for SL (ATR_21, smoother) and TP (ATR_14, reactive)
+    dual_atr_enabled: bool = Field(False)
+    # Late Entry Distance Filter
+    late_entry_filter_enabled: bool  = Field(False)
+    late_entry_max_ob_dist:    float = Field(3.0, ge=1.0, le=8.0)
+    # Path Obstruction Gate
+    path_obstruction_enabled:  bool  = Field(False)
+    path_obstruction_max_dist: float = Field(1.5, ge=0.5, le=4.0)
+    # Consecutive Bars Filter (trend age / exhaustion)
+    consec_bars_filter_enabled: bool = Field(False)
+    consec_bars_max_long:       int  = Field(8, ge=3, le=20)
+    consec_bars_max_short:      int  = Field(8, ge=3, le=20)
     # Walk-forward & retraining parameters
     retrain_every_n_cycles: int = Field(120, ge=20,  le=120)
     wf_n_splits:            int = Field(5,   ge=3,   le=12)

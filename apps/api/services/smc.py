@@ -261,6 +261,7 @@ def build_all_features(
     d["rsi_14"]    = ta.momentum.RSIIndicator(close, 14).rsi()
     d["adx_14"]    = ta.trend.ADXIndicator(high, low, close, 14).adx()
     d["atr_14"]    = ta.volatility.AverageTrueRange(high, low, close, 14).average_true_range()
+    d["atr_21"]    = ta.volatility.AverageTrueRange(high, low, close, 21).average_true_range()
     d["macd_hist"] = ta.trend.MACD(close).macd_diff()
     bb             = ta.volatility.BollingerBands(close, 20)
     d["bb_width"]  = (bb.bollinger_hband() - bb.bollinger_lband()) / close
@@ -317,6 +318,19 @@ def build_all_features(
         d["liq_ratio"]   = d["liq_long"] / (d["liq_total"].replace(0, np.nan))
         d["liq_long_z"]  = (d["liq_long"]  - d["liq_long"].rolling(24).mean())  / (d["liq_long"].rolling(24).std()  + 1e-9)
         d["liq_short_z"] = (d["liq_short"] - d["liq_short"].rolling(24).mean()) / (d["liq_short"].rolling(24).std() + 1e-9)
+
+    # ── Consecutive directional closes ──────────────────────────────────────
+    # Positive = consecutive bullish closes, negative = consecutive bearish.
+    # Resets to ±1 on direction change; 0 on doji (open == close).
+    _closes = d["close"].values
+    _opens  = d["open"].values
+    _consec = np.zeros(len(d))
+    for _ci in range(1, len(d)):
+        if _closes[_ci] > _opens[_ci]:
+            _consec[_ci] = max(_consec[_ci - 1], 0.0) + 1.0
+        elif _closes[_ci] < _opens[_ci]:
+            _consec[_ci] = min(_consec[_ci - 1], 0.0) - 1.0
+    d["consec_bars"] = _consec
 
     log.debug(f"Feature matrix: {d.shape[1]} columns, {len(d)} rows")
     return d

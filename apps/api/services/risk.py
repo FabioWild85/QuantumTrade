@@ -71,6 +71,7 @@ class RiskManager:
         entry_price: float,
         atr: float,
         equity_usd: float,
+        sl_atr: Optional[float] = None,
         c2_p10: Optional[float] = None,
         c2_p90: Optional[float] = None,
         c2_uncertainty: Optional[float] = None,
@@ -79,7 +80,9 @@ class RiskManager:
         recalibrated_uncertainty_thresholds: bool = True,
         p10_sl_floor_enabled: bool = False,
     ) -> TradeParams:
-        atr_sl_dist = self.sl_atr_mult * atr
+        # Dual ATR: sl_atr (ATR_21, smoother) for SL distance; atr (ATR_14) for TP and all floors.
+        _sl_atr     = sl_atr if (sl_atr is not None and sl_atr > 0) else atr
+        atr_sl_dist = self.sl_atr_mult * _sl_atr
         atr_tp_dist = self.tp_atr_mult * atr
 
         if dynamic_sl_tp_enabled and c2_p10 is not None and c2_p90 is not None:
@@ -180,6 +183,8 @@ class RiskManager:
             f"Trade params: {side.upper()} entry={entry_price:.2f} "
             f"SL={stop_loss:.2f} TP={take_profit:.2f} "
             f"size=${size_usd:.0f} ({size_contracts:.4f} BTC) R:R={rr_ratio:.2f}"
+            + (f" [dual ATR: sl_atr={_sl_atr:.0f} tp_atr={atr:.0f}]"
+               if sl_atr is not None and abs(_sl_atr - atr) > 0.5 else "")
             + (f" [adaptive: uncertainty={c2_uncertainty:.3f} size_mult={size_mult:.2f}]"
                if dynamic_sl_tp_enabled and c2_uncertainty is not None else "")
             + (" [P10 SL floor applied]" if p10_floor_applied else "")
@@ -258,14 +263,14 @@ def apply_structural_sl(
     entry_price: float,
     ob_proximity_atr: float = 2.0,
     ob_buffer_pct: float = 0.3,
+    ob_buffer_min_atr: float = 0.0,
 ) -> tuple[bool, str]:
     """
     Widens params.stop_loss when an active Order Block is within ob_proximity_atr
-    ATR units of entry in the SL direction, placing the SL ob_buffer_pct beyond
-    the OB absolute price level.
+    ATR units of entry in the SL direction.
 
-    ob_dist fields are ATR-normalized (not percentage); ob_proximity_atr is the
-    max distance in ATR units to trigger the override.
+    Buffer = max(ob_price × ob_buffer_pct/100, ob_buffer_min_atr × params.atr).
+    ob_buffer_min_atr = 0.0 (default) disables the ATR floor — identical to prior behaviour.
 
     Only ever widens — never tightens — the SL.
     Rescales params.size_usd and params.size_contracts proportionally to keep
@@ -290,12 +295,14 @@ def apply_structural_sl(
             and 0 < _ob_dist_f < ob_proximity_atr   # within N ATR
             and _ob_top_f > 0                        # valid price level (NaN → 0.0 cast → False)
         ):
-            ob_sl = _ob_top_f * (1.0 + ob_buffer_pct / 100.0)
+            _pct_buf = _ob_top_f * ob_buffer_pct / 100.0
+            _atr_buf = ob_buffer_min_atr * params.atr if ob_buffer_min_atr > 0 else 0.0
+            ob_sl = _ob_top_f + max(_pct_buf, _atr_buf)
             if ob_sl > params.stop_loss:
                 params.stop_loss = ob_sl
                 msg = (
                     f"StructuralSL: bear OB top={_ob_top_f:.2f} ({_ob_dist_f:.2f} ATR above) → "
-                    f"SL={ob_sl:.2f} (was {orig_sl:.2f})"
+                    f"SL={ob_sl:.2f} buf={max(_pct_buf, _atr_buf):.2f} (was {orig_sl:.2f})"
                 )
                 _rescale_size(params, orig_sl, entry_price)
                 return True, msg
@@ -312,12 +319,14 @@ def apply_structural_sl(
             and 0 < _ob_dist_f < ob_proximity_atr
             and _ob_bot_f > 0
         ):
-            ob_sl = _ob_bot_f * (1.0 - ob_buffer_pct / 100.0)
+            _pct_buf = _ob_bot_f * ob_buffer_pct / 100.0
+            _atr_buf = ob_buffer_min_atr * params.atr if ob_buffer_min_atr > 0 else 0.0
+            ob_sl = _ob_bot_f - max(_pct_buf, _atr_buf)
             if ob_sl < params.stop_loss:
                 params.stop_loss = ob_sl
                 msg = (
                     f"StructuralSL: bull OB bot={_ob_bot_f:.2f} ({_ob_dist_f:.2f} ATR below) → "
-                    f"SL={ob_sl:.2f} (was {orig_sl:.2f})"
+                    f"SL={ob_sl:.2f} buf={max(_pct_buf, _atr_buf):.2f} (was {orig_sl:.2f})"
                 )
                 _rescale_size(params, orig_sl, entry_price)
                 return True, msg

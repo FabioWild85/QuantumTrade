@@ -758,6 +758,19 @@ class ExecutionEngine:
 
         cfg = self.config
 
+        # Dual ATR: ATR_21 for SL when enabled (smoother, less affected by single-candle spikes).
+        # atr_sl = None when disabled → calculate_trade_params falls back to atr_14 for both SL and TP.
+        _atr_21_raw = latest.get("atr_21")
+        try:
+            _atr_21_val = float(_atr_21_raw) if _atr_21_raw is not None else None
+        except (TypeError, ValueError):
+            _atr_21_val = None
+        atr_sl = (
+            _atr_21_val
+            if (cfg.dual_atr_enabled and _atr_21_val is not None and _atr_21_val > 0)
+            else None
+        )
+
         # Confluence score: computed from bar features (same formula as backtest)
         # so confluence_gate has identical effect live vs. simulated.
         confluence = (compute_qt_score(latest)
@@ -786,6 +799,13 @@ class ExecutionEngine:
             absorption_filter_enabled   = cfg.absorption_filter_enabled,
             absorption_z_threshold      = cfg.absorption_z_threshold,
             exhaustion_guard_enabled    = cfg.exhaustion_guard_enabled,
+            late_entry_filter_enabled   = cfg.late_entry_filter_enabled,
+            late_entry_max_ob_dist      = cfg.late_entry_max_ob_dist,
+            path_obstruction_enabled    = cfg.path_obstruction_enabled,
+            path_obstruction_max_dist   = cfg.path_obstruction_max_dist,
+            consec_bars_filter_enabled  = cfg.consec_bars_filter_enabled,
+            consec_bars_max_long        = cfg.consec_bars_max_long,
+            consec_bars_max_short       = cfg.consec_bars_max_short,
         )
         result = decision_engine.decide(
             features=latest,
@@ -897,7 +917,7 @@ class ExecutionEngine:
             self._macro_pause_active = None
 
         if result.action != "no_trade" and allowed and self._position is None:
-            await self._open_position(result, snap, atr, inference_id)
+            await self._open_position(result, snap, atr, inference_id, atr_sl=atr_sl)
         elif not allowed:
             log.info("Trade blocked: %s", block_reason)
         elif result.action != "no_trade" and self._position is not None:
@@ -1122,6 +1142,7 @@ class ExecutionEngine:
         atr: Optional[float],
         inference_id: str,
         cfg: Optional[BotConfig] = None,
+        atr_sl: Optional[float] = None,
     ):
         # cfg holds the effective config for this trade (may include regime overrides).
         # _manage_position continues to read self.config throughout the trade lifetime.
@@ -1148,6 +1169,7 @@ class ExecutionEngine:
             entry_price=price,
             atr=atr,
             equity_usd=self._equity,
+            sl_atr=atr_sl,
             c2_p10=result.forecast_p10 if _needs_quantiles else None,
             c2_p90=result.forecast_p90 if _needs_quantiles else None,
             c2_uncertainty=result.forecast_uncertainty if (_use_dynamic and result.forecast_uncertainty > 0) else None,
@@ -1166,7 +1188,11 @@ class ExecutionEngine:
         # Delegates to apply_structural_sl() in risk.py — shared with backtesting
         # so live and backtest SL placement are always consistent.
         if cfg.structural_sl_enabled:
-            _ob_applied, _ob_msg = apply_structural_sl(params, result.features_snapshot, price)
+            _ob_applied, _ob_msg = apply_structural_sl(
+                params, result.features_snapshot, price,
+                ob_buffer_pct=getattr(cfg, "ob_buffer_pct", 0.3),
+                ob_buffer_min_atr=getattr(cfg, "ob_buffer_min_atr", 0.0),
+            )
             if _ob_applied:
                 log.info("StructuralSL [%s]: %s", result.action, _ob_msg)
                 result.reasoning.append(_ob_msg)
