@@ -128,6 +128,19 @@ class BotConfig:
         self.macro_pause_nfp            = kw.get("macro_pause_nfp",            True)
         self.macro_pause_ppi            = kw.get("macro_pause_ppi",            False)
         self.macro_pause_jolts          = kw.get("macro_pause_jolts",          False)
+        # Funding Rate Bias
+        self.funding_gate_enabled  = kw.get("funding_gate_enabled",  False)
+        self.funding_gate_lookback = kw.get("funding_gate_lookback", 6)
+        self.funding_high_thr      = kw.get("funding_high_thr",      0.00010)
+        self.funding_extreme_thr   = kw.get("funding_extreme_thr",   0.00030)
+        self.funding_bias_delta    = kw.get("funding_bias_delta",    0.03)
+        # Fear & Greed Bias
+        self.fng_gate_enabled      = kw.get("fng_gate_enabled",      False)
+        self.fng_extreme_fear_thr  = kw.get("fng_extreme_fear_thr",  20.0)
+        self.fng_fear_thr          = kw.get("fng_fear_thr",          35.0)
+        self.fng_greed_thr         = kw.get("fng_greed_thr",         65.0)
+        self.fng_extreme_greed_thr = kw.get("fng_extreme_greed_thr", 80.0)
+        self.fng_bias_delta        = kw.get("fng_bias_delta",        0.03)
 
     def model_dump(self) -> dict:
         return self.__dict__
@@ -776,6 +789,14 @@ class ExecutionEngine:
         confluence = (compute_qt_score(latest)
                       if cfg.confluence_gate > 0 else None)
 
+        # Funding Rate: rolling mean of last N bars for FundingBias in DecisionEngine.
+        _fund_lb  = getattr(cfg, "funding_gate_lookback", 6)
+        _fund_col = df_feat["funding"].values if "funding" in df_feat.columns else None
+        avg_funding = (
+            float(np.nanmean(_fund_col[-_fund_lb:])) if _fund_col is not None and len(_fund_col) >= _fund_lb
+            else 0.0
+        )
+
         # 7. Decision gate
         allowed, block_reason = self._risk.can_trade()
         decision_engine = DecisionEngine(
@@ -806,6 +827,17 @@ class ExecutionEngine:
             consec_bars_filter_enabled  = cfg.consec_bars_filter_enabled,
             consec_bars_max_long        = cfg.consec_bars_max_long,
             consec_bars_max_short       = cfg.consec_bars_max_short,
+            funding_gate_enabled        = getattr(cfg, "funding_gate_enabled",  False),
+            funding_gate_lookback       = getattr(cfg, "funding_gate_lookback", 6),
+            funding_high_thr            = getattr(cfg, "funding_high_thr",      0.00010),
+            funding_extreme_thr         = getattr(cfg, "funding_extreme_thr",   0.00030),
+            funding_bias_delta          = getattr(cfg, "funding_bias_delta",    0.03),
+            fng_gate_enabled            = getattr(cfg, "fng_gate_enabled",      False),
+            fng_extreme_fear_thr        = getattr(cfg, "fng_extreme_fear_thr",  20.0),
+            fng_fear_thr                = getattr(cfg, "fng_fear_thr",          35.0),
+            fng_greed_thr               = getattr(cfg, "fng_greed_thr",         65.0),
+            fng_extreme_greed_thr       = getattr(cfg, "fng_extreme_greed_thr", 80.0),
+            fng_bias_delta              = getattr(cfg, "fng_bias_delta",        0.03),
         )
         result = decision_engine.decide(
             features=latest,
@@ -813,6 +845,8 @@ class ExecutionEngine:
             lgbm_prob=lgbm_prob,
             confluence_score=confluence,
             current_price=snap["mark_price"],
+            avg_funding=avg_funding,
+            covariates=covars,
         )
 
         # ── 7b. Gate LightGBM 1H ─────────────────────────────────────────────

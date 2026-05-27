@@ -107,6 +107,19 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
     consec_bars_filter_enabled = getattr(cfg, "consec_bars_filter_enabled", False)
     consec_bars_max_long       = getattr(cfg, "consec_bars_max_long",       8)
     consec_bars_max_short      = getattr(cfg, "consec_bars_max_short",      8)
+    # Funding Rate Bias
+    funding_gate_enabled  = getattr(cfg, "funding_gate_enabled",  False)
+    funding_gate_lookback = getattr(cfg, "funding_gate_lookback", 6)
+    funding_high_thr      = getattr(cfg, "funding_high_thr",      0.00010)
+    funding_extreme_thr   = getattr(cfg, "funding_extreme_thr",   0.00030)
+    funding_bias_delta    = getattr(cfg, "funding_bias_delta",    0.03)
+    # Fear & Greed Bias
+    fng_gate_enabled      = getattr(cfg, "fng_gate_enabled",      False)
+    fng_extreme_fear_thr  = getattr(cfg, "fng_extreme_fear_thr",  20.0)
+    fng_fear_thr          = getattr(cfg, "fng_fear_thr",          35.0)
+    fng_greed_thr         = getattr(cfg, "fng_greed_thr",         65.0)
+    fng_extreme_greed_thr = getattr(cfg, "fng_extreme_greed_thr", 80.0)
+    fng_bias_delta        = getattr(cfg, "fng_bias_delta",        0.03)
 
     hl = HyperliquidData()
 
@@ -146,6 +159,19 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
         log.warning("External data fetch failed (non-blocking): %s", e)
         df_oi  = pd.DataFrame()
         df_liq = pd.DataFrame()
+
+    # ── 1b. Historical Fear & Greed (fetched once, cached in-process) ────────
+    fng_history: dict[str, float] = {}
+    if fng_gate_enabled:
+        try:
+            from services.covariates import fetch_historical_fng
+            fng_history = await fetch_historical_fng()
+            if not fng_history:
+                log.warning("Historical F&G fetch returned empty — F&G gate disabled for this backtest")
+                fng_gate_enabled = False
+        except Exception as _fng_e:
+            log.warning("Historical F&G fetch failed — F&G gate disabled for this backtest: %s", _fng_e)
+            fng_gate_enabled = False
 
     # ── 2. Build features ────────────────────────────────────────────────────
     df_feat = build_all_features(df_ohlcv, df_fund, df_oi, df_liq)
@@ -190,6 +216,17 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
         consec_bars_filter_enabled=consec_bars_filter_enabled,
         consec_bars_max_long=consec_bars_max_long,
         consec_bars_max_short=consec_bars_max_short,
+        funding_gate_enabled=funding_gate_enabled,
+        funding_gate_lookback=funding_gate_lookback,
+        funding_high_thr=funding_high_thr,
+        funding_extreme_thr=funding_extreme_thr,
+        funding_bias_delta=funding_bias_delta,
+        fng_gate_enabled=fng_gate_enabled,
+        fng_extreme_fear_thr=fng_extreme_fear_thr,
+        fng_fear_thr=fng_fear_thr,
+        fng_greed_thr=fng_greed_thr,
+        fng_extreme_greed_thr=fng_extreme_greed_thr,
+        fng_bias_delta=fng_bias_delta,
     )
     risk = RiskManager(
         sl_atr_mult=sl_atr_mult,
@@ -455,12 +492,30 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
             # Compute QT confluence score so confluence_gate is active in backtest
             qt_score = compute_qt_score(features) if confluence_gate > 0 else None
 
+            # Funding Rate: rolling mean of last N closed bars at this point in time.
+            avg_funding_bt = 0.0
+            if funding_gate_enabled and i > 0:
+                _lb = min(funding_gate_lookback, i)
+                _fund_vals = df_feat["funding"].values[i - _lb:i] if "funding" in df_feat.columns else None
+                if _fund_vals is not None and len(_fund_vals) > 0:
+                    avg_funding_bt = float(np.nanmean(_fund_vals))
+
+            # Fear & Greed: look up the value for this bar's date.
+            # Neutral 50.0 if not available (no effect on thresholds).
+            covars_bt: dict | None = None
+            if fng_gate_enabled:
+                bar_date = str(row.name.date()) if hasattr(row.name, "date") else ""
+                fng_val  = fng_history.get(bar_date, 50.0)
+                covars_bt = {"fear_greed": fng_val}
+
             result = decision_engine.decide(
                 features=features,
                 c2_output=c2_out,
                 lgbm_prob=lgbm_p,
                 confluence_score=qt_score,
                 current_price=cur_px,
+                avg_funding=avg_funding_bt,
+                covariates=covars_bt,
             )
 
             if result.action != "no_trade":

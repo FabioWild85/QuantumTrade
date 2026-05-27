@@ -64,6 +64,19 @@ class DecisionEngine:
         consec_bars_filter_enabled: bool = False,
         consec_bars_max_long: int = 8,
         consec_bars_max_short: int = 8,
+        # Funding Rate Bias
+        funding_gate_enabled: bool = False,
+        funding_gate_lookback: int = 6,
+        funding_high_thr: float = 0.00010,
+        funding_extreme_thr: float = 0.00030,
+        funding_bias_delta: float = 0.03,
+        # Fear & Greed Bias
+        fng_gate_enabled: bool = False,
+        fng_extreme_fear_thr: float = 20.0,
+        fng_fear_thr: float = 35.0,
+        fng_greed_thr: float = 65.0,
+        fng_extreme_greed_thr: float = 80.0,
+        fng_bias_delta: float = 0.03,
     ):
         self.directional_threshold       = directional_threshold
         self.adx_gate                    = adx_gate
@@ -92,6 +105,19 @@ class DecisionEngine:
         self.consec_bars_filter_enabled    = consec_bars_filter_enabled
         self.consec_bars_max_long          = consec_bars_max_long
         self.consec_bars_max_short         = consec_bars_max_short
+        # Funding Rate Bias
+        self.funding_gate_enabled  = funding_gate_enabled
+        self.funding_gate_lookback = funding_gate_lookback
+        self.funding_high_thr      = funding_high_thr
+        self.funding_extreme_thr   = funding_extreme_thr
+        self.funding_bias_delta    = funding_bias_delta
+        # Fear & Greed Bias
+        self.fng_gate_enabled      = fng_gate_enabled
+        self.fng_extreme_fear_thr  = fng_extreme_fear_thr
+        self.fng_fear_thr          = fng_fear_thr
+        self.fng_greed_thr         = fng_greed_thr
+        self.fng_extreme_greed_thr = fng_extreme_greed_thr
+        self.fng_bias_delta        = fng_bias_delta
 
     def decide(
         self,
@@ -100,6 +126,8 @@ class DecisionEngine:
         lgbm_prob: float,
         confluence_score: Optional[float] = None,
         current_price: float = 0.0,
+        avg_funding: float = 0.0,
+        covariates: Optional[dict] = None,
     ) -> DecisionResult:
         """
         Args:
@@ -218,6 +246,67 @@ class DecisionEngine:
                     f"RegimeBias: regime=BEAR ({_regime_source}) → "
                     f"threshold_long={threshold_long:.2f} (+{self.regime_bias_delta:.2f}), "
                     f"threshold_short={threshold_short:.2f}"
+                )
+
+        # ── Funding Rate Bias ─────────────────────────────────────────────────
+        # High positive funding = market over-long → raise long threshold.
+        # High negative funding = market over-short → lower long threshold.
+        # Effect doubles at extreme levels (2× multiplier).
+        if self.funding_gate_enabled and avg_funding != 0.0:
+            _fund_mult = 2.0 if abs(avg_funding) > self.funding_extreme_thr else 1.0
+            _fund_adj  = self.funding_bias_delta * _fund_mult
+            if avg_funding > self.funding_high_thr:
+                threshold_long  += _fund_adj
+                threshold_short -= _fund_adj
+                reasoning.append(
+                    f"FundingBias: avg={avg_funding * 10000:.2f}bps/8h (×{_fund_mult:.0f}) "
+                    f"— over-long market → long +{_fund_adj:.2f}, short −{_fund_adj:.2f}"
+                )
+            elif avg_funding < -self.funding_high_thr:
+                threshold_long  -= _fund_adj
+                threshold_short += _fund_adj
+                reasoning.append(
+                    f"FundingBias: avg={avg_funding * 10000:.2f}bps/8h (×{_fund_mult:.0f}) "
+                    f"— over-short market → long −{_fund_adj:.2f}, short +{_fund_adj:.2f}"
+                )
+
+        # ── Fear & Greed Bias ─────────────────────────────────────────────────
+        # Contrarian: extreme fear = oversold from panic → favour longs.
+        # Extreme greed = overbought from euphoria → favour shorts.
+        # Only extreme zones (>80 / <20) apply the full delta; fear/greed zones use 0.5×.
+        if self.fng_gate_enabled and covariates:
+            fng = float(covariates.get("fear_greed", 50.0))
+            if fng < self.fng_extreme_fear_thr:
+                delta = self.fng_bias_delta
+                threshold_long  -= delta
+                threshold_short += delta
+                reasoning.append(
+                    f"FNG: Extreme Fear {fng:.0f} < {self.fng_extreme_fear_thr:.0f} "
+                    f"→ long −{delta:.2f}, short +{delta:.2f}"
+                )
+            elif fng < self.fng_fear_thr:
+                half = self.fng_bias_delta * 0.5
+                threshold_long  -= half
+                threshold_short += half
+                reasoning.append(
+                    f"FNG: Fear {fng:.0f} < {self.fng_fear_thr:.0f} "
+                    f"→ long −{half:.2f}, short +{half:.2f}"
+                )
+            elif fng > self.fng_extreme_greed_thr:
+                delta = self.fng_bias_delta
+                threshold_long  += delta
+                threshold_short -= delta
+                reasoning.append(
+                    f"FNG: Extreme Greed {fng:.0f} > {self.fng_extreme_greed_thr:.0f} "
+                    f"→ long +{delta:.2f}, short −{delta:.2f}"
+                )
+            elif fng > self.fng_greed_thr:
+                half = self.fng_bias_delta * 0.5
+                threshold_long  += half
+                threshold_short -= half
+                reasoning.append(
+                    f"FNG: Greed {fng:.0f} > {self.fng_greed_thr:.0f} "
+                    f"→ long +{half:.2f}, short −{half:.2f}"
                 )
 
         # ── Exhaustion Guard: RSI extreme + extended ret_48 ──────────────────

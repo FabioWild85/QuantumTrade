@@ -242,6 +242,19 @@ class BotConfig(BaseModel):
     macro_pause_nfp:            bool  = Field(True)
     macro_pause_ppi:            bool  = Field(False)
     macro_pause_jolts:          bool  = Field(False)
+    # Funding Rate Bias
+    funding_gate_enabled:  bool  = Field(False)
+    funding_gate_lookback: int   = Field(6,       ge=2,       le=24)
+    funding_high_thr:      float = Field(0.00010, ge=0.00003, le=0.00050)
+    funding_extreme_thr:   float = Field(0.00030, ge=0.00010, le=0.00100)
+    funding_bias_delta:    float = Field(0.03,    ge=0.01,    le=0.08)
+    # Fear & Greed Bias
+    fng_gate_enabled:      bool  = Field(False)
+    fng_extreme_fear_thr:  float = Field(20.0,    ge=5.0,     le=40.0)
+    fng_fear_thr:          float = Field(35.0,    ge=20.0,    le=50.0)
+    fng_greed_thr:         float = Field(65.0,    ge=50.0,    le=80.0)
+    fng_extreme_greed_thr: float = Field(80.0,    ge=60.0,    le=95.0)
+    fng_bias_delta:        float = Field(0.03,    ge=0.01,    le=0.08)
 
 
 class StartBotRequest(BaseModel):

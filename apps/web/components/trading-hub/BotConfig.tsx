@@ -95,6 +95,19 @@ interface Config {
   consec_bars_filter_enabled: boolean;
   consec_bars_max_long: number;
   consec_bars_max_short: number;
+  // Funding Rate Bias
+  funding_gate_enabled: boolean;
+  funding_gate_lookback: number;
+  funding_high_thr: number;
+  funding_extreme_thr: number;
+  funding_bias_delta: number;
+  // Fear & Greed Bias
+  fng_gate_enabled: boolean;
+  fng_extreme_fear_thr: number;
+  fng_fear_thr: number;
+  fng_greed_thr: number;
+  fng_extreme_greed_thr: number;
+  fng_bias_delta: number;
   // Extra exit flags (from HubSettings)
   p10_sl_floor_enabled: boolean;
   enhanced_exit_enabled: boolean;
@@ -193,6 +206,19 @@ const DEFAULTS: Config = {
   consec_bars_filter_enabled: false,
   consec_bars_max_long: 8,
   consec_bars_max_short: 8,
+  // Funding Rate Bias
+  funding_gate_enabled: false,
+  funding_gate_lookback: 6,
+  funding_high_thr: 0.00010,
+  funding_extreme_thr: 0.00030,
+  funding_bias_delta: 0.03,
+  // Fear & Greed Bias
+  fng_gate_enabled: false,
+  fng_extreme_fear_thr: 20.0,
+  fng_fear_thr: 35.0,
+  fng_greed_thr: 65.0,
+  fng_extreme_greed_thr: 80.0,
+  fng_bias_delta: 0.03,
   p10_sl_floor_enabled: false,
   enhanced_exit_enabled: false,
 };
@@ -1157,6 +1183,169 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
         )}
       </Section>
 
+
+      {/* ── Bias di Mercato — Funding / Sentiment ── */}
+      <Section title="Bias di Mercato — Funding / Sentiment" description="Adatta le soglie direzionali al posizionamento del mercato. Funding Rate alto = mercato over-long → soglia long alzata. Fear &amp; Greed estremo = contrarian → favorisce il lato opposto.">
+        {/* Funding Rate Bias */}
+        <div className={`flex flex-col gap-3 mb-6 pb-6 border-b transition-colors duration-200 ${config.funding_gate_enabled ? 'border-cyan-200 dark:border-cyan-500/25' : 'border-slate-100 dark:border-white/5'}`}>
+          <label className="flex items-center gap-3 cursor-pointer group">
+            <div className="relative">
+              <input type="checkbox" className="sr-only" checked={config.funding_gate_enabled} onChange={e => setConfig(c => ({ ...c, funding_gate_enabled: e.target.checked }))} />
+              <div className={`w-10 h-5 rounded-full transition-all duration-300 ${config.funding_gate_enabled ? 'bg-cyan-600' : 'bg-slate-200 dark:bg-white/10'}`} />
+              <div className={`absolute top-1 left-1 w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.funding_gate_enabled ? 'translate-x-5' : ''}`} />
+            </div>
+            <div>
+              <p className={`text-sm font-bold transition-colors ${config.funding_gate_enabled ? 'text-cyan-600 dark:text-cyan-400' : 'text-slate-800 dark:text-slate-200 group-hover:text-cyan-600 dark:group-hover:text-cyan-400'}`}>
+                Funding Rate Bias
+                {config.funding_gate_enabled && <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-cyan-100 dark:bg-cyan-500/20 text-cyan-600 dark:text-cyan-400 uppercase tracking-wider">Attivo</span>}
+              </p>
+              <p className="text-[11px] font-medium text-slate-400 dark:text-slate-500 leading-tight">
+                {config.funding_gate_enabled
+                  ? `Lookback ${config.funding_gate_lookback} bar · high ≥${(config.funding_high_thr * 10000).toFixed(1)}bps · extreme ≥${(config.funding_extreme_thr * 10000).toFixed(1)}bps · Δ${config.funding_bias_delta}`
+                  : 'Funding positivo alto → soglia long alzata; funding negativo → soglia short alzata'}
+              </p>
+            </div>
+          </label>
+          {config.funding_gate_enabled && (
+            <div className="pl-12 grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-4 mt-1">
+              <div>
+                <label className="flex items-center justify-between mb-2">
+                  <span className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest">Lookback bars (4H)</span>
+                  <span className="font-mono text-sm font-bold text-cyan-600 dark:text-cyan-400">{config.funding_gate_lookback}</span>
+                </label>
+                <input type="range" min="2" max="24" step="1"
+                  value={config.funding_gate_lookback}
+                  onChange={e => setConfig(c => ({ ...c, funding_gate_lookback: parseInt(e.target.value) }))}
+                  className="w-full h-1.5 bg-slate-200 dark:bg-white/10 rounded-full appearance-none cursor-pointer accent-cyan-600"
+                />
+                <div className="flex justify-between text-[9px] font-mono text-slate-400 mt-1"><span>2</span><span>12</span><span>24</span></div>
+              </div>
+              <div>
+                <label className="flex items-center justify-between mb-2">
+                  <span className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest">Soglia high (bps/8h)</span>
+                  <span className="font-mono text-sm font-bold text-cyan-600 dark:text-cyan-400">{(config.funding_high_thr * 10000).toFixed(1)}</span>
+                </label>
+                <input type="range" min="0.00003" max="0.00050" step="0.00001"
+                  value={config.funding_high_thr}
+                  onChange={e => setConfig(c => ({ ...c, funding_high_thr: parseFloat(e.target.value) }))}
+                  className="w-full h-1.5 bg-slate-200 dark:bg-white/10 rounded-full appearance-none cursor-pointer accent-cyan-600"
+                />
+                <div className="flex justify-between text-[9px] font-mono text-slate-400 mt-1"><span>0.3</span><span>2.5</span><span>5.0</span></div>
+              </div>
+              <div>
+                <label className="flex items-center justify-between mb-2">
+                  <span className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest">Soglia extreme (bps/8h)</span>
+                  <span className="font-mono text-sm font-bold text-cyan-600 dark:text-cyan-400">{(config.funding_extreme_thr * 10000).toFixed(1)}</span>
+                </label>
+                <input type="range" min="0.00010" max="0.00100" step="0.00005"
+                  value={config.funding_extreme_thr}
+                  onChange={e => setConfig(c => ({ ...c, funding_extreme_thr: parseFloat(e.target.value) }))}
+                  className="w-full h-1.5 bg-slate-200 dark:bg-white/10 rounded-full appearance-none cursor-pointer accent-cyan-600"
+                />
+                <div className="flex justify-between text-[9px] font-mono text-slate-400 mt-1"><span>1.0</span><span>5.0</span><span>10.0</span></div>
+              </div>
+              <div>
+                <label className="flex items-center justify-between mb-2">
+                  <span className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest">Bias delta</span>
+                  <span className="font-mono text-sm font-bold text-cyan-600 dark:text-cyan-400">Δ{config.funding_bias_delta.toFixed(2)}</span>
+                </label>
+                <input type="range" min="0.01" max="0.08" step="0.005"
+                  value={config.funding_bias_delta}
+                  onChange={e => setConfig(c => ({ ...c, funding_bias_delta: parseFloat(e.target.value) }))}
+                  className="w-full h-1.5 bg-slate-200 dark:bg-white/10 rounded-full appearance-none cursor-pointer accent-cyan-600"
+                />
+                <div className="flex justify-between text-[9px] font-mono text-slate-400 mt-1"><span>0.01</span><span>0.04</span><span>0.08</span></div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Fear & Greed Bias */}
+        <div className={`flex flex-col gap-3 transition-colors duration-200`}>
+          <label className="flex items-center gap-3 cursor-pointer group">
+            <div className="relative">
+              <input type="checkbox" className="sr-only" checked={config.fng_gate_enabled} onChange={e => setConfig(c => ({ ...c, fng_gate_enabled: e.target.checked }))} />
+              <div className={`w-10 h-5 rounded-full transition-all duration-300 ${config.fng_gate_enabled ? 'bg-violet-600' : 'bg-slate-200 dark:bg-white/10'}`} />
+              <div className={`absolute top-1 left-1 w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.fng_gate_enabled ? 'translate-x-5' : ''}`} />
+            </div>
+            <div>
+              <p className={`text-sm font-bold transition-colors ${config.fng_gate_enabled ? 'text-violet-600 dark:text-violet-400' : 'text-slate-800 dark:text-slate-200 group-hover:text-violet-600 dark:group-hover:text-violet-400'}`}>
+                Fear &amp; Greed Bias
+                {config.fng_gate_enabled && <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-violet-100 dark:bg-violet-500/20 text-violet-600 dark:text-violet-400 uppercase tracking-wider">Attivo</span>}
+              </p>
+              <p className="text-[11px] font-medium text-slate-400 dark:text-slate-500 leading-tight">
+                {config.fng_gate_enabled
+                  ? `Extreme Fear <${config.fng_extreme_fear_thr} · Fear <${config.fng_fear_thr} · Greed >${config.fng_greed_thr} · Extreme Greed >${config.fng_extreme_greed_thr} · Δ${config.fng_bias_delta}`
+                  : 'Contrarian: paura estrema favorisce long, greed estremo favorisce short'}
+              </p>
+            </div>
+          </label>
+          {config.fng_gate_enabled && (
+            <div className="pl-12 grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-4 mt-1">
+              <div>
+                <label className="flex items-center justify-between mb-2">
+                  <span className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest">Soglia Extreme Fear</span>
+                  <span className="font-mono text-sm font-bold text-violet-600 dark:text-violet-400">&lt;{config.fng_extreme_fear_thr.toFixed(0)}</span>
+                </label>
+                <input type="range" min="5" max="40" step="1"
+                  value={config.fng_extreme_fear_thr}
+                  onChange={e => setConfig(c => ({ ...c, fng_extreme_fear_thr: parseFloat(e.target.value) }))}
+                  className="w-full h-1.5 bg-slate-200 dark:bg-white/10 rounded-full appearance-none cursor-pointer accent-violet-600"
+                />
+                <div className="flex justify-between text-[9px] font-mono text-slate-400 mt-1"><span>5</span><span>20</span><span>40</span></div>
+              </div>
+              <div>
+                <label className="flex items-center justify-between mb-2">
+                  <span className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest">Soglia Fear</span>
+                  <span className="font-mono text-sm font-bold text-violet-600 dark:text-violet-400">&lt;{config.fng_fear_thr.toFixed(0)}</span>
+                </label>
+                <input type="range" min="20" max="50" step="1"
+                  value={config.fng_fear_thr}
+                  onChange={e => setConfig(c => ({ ...c, fng_fear_thr: parseFloat(e.target.value) }))}
+                  className="w-full h-1.5 bg-slate-200 dark:bg-white/10 rounded-full appearance-none cursor-pointer accent-violet-600"
+                />
+                <div className="flex justify-between text-[9px] font-mono text-slate-400 mt-1"><span>20</span><span>35</span><span>50</span></div>
+              </div>
+              <div>
+                <label className="flex items-center justify-between mb-2">
+                  <span className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest">Soglia Greed</span>
+                  <span className="font-mono text-sm font-bold text-violet-600 dark:text-violet-400">&gt;{config.fng_greed_thr.toFixed(0)}</span>
+                </label>
+                <input type="range" min="50" max="80" step="1"
+                  value={config.fng_greed_thr}
+                  onChange={e => setConfig(c => ({ ...c, fng_greed_thr: parseFloat(e.target.value) }))}
+                  className="w-full h-1.5 bg-slate-200 dark:bg-white/10 rounded-full appearance-none cursor-pointer accent-violet-600"
+                />
+                <div className="flex justify-between text-[9px] font-mono text-slate-400 mt-1"><span>50</span><span>65</span><span>80</span></div>
+              </div>
+              <div>
+                <label className="flex items-center justify-between mb-2">
+                  <span className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest">Soglia Extreme Greed</span>
+                  <span className="font-mono text-sm font-bold text-violet-600 dark:text-violet-400">&gt;{config.fng_extreme_greed_thr.toFixed(0)}</span>
+                </label>
+                <input type="range" min="60" max="95" step="1"
+                  value={config.fng_extreme_greed_thr}
+                  onChange={e => setConfig(c => ({ ...c, fng_extreme_greed_thr: parseFloat(e.target.value) }))}
+                  className="w-full h-1.5 bg-slate-200 dark:bg-white/10 rounded-full appearance-none cursor-pointer accent-violet-600"
+                />
+                <div className="flex justify-between text-[9px] font-mono text-slate-400 mt-1"><span>60</span><span>80</span><span>95</span></div>
+              </div>
+              <div className="sm:col-span-2">
+                <label className="flex items-center justify-between mb-2">
+                  <span className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest">Bias delta</span>
+                  <span className="font-mono text-sm font-bold text-violet-600 dark:text-violet-400">Δ{config.fng_bias_delta.toFixed(2)}</span>
+                </label>
+                <input type="range" min="0.01" max="0.08" step="0.005"
+                  value={config.fng_bias_delta}
+                  onChange={e => setConfig(c => ({ ...c, fng_bias_delta: parseFloat(e.target.value) }))}
+                  className="w-full h-1.5 bg-slate-200 dark:bg-white/10 rounded-full appearance-none cursor-pointer accent-violet-600"
+                />
+                <div className="flex justify-between text-[9px] font-mono text-slate-400 mt-1"><span>0.01</span><span>0.04</span><span>0.08</span></div>
+              </div>
+            </div>
+          )}
+        </div>
+      </Section>
 
       {/* Chronos-2 — Modello Predittivo */}
       <Section title="Chronos-2 — Modello Predittivo" description="Transformer time-series Chronos-2: controlla l'attivazione del modello, il peso nell'ensemble e i gate basati sulle previsioni quantili p10/p90/p50.">

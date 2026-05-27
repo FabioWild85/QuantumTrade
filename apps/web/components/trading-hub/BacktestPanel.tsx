@@ -1366,6 +1366,19 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   const [regimeBiasDelta,     setRegimeBiasDelta]     = useState('0.08');
   const [regimeBiasSizeFactor,setRegimeBiasSizeFactor]= useState('1.0');
   const [forcedRegime,        setForcedRegime]        = useState<'auto' | 'bull' | 'bear' | 'neutral'>('auto');
+  // Funding Rate Bias
+  const [fundingGate,          setFundingGate]          = useState(false);
+  const [fundingGateLookback,  setFundingGateLookback]  = useState('6');
+  const [fundingHighThr,       setFundingHighThr]       = useState('0.00010');
+  const [fundingExtremeThr,    setFundingExtremeThr]    = useState('0.00030');
+  const [fundingBiasDelta,     setFundingBiasDelta]     = useState('0.03');
+  // Fear & Greed Bias
+  const [fngGate,              setFngGate]              = useState(false);
+  const [fngExtremeFearThr,    setFngExtremeFearThr]    = useState('20.0');
+  const [fngFearThr,           setFngFearThr]           = useState('35.0');
+  const [fngGreedThr,          setFngGreedThr]          = useState('65.0');
+  const [fngExtremeGreedThr,   setFngExtremeGreedThr]   = useState('80.0');
+  const [fngBiasDelta,         setFngBiasDelta]         = useState('0.03');
   const [compareMode,         setCompareMode]         = useState(false);
 
   // ── Regime quick-selector ────────────────────────────────────────────────────
@@ -1476,6 +1489,17 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     if (p.regime_bias_delta       !== undefined) setRegimeBiasDelta(String(p.regime_bias_delta));
     if (p.regime_bias_size_factor !== undefined) setRegimeBiasSizeFactor(String(p.regime_bias_size_factor));
     if (p.forced_regime           !== undefined) setForcedRegime(p.forced_regime as 'auto' | 'bull' | 'bear' | 'neutral');
+    if (p.funding_gate_enabled    !== undefined) setFundingGate(!!p.funding_gate_enabled);
+    if (p.funding_gate_lookback   !== undefined) setFundingGateLookback(String(p.funding_gate_lookback));
+    if (p.funding_high_thr        !== undefined) setFundingHighThr(String(p.funding_high_thr));
+    if (p.funding_extreme_thr     !== undefined) setFundingExtremeThr(String(p.funding_extreme_thr));
+    if (p.funding_bias_delta      !== undefined) setFundingBiasDelta(String(p.funding_bias_delta));
+    if (p.fng_gate_enabled        !== undefined) setFngGate(!!p.fng_gate_enabled);
+    if (p.fng_extreme_fear_thr    !== undefined) setFngExtremeFearThr(String(p.fng_extreme_fear_thr));
+    if (p.fng_fear_thr            !== undefined) setFngFearThr(String(p.fng_fear_thr));
+    if (p.fng_greed_thr           !== undefined) setFngGreedThr(String(p.fng_greed_thr));
+    if (p.fng_extreme_greed_thr   !== undefined) setFngExtremeGreedThr(String(p.fng_extreme_greed_thr));
+    if (p.fng_bias_delta          !== undefined) setFngBiasDelta(String(p.fng_bias_delta));
     if (p.be_sl_enabled                 !== undefined) setAdvBeSL(!!p.be_sl_enabled);
     if (p.be_sl_activation      !== undefined) setAdvBeSLAct(String(p.be_sl_activation));
     if (p.max_hold_bars_enabled !== undefined) setAdvMaxHold(!!p.max_hold_bars_enabled);
@@ -1700,6 +1724,19 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     consec_bars_filter_enabled:    consecBarsFilter,
     consec_bars_max_long:          parseInt(consecBarsMaxLong),
     consec_bars_max_short:         parseInt(consecBarsMaxShort),
+    // Funding Rate Bias
+    funding_gate_enabled:          fundingGate,
+    funding_gate_lookback:         parseInt(fundingGateLookback),
+    funding_high_thr:              parseFloat(fundingHighThr),
+    funding_extreme_thr:           parseFloat(fundingExtremeThr),
+    funding_bias_delta:            parseFloat(fundingBiasDelta),
+    // Fear & Greed Bias
+    fng_gate_enabled:              fngGate,
+    fng_extreme_fear_thr:          parseFloat(fngExtremeFearThr),
+    fng_fear_thr:                  parseFloat(fngFearThr),
+    fng_greed_thr:                 parseFloat(fngGreedThr),
+    fng_extreme_greed_thr:         parseFloat(fngExtremeGreedThr),
+    fng_bias_delta:                parseFloat(fngBiasDelta),
   });
 
   const downloadConfig = () => {
@@ -1760,6 +1797,10 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
       `Late Entry Filter:      ${lateEntryFilter ? `ATTIVO — max OB dist ${lateEntryMaxObDist} ATR` : 'DISATTIVATO'}`,
       `Path Obstruction Gate:  ${pathObstruction ? `ATTIVO — max dist contrario ${pathObstMaxDist} ATR` : 'DISATTIVATO'}`,
       `Consecutive Bars Filter:${consecBarsFilter ? ` ATTIVO — max long ${consecBarsMaxLong} bar | max short ${consecBarsMaxShort} bar` : ' DISATTIVATO'}`,
+      '',
+      '━━━ BIAS DI MERCATO ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
+      `Funding Rate Bias:      ${fundingGate ? `ATTIVO — lookback ${fundingGateLookback} bar · high ${(parseFloat(fundingHighThr)*10000).toFixed(1)}bps · extreme ${(parseFloat(fundingExtremeThr)*10000).toFixed(1)}bps · Δ${fundingBiasDelta}` : 'DISATTIVATO'}`,
+      `Fear & Greed Bias:      ${fngGate ? `ATTIVO — ExFear <${fngExtremeFearThr} · Fear <${fngFearThr} · Greed >${fngGreedThr} · ExGreed >${fngExtremeGreedThr} · Δ${fngBiasDelta}` : 'DISATTIVATO'}`,
     ];
 
     if (result) {
@@ -1856,7 +1897,8 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     || !advAdxEnabled || !advSweepEnabled || !advFvgEnabled || !advMtfEnabled
     || c2UncertaintyGate || c2ContProbGate || regimeBias
     || sweepDirectional || absorptionFilter || !exhaustionGuard || !structuralSl
-    || lateEntryFilter || pathObstruction || dualAtr || consecBarsFilter;
+    || lateEntryFilter || pathObstruction || dualAtr || consecBarsFilter
+    || fundingGate || fngGate;
 
   return (
     <>
@@ -2935,6 +2977,103 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                       </Tooltip>
                     </div>
                   )}
+                </div>
+              </section>
+
+              {/* ── Bias di Mercato ────────────────────────────────────────────── */}
+              <section className="space-y-5">
+                <h4 className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest flex items-center gap-2">
+                  <span className="w-1.5 h-1.5 rounded-full bg-cyan-500" />
+                  Bias di Mercato
+                </h4>
+                <div className="space-y-4 bg-slate-50 dark:bg-white/[0.02] p-4 rounded-2xl border border-slate-100 dark:border-white/5">
+                  {/* Funding Rate Bias */}
+                  <Toggle
+                    label="Funding Rate Bias"
+                    desc="Funding alto → soglia long alzata; funding negativo → soglia short alzata"
+                    checked={fundingGate}
+                    onChange={setFundingGate}
+                  />
+                  {fundingGate && (
+                    <div className="space-y-3 pt-1">
+                      <NumInput
+                        label="Lookback bars (4H)"
+                        value={fundingGateLookback}
+                        onChange={setFundingGateLookback}
+                        step="1" min="2" max="24"
+                        unit="bar"
+                      />
+                      <NumInput
+                        label="Soglia high (bps/8h)"
+                        value={String((parseFloat(fundingHighThr) * 10000).toFixed(2))}
+                        onChange={v => setFundingHighThr(String(parseFloat(v) / 10000))}
+                        step="0.1" min="0.3" max="5.0"
+                        unit="bps"
+                      />
+                      <NumInput
+                        label="Soglia extreme (bps/8h)"
+                        value={String((parseFloat(fundingExtremeThr) * 10000).toFixed(2))}
+                        onChange={v => setFundingExtremeThr(String(parseFloat(v) / 10000))}
+                        step="0.5" min="1.0" max="10.0"
+                        unit="bps"
+                      />
+                      <NumInput
+                        label="Bias delta"
+                        value={fundingBiasDelta}
+                        onChange={setFundingBiasDelta}
+                        step="0.005" min="0.01" max="0.08"
+                        unit="Δ"
+                      />
+                    </div>
+                  )}
+                  <div className="border-t border-slate-100 dark:border-white/5 pt-4">
+                    {/* Fear & Greed Bias */}
+                    <Toggle
+                      label="Fear & Greed Bias"
+                      desc="Contrarian: paura estrema favorisce long, greed estremo favorisce short"
+                      checked={fngGate}
+                      onChange={setFngGate}
+                    />
+                    {fngGate && (
+                      <div className="space-y-3 pt-3">
+                        <NumInput
+                          label="Soglia Extreme Fear"
+                          value={fngExtremeFearThr}
+                          onChange={setFngExtremeFearThr}
+                          step="1" min="5" max="40"
+                          unit="<"
+                        />
+                        <NumInput
+                          label="Soglia Fear"
+                          value={fngFearThr}
+                          onChange={setFngFearThr}
+                          step="1" min="20" max="50"
+                          unit="<"
+                        />
+                        <NumInput
+                          label="Soglia Greed"
+                          value={fngGreedThr}
+                          onChange={setFngGreedThr}
+                          step="1" min="50" max="80"
+                          unit=">"
+                        />
+                        <NumInput
+                          label="Soglia Extreme Greed"
+                          value={fngExtremeGreedThr}
+                          onChange={setFngExtremeGreedThr}
+                          step="1" min="60" max="95"
+                          unit=">"
+                        />
+                        <NumInput
+                          label="Bias delta"
+                          value={fngBiasDelta}
+                          onChange={setFngBiasDelta}
+                          step="0.005" min="0.01" max="0.08"
+                          unit="Δ"
+                        />
+                      </div>
+                    )}
+                  </div>
                 </div>
               </section>
 

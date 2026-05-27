@@ -14,9 +14,13 @@ from services.supabase_client import get_supabase
 
 log = logging.getLogger(__name__)
 
-_FNG_URL    = "https://api.alternative.me/fng/?limit=1&format=json"
-_GECKO_URL  = "https://api.coingecko.com/api/v3/global"
-_TIMEOUT    = 10.0
+_FNG_URL         = "https://api.alternative.me/fng/?limit=1&format=json"
+_FNG_HISTORY_URL = "https://api.alternative.me/fng/?limit=0&format=json&date_format=us"
+_GECKO_URL       = "https://api.coingecko.com/api/v3/global"
+_TIMEOUT         = 30.0
+
+# Module-level cache for historical F&G — fetched once per process lifetime.
+_fng_cache: dict[str, float] = {}
 
 
 # ── Fetchers ──────────────────────────────────────────────────────────────────
@@ -41,6 +45,42 @@ async def _fetch_btc_dominance() -> Optional[float]:
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
+
+async def fetch_historical_fng() -> dict[str, float]:
+    """
+    Fetch the full Fear & Greed history from alternative.me (2018–today).
+    Returns {date_str: fng_value} e.g. {"2024-01-15": 45.0, ...}.
+    Cached in-process: subsequent calls return the same dict without re-fetching.
+    On any error returns {} — callers must handle gracefully.
+    """
+    global _fng_cache
+    if _fng_cache:
+        return _fng_cache
+    try:
+        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+            resp = await client.get(_FNG_HISTORY_URL)
+            resp.raise_for_status()
+            rows = resp.json().get("data", [])
+        result: dict[str, float] = {}
+        for row in rows:
+            # date_format=us gives "timestamp" as "MM-DD-YYYY"
+            date_str = row.get("timestamp", "")
+            if date_str:
+                try:
+                    # Normalise to ISO YYYY-MM-DD for dict key
+                    parts = date_str.split("-")
+                    if len(parts) == 3:
+                        iso = f"{parts[2]}-{parts[0]}-{parts[1]}"
+                        result[iso] = float(row["value"])
+                except (ValueError, KeyError):
+                    pass
+        _fng_cache = result
+        log.info("Historical F&G loaded: %d days", len(result))
+        return result
+    except Exception as exc:
+        log.warning("fetch_historical_fng failed: %s", exc)
+        return {}
+
 
 async def update_covariates(symbol: str = "BTC") -> dict:
     """
