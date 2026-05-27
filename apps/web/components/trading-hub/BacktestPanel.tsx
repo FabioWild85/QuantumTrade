@@ -648,6 +648,11 @@ const ConfigSummary: React.FC<{ config: Record<string, any> }> = ({ config: c })
   if (c.c2_uncertainty_gate_enabled)   activeBadges.push(badge(`C2 Gate <${c.c2_uncertainty_threshold ?? 0.05}`, 'bg-cyan-50 dark:bg-cyan-500/10 text-cyan-600 dark:text-cyan-400 border-cyan-100 dark:border-cyan-500/20'));
   if (c.dynamic_sl_tp_enabled)         activeBadges.push(badge(`Adaptive SL/TP ${Math.round((c.dynamic_sl_tp_blend ?? 0.5) * 100)}% C2`, 'bg-violet-50 dark:bg-violet-500/10 text-violet-600 dark:text-violet-400 border-violet-100 dark:border-violet-500/20'));
   if (c.p10_sl_floor_enabled)          activeBadges.push(badge('P10 SL Floor', 'bg-violet-50 dark:bg-violet-500/10 text-violet-600 dark:text-violet-400 border-violet-100 dark:border-violet-500/20'));
+  if (c.ob_tp_enabled)                 activeBadges.push(badge(`OB TP ${Math.round((c.ob_tp_blend ?? 1) * 100)}% OB`, 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-100 dark:border-emerald-500/20'));
+  if (c.fvg_sl_enabled)                activeBadges.push(badge('FVG SL', 'bg-violet-50 dark:bg-violet-500/10 text-violet-600 dark:text-violet-400 border-violet-100 dark:border-violet-500/20'));
+  if (c.fvg_tp_enabled) activeBadges.push(badge(`FVG TP ${Math.round((c.fvg_tp_blend ?? 1) * 100)}% FVG`, 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-100 dark:border-emerald-500/20'));
+  if (c.swing_sl_enabled)              activeBadges.push(badge('Swing SL', 'bg-violet-50 dark:bg-violet-500/10 text-violet-600 dark:text-violet-400 border-violet-100 dark:border-violet-500/20'));
+  if (c.swing_tp_enabled)              activeBadges.push(badge(`Swing TP ${Math.round((c.swing_tp_blend ?? 1) * 100)}% Sw`, 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-100 dark:border-emerald-500/20'));
   if (c.regime_bias_enabled) {
     const rLabel = c.forced_regime && c.forced_regime !== 'auto' ? ` [${c.forced_regime.toUpperCase()}]` : '';
     activeBadges.push(badge(`Regime Bias +${c.regime_bias_delta ?? 0.08}${rLabel}`, 'bg-orange-50 dark:bg-orange-500/10 text-orange-600 dark:text-orange-400 border-orange-100 dark:border-orange-500/20'));
@@ -1329,6 +1334,14 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   const [dynamicSlTpBlend,         setDynamicSlTpBlend]         = useState('0.50');
   const [recalibratedUncertainty,  setRecalibratedUncertainty]  = useState(true);
   const [p10SlFloor,               setP10SlFloor]               = useState(false);
+  const [obTp,                     setObTp]                     = useState(false);
+  const [obTpBlend,                setObTpBlend]                = useState('1.0');
+  const [fvgSl,                    setFvgSl]                    = useState(false);
+  const [fvgTp,                    setFvgTp]                    = useState(false);
+  const [fvgTpBlend,               setFvgTpBlend]               = useState('1.0');
+  const [swingSl,                  setSwingSl]                  = useState(false);
+  const [swingTp,                  setSwingTp]                  = useState(false);
+  const [swingTpBlend,             setSwingTpBlend]             = useState('1.0');
   // Sweep Confluence directional mode
   const [sweepDirectional, setSweepDirectional] = useState(false);
   // CVD Absorption Filter
@@ -1338,7 +1351,7 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   const [dualAtr, setDualAtr] = useState(false);
   // Signal quality filters
   const [exhaustionGuard,    setExhaustionGuard]    = useState(true);
-  const [structuralSl,       setStructuralSl]       = useState(true);
+  const [structuralSl,       setStructuralSl]       = useState(false);
   const [obBufferPct,        setObBufferPct]        = useState('0.3');
   const [obBufferMinAtr,     setObBufferMinAtr]     = useState('0.0');
   const [lateEntryFilter,    setLateEntryFilter]    = useState(false);
@@ -1436,6 +1449,14 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     if (p.dynamic_sl_tp_blend                     !== undefined) setDynamicSlTpBlend(String(p.dynamic_sl_tp_blend));
     if (p.recalibrated_uncertainty_thresholds     !== undefined) setRecalibratedUncertainty(!!p.recalibrated_uncertainty_thresholds);
     if (p.p10_sl_floor_enabled                    !== undefined) setP10SlFloor(!!p.p10_sl_floor_enabled);
+    if (p.ob_tp_enabled                           !== undefined) setObTp(!!p.ob_tp_enabled);
+    if (p.ob_tp_blend                             !== undefined) setObTpBlend(String(p.ob_tp_blend));
+    if (p.fvg_sl_enabled                          !== undefined) setFvgSl(!!p.fvg_sl_enabled);
+    if (p.fvg_tp_enabled !== undefined) setFvgTp(!!p.fvg_tp_enabled);
+    if (p.fvg_tp_blend   !== undefined) setFvgTpBlend(String(p.fvg_tp_blend));
+    if (p.swing_sl_enabled !== undefined) setSwingSl(!!p.swing_sl_enabled);
+    if (p.swing_tp_enabled !== undefined) setSwingTp(!!p.swing_tp_enabled);
+    if (p.swing_tp_blend   !== undefined) setSwingTpBlend(String(p.swing_tp_blend));
     if (p.sweep_gate_directional    !== undefined) setSweepDirectional(!!p.sweep_gate_directional);
     if (p.absorption_filter_enabled !== undefined) setAbsorptionFilter(!!p.absorption_filter_enabled);
     if (p.absorption_z_threshold    !== undefined) setAbsorptionZThresh(String(p.absorption_z_threshold));
@@ -1642,6 +1663,14 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     dynamic_sl_tp_blend:                    parseFloat(dynamicSlTpBlend),
     recalibrated_uncertainty_thresholds:    recalibratedUncertainty,
     p10_sl_floor_enabled:                   withAdvanced && p10SlFloor && useChronos,
+    ob_tp_enabled:                          obTp,
+    ob_tp_blend:                            parseFloat(obTpBlend),
+    fvg_sl_enabled:                         fvgSl,
+    fvg_tp_enabled:                         fvgTp,
+    fvg_tp_blend:                           parseFloat(fvgTpBlend),
+    swing_sl_enabled:                       swingSl,
+    swing_tp_enabled:                       swingTp,
+    swing_tp_blend:                         parseFloat(swingTpBlend),
     // Advanced position management
     be_sl_enabled:                 advBeSL,
     be_sl_activation:              parseFloat(advBeSLAct),
@@ -1717,12 +1746,17 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
       `Dynamic SL/TP:          ${dynamicSlTp ? `ATTIVO — blend ${dynamicSlTpBlend}` : 'DISATTIVATO'}`,
       `Recalibrated uncertainty: ${recalibratedUncertainty ? 'SÌ' : 'NO'}`,
       `P10 SL floor:           ${p10SlFloor && useChronos ? 'ATTIVO' : 'DISATTIVATO'}`,
+      `TP Strutturale (OB):    ${obTp ? `ATTIVO — blend ${Math.round(parseFloat(obTpBlend) * 100)}% OB / ${Math.round((1 - parseFloat(obTpBlend)) * 100)}% ATR` : 'DISATTIVATO'}`,
+      `SL Strutturale (OB):    ${structuralSl ? `ATTIVO — buffer ${obBufferPct}% | min ATR floor ${obBufferMinAtr}` : 'DISATTIVATO'}`,
+      `SL — FVG:               ${fvgSl ? `ATTIVO — buffer ${obBufferPct}% | min ATR floor ${obBufferMinAtr}` : 'DISATTIVATO'}`,
+      `TP — FVG:               ${fvgTp ? `ATTIVO — blend ${Math.round(parseFloat(fvgTpBlend) * 100)}% FVG / ${Math.round((1 - parseFloat(fvgTpBlend)) * 100)}% ATR` : 'DISATTIVATO'}`,
+      `SL — Swing:             ${swingSl ? 'ATTIVO' : 'DISATTIVATO'}`,
+      `TP — Swing:             ${swingTp ? `ATTIVO — blend ${Math.round(parseFloat(swingTpBlend) * 100)}% Swing / ${Math.round((1 - parseFloat(swingTpBlend)) * 100)}% ATR` : 'DISATTIVATO'}`,
       '',
       '━━━ SIGNAL QUALITY FILTERS ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
       `Exhaustion Guard:       ${exhaustionGuard ? 'ATTIVO' : 'DISATTIVATO'}`,
       `Absorption Filter:      ${absorptionFilter ? `ATTIVO — soglia z ${absorptionZThresh}σ` : 'DISATTIVATO'}`,
       `Dual ATR (SL/TP):       ${dualAtr ? 'ATTIVO (SL=ATR_21, TP=ATR_14)' : 'DISATTIVATO'}`,
-      `Structural SL (OB):     ${structuralSl ? `ATTIVO — buffer ${obBufferPct}% | min ATR floor ${obBufferMinAtr}` : 'DISATTIVATO'}`,
       `Late Entry Filter:      ${lateEntryFilter ? `ATTIVO — max OB dist ${lateEntryMaxObDist} ATR` : 'DISATTIVATO'}`,
       `Path Obstruction Gate:  ${pathObstruction ? `ATTIVO — max dist contrario ${pathObstMaxDist} ATR` : 'DISATTIVATO'}`,
       `Consecutive Bars Filter:${consecBarsFilter ? ` ATTIVO — max long ${consecBarsMaxLong} bar | max short ${consecBarsMaxShort} bar` : ' DISATTIVATO'}`,
@@ -1990,8 +2024,8 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                 { label: 'Dal',        tip: 'Data di inizio del backtest. I dati storici OHLCV sono disponibili dal 2017.', type: 'date',   val: fromDate,   set: setFromDate,   min: '2017-01-01', max: toDate,  dimWhenDynamic: false },
                 { label: 'Al',         tip: 'Data di fine del backtest. Usa una data recente per testare su dati aggiornati.',       type: 'date',   val: toDate,     set: setToDate,     min: fromDate,     max: today,  dimWhenDynamic: false },
                 { label: 'Capitale ($)',tip: 'Capitale iniziale simulato in USD. Tutti i calcoli di P&L sono basati su questo importo.', type: 'number', val: capital,    set: setCapital,    min: undefined,    max: undefined, dimWhenDynamic: false },
-                { label: 'SL Mult',    tip: 'Stop Loss Multiplier: distanza dello stop loss in multipli di ATR. Disabilitato in modalità Adaptive SL/TP.',    type: 'number', val: slMult,     set: setSlMult,     min: undefined,    max: undefined, dimWhenDynamic: true  },
-                { label: 'TP Mult',    tip: 'Take Profit Multiplier: distanza del TP in multipli di ATR. Disabilitato in modalità Adaptive SL/TP.',            type: 'number', val: tpMult,     set: setTpMult,     min: undefined,    max: undefined, dimWhenDynamic: true  },
+                { label: 'SL Mult',    tip: 'Stop Loss Multiplier: distanza dello stop loss in multipli di ATR. Usato come base e fallback anche in modalità Adaptive SL/TP.',    type: 'number', val: slMult,     set: setSlMult,     min: undefined,    max: undefined, dimWhenDynamic: false },
+                { label: 'TP Mult',    tip: 'Take Profit Multiplier: distanza del TP in multipli di ATR. Usato come base e fallback anche in modalità Adaptive SL/TP.',            type: 'number', val: tpMult,     set: setTpMult,     min: undefined,    max: undefined, dimWhenDynamic: false },
                 { label: 'Size (%)',   tip: 'Percentuale del capitale rischiata per ogni trade. Con $10.000 e Size 1.5%, ogni trade rischia $150.',             type: 'number', val: posSizePct, set: setPosSizePct, min: undefined,    max: undefined, dimWhenDynamic: false },
               ] as const).map(f => (
                 <div key={f.label} className={`transition-all duration-200 ${f.dimWhenDynamic && dynamicSlTp ? 'opacity-35 pointer-events-none' : ''}`}>
@@ -2192,56 +2226,69 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
               })()}
             </div>
 
-            {/* ── Adaptive SL/TP toggle (inline, context-aware) ── */}
-            <div className={`flex flex-col gap-3 pt-4 border-t border-dashed transition-colors duration-200 ${dynamicSlTp ? 'border-violet-200 dark:border-violet-500/25' : 'border-slate-200 dark:border-white/8'}`}>
-              <div className="flex items-center justify-between flex-wrap gap-3">
+            {/* ── AI Adattivo — Chronos-2 ── */}
+            <div className={`pt-4 border-t border-dashed space-y-3 transition-colors duration-200 ${(dynamicSlTp || p10SlFloor) ? 'border-violet-200 dark:border-violet-500/25' : 'border-slate-200 dark:border-white/8'}`}>
+              <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest">AI Adattivo — Chronos-2</p>
+              <div className="grid grid-cols-2 gap-3">
+                {/* SL/TP Adattativi */}
                 <Tooltip text="Adatta SL e TP alle previsioni probabilistiche di Chronos-2. Quando attivo, SL e TP fissi vengono disabilitati: le distanze vengono calcolate blendando ATR con p10/p90 del forecast. Richiede Chronos attivo nel drawer." pos="bottom" width="wide">
-                  <label className="flex items-center gap-3 cursor-pointer group">
-                    <div className="relative">
+                  <label className={`flex items-start gap-2.5 cursor-pointer group p-3 rounded-xl border transition-all duration-200 h-full ${dynamicSlTp ? 'border-violet-200 dark:border-violet-500/30 bg-violet-50/40 dark:bg-violet-500/5' : 'border-slate-100 dark:border-white/5 hover:bg-slate-50 dark:hover:bg-white/[0.03]'}`}>
+                    <div className="relative mt-0.5 flex-shrink-0">
                       <input type="checkbox" className="sr-only" checked={dynamicSlTp} onChange={e => setDynamicSlTp(e.target.checked)} />
-                      <div className={`w-9 h-5 rounded-full transition-all duration-300 ${dynamicSlTp ? 'bg-violet-600' : 'bg-slate-200 dark:bg-white/10'}`} />
-                      <div className={`absolute top-1 left-1 w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${dynamicSlTp ? 'translate-x-4' : ''}`} />
+                      <div className={`w-9 h-[18px] rounded-full transition-all duration-300 ${dynamicSlTp ? 'bg-violet-600' : 'bg-slate-200 dark:bg-white/10'}`} />
+                      <div className={`absolute top-[3px] left-[3px] w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${dynamicSlTp ? 'translate-x-[18px]' : ''}`} />
                     </div>
-                    <div>
-                      <p className={`text-sm font-bold transition-colors ${dynamicSlTp ? 'text-violet-600 dark:text-violet-400' : 'text-slate-700 dark:text-slate-300 group-hover:text-violet-600 dark:group-hover:text-violet-400'}`}>
-                        SL/TP Adattivi
-                        {dynamicSlTp && <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-violet-100 dark:bg-violet-500/20 text-violet-600 dark:text-violet-400 uppercase tracking-wider">AI-driven</span>}
+                    <div className="min-w-0">
+                      <p className={`text-xs font-bold leading-tight transition-colors ${dynamicSlTp ? 'text-violet-600 dark:text-violet-400' : 'text-slate-700 dark:text-slate-300'}`}>
+                        SL/TP Adattativi
+                        {dynamicSlTp && <span className="ml-1.5 px-1.5 py-0.5 rounded text-[9px] font-bold bg-violet-100 dark:bg-violet-500/20 text-violet-600 dark:text-violet-400 uppercase tracking-wider">AI-driven</span>}
                       </p>
-                      <p className="text-[11px] font-medium text-slate-400 dark:text-slate-500 leading-tight">
-                        {dynamicSlTp ? 'SL Mult e TP Mult disabilitati — livelli calcolati da Chronos p10/p90' : 'Attiva per sostituire SL/TP fissi con livelli AI adattativi'}
-                      </p>
+                      <p className="text-[10px] text-slate-400 dark:text-slate-500 leading-snug mt-0.5">SL/TP calcolati da Chronos p10/p90 — moltiplicatori ATR fissi disabilitati</p>
                     </div>
                   </label>
                 </Tooltip>
-                {dynamicSlTp && (
-                  <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-violet-50 dark:bg-violet-500/10 border border-violet-100 dark:border-violet-500/20">
-                    <svg className="w-3.5 h-3.5 text-violet-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
-                    <span className="text-[10px] font-bold text-violet-600 dark:text-violet-400 uppercase tracking-wider">
-                      ATR {Math.round((1 - parseFloat(dynamicSlTpBlend || '0.5')) * 100)}% · C2 {Math.round(parseFloat(dynamicSlTpBlend || '0.5') * 100)}%
-                    </span>
-                  </div>
-                )}
+
+                {/* P10 SL Floor */}
+                <Tooltip text="Usa il p10 di Chronos come floor per lo Stop Loss: se il forecast p10 è più vicino all'entry dell'ATR-SL, SL viene tirato al livello p10 → miglior R:R con Chronos confidenti." pos="bottom" width="wide">
+                  <label className={`flex items-start gap-2.5 cursor-pointer group p-3 rounded-xl border transition-all duration-200 h-full ${p10SlFloor && useChronos ? 'border-amber-200 dark:border-amber-500/30 bg-amber-50/40 dark:bg-amber-500/5' : 'border-slate-100 dark:border-white/5 hover:bg-slate-50 dark:hover:bg-white/[0.03]'} ${!useChronos ? 'opacity-50' : ''}`}>
+                    <div className="relative mt-0.5 flex-shrink-0">
+                      <input type="checkbox" className="sr-only" checked={p10SlFloor} onChange={e => setP10SlFloor(e.target.checked)} />
+                      <div className={`w-9 h-[18px] rounded-full transition-all duration-300 ${p10SlFloor && useChronos ? 'bg-amber-500' : 'bg-slate-200 dark:bg-white/10'}`} />
+                      <div className={`absolute top-[3px] left-[3px] w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${p10SlFloor ? 'translate-x-[18px]' : ''}`} />
+                    </div>
+                    <div className="min-w-0">
+                      <p className={`text-xs font-bold leading-tight transition-colors ${p10SlFloor && useChronos ? 'text-amber-600 dark:text-amber-400' : 'text-slate-700 dark:text-slate-300'}`}>
+                        P10 SL Floor
+                        {p10SlFloor && useChronos && <span className="ml-1.5 px-1.5 py-0.5 rounded text-[9px] font-bold bg-amber-100 dark:bg-amber-500/20 text-amber-600 dark:text-amber-400 uppercase tracking-wider">Attivo</span>}
+                        {!useChronos && <span className="ml-1.5 px-1.5 py-0.5 rounded text-[9px] font-bold bg-slate-100 dark:bg-white/10 text-slate-400 dark:text-slate-500 uppercase tracking-wider">Richiede C2</span>}
+                      </p>
+                      <p className="text-[10px] text-slate-400 dark:text-slate-500 leading-snug mt-0.5">Chronos p10 come floor per lo SL — migliora R:R con forecast confidenti</p>
+                    </div>
+                  </label>
+                </Tooltip>
               </div>
+
+              {/* Blend + calibration */}
               {dynamicSlTp && (
-                <div className="flex items-center gap-4 pl-12">
+                <div className="flex items-center gap-4 px-1">
                   <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest whitespace-nowrap">Blend ATR ↔ C2</span>
                   <div className="flex items-center gap-3 flex-1">
-                    <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 font-mono w-6 text-right">0</span>
+                    <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 font-mono">ATR</span>
                     <input
                       type="range" min="0" max="1" step="0.05"
                       value={dynamicSlTpBlend}
                       onChange={e => setDynamicSlTpBlend(e.target.value)}
                       className="flex-1 h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/15 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3.5 [&::-webkit-slider-thumb]:h-3.5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-violet-500 [&::-webkit-slider-thumb]:shadow-sm [&::-webkit-slider-thumb]:cursor-pointer [&::-moz-range-thumb]:w-3.5 [&::-moz-range-thumb]:h-3.5 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-violet-500 [&::-moz-range-thumb]:border-0"
                     />
-                    <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 font-mono w-6">1</span>
-                    <span className="text-[11px] font-bold font-mono text-violet-600 dark:text-violet-400 w-8 text-right">{parseFloat(dynamicSlTpBlend).toFixed(2)}</span>
+                    <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 font-mono">C2</span>
+                    <span className="text-[11px] font-bold font-mono text-violet-600 dark:text-violet-400 w-20 text-right">
+                      {Math.round((1 - parseFloat(dynamicSlTpBlend || '0.5')) * 100)}% ATR · {Math.round(parseFloat(dynamicSlTpBlend || '0.5') * 100)}% C2
+                    </span>
                   </div>
                 </div>
               )}
-
-              {/* ── Calibrazione soglie uncertainty ── */}
               {dynamicSlTp && (
-                <div className="flex items-center justify-between gap-3 pl-12 pr-1">
+                <div className="flex items-center justify-between gap-3 px-1">
                   <div>
                     <p className="text-[11px] font-bold text-slate-600 dark:text-slate-300">Soglie uncertainty ricalibrate</p>
                     <p className="text-[10px] text-slate-400 dark:text-slate-500 leading-tight mt-0.5">
@@ -2252,16 +2299,14 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                   </div>
                   <button
                     onClick={() => setRecalibratedUncertainty(v => !v)}
-                    className={`relative flex-shrink-0 w-10 h-5 rounded-full transition-all duration-300 focus:outline-none ${recalibratedUncertainty ? 'bg-violet-600' : 'bg-slate-200 dark:bg-white/10'}`}
+                    className={`relative flex-shrink-0 w-9 h-[18px] rounded-full transition-all duration-300 focus:outline-none ${recalibratedUncertainty ? 'bg-violet-600' : 'bg-slate-200 dark:bg-white/10'}`}
                     title={recalibratedUncertainty ? 'Passa alle soglie originali' : 'Passa alle soglie ricalibrate'}
                   >
-                    <span className={`absolute top-1 left-1 w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${recalibratedUncertainty ? 'translate-x-5' : ''}`} />
+                    <span className={`absolute top-[3px] left-[3px] w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${recalibratedUncertainty ? 'translate-x-[18px]' : ''}`} />
                   </button>
                 </div>
               )}
-
-              {/* ── Warning: Chronos OFF con dynamic ON ── */}
-              {dynamicSlTp && !useChronos && (
+              {(dynamicSlTp || p10SlFloor) && !useChronos && (
                 <div className="flex items-start gap-3 bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/30 rounded-xl px-4 py-3 animate-in fade-in slide-in-from-top-1">
                   <svg className="w-4 h-4 text-amber-500 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
@@ -2269,42 +2314,205 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                   <div>
                     <p className="text-[11px] font-bold text-amber-700 dark:text-amber-400 uppercase tracking-wide">Chronos-2 non attivo</p>
                     <p className="text-[11px] text-amber-600 dark:text-amber-500 leading-snug mt-0.5">
-                      SL/TP Adattivi richiede Chronos-2. Il backtest userà SL e TP fissi (ATR).
-                      Abilita <span className="font-bold">Chronos-2 Engine</span> nel drawer "Configurazione Avanzata" per usare i livelli AI.
+                      SL/TP Adattivi e P10 Floor richiedono Chronos-2.
+                      Abilita <span className="font-bold">Chronos-2 Engine</span> nel drawer "Configurazione Avanzata".
                     </p>
                   </div>
                 </div>
               )}
+              {p10SlFloor && dynamicSlTp && (
+                <div className="flex items-start gap-2.5 bg-violet-50 dark:bg-violet-500/10 border border-violet-200 dark:border-violet-500/30 rounded-xl px-3.5 py-2.5">
+                  <svg className="w-3.5 h-3.5 text-violet-500 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                  <p className="text-[10px] font-bold text-violet-600 dark:text-violet-400 leading-snug uppercase tracking-wide">
+                    Guard B1: P10 Floor + SL/TP Adattivi attivi — se l'uncertainty è bassa (size_mult &gt; 1×) il log segnalerà la combinazione. Monitora la size USD nel report.
+                  </p>
+                </div>
+              )}
+            </div>
 
-              {/* ── P10 SL Floor ── */}
-              <div className="pt-5 border-t border-slate-100 dark:border-white/5 space-y-3">
-                <Toggle
-                  label="P10 SL Floor (Chronos)"
-                  desc="Usa il p10 di Chronos come floor per lo Stop Loss: se il forecast p10 è più vicino all'entry dell'ATR-SL, tighten SL a p10 → miglior R:R con Chronos confidenti."
-                  checked={p10SlFloor}
-                  onChange={setP10SlFloor}
-                />
-                {p10SlFloor && !useChronos && (
-                  <div className="flex items-start gap-2.5 bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/30 rounded-xl px-3.5 py-2.5">
-                    <svg className="w-3.5 h-3.5 text-amber-500 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
-                    </svg>
-                    <p className="text-[10px] font-bold text-amber-600 dark:text-amber-400 leading-snug uppercase tracking-wide">
-                      Richiede Chronos-2 — il P10 floor sarà ignorato senza Chronos attivo
-                    </p>
-                  </div>
-                )}
-                {p10SlFloor && dynamicSlTp && (
-                  <div className="flex items-start gap-2.5 bg-violet-50 dark:bg-violet-500/10 border border-violet-200 dark:border-violet-500/30 rounded-xl px-3.5 py-2.5">
-                    <svg className="w-3.5 h-3.5 text-violet-500 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                    </svg>
-                    <p className="text-[10px] font-bold text-violet-600 dark:text-violet-400 leading-snug uppercase tracking-wide">
-                      Guard B1: P10 Floor + SL/TP Adattivi attivi — se l'uncertainty è bassa (size_mult &gt; 1×) il log segnalerà la combinazione. Monitora la size USD nel report.
-                    </p>
-                  </div>
-                )}
+            {/* ── Livelli Strutturali — OB / FVG ── */}
+            <div className={`pt-5 border-t transition-colors duration-200 space-y-3 ${(structuralSl || fvgSl || obTp || fvgTp || swingSl || swingTp) ? 'border-violet-200 dark:border-violet-500/25' : 'border-slate-100 dark:border-white/5'}`}>
+              <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest">Livelli Strutturali — OB / FVG / Swing</p>
+              <div className="grid grid-cols-2 gap-3">
+
+                {/* SL — OB */}
+                <Tooltip text="Posiziona lo SL oltre l'Order Block attivo più vicino nella direzione dello stop. Per long: SL = ob_bull_bot_px − buffer. Per short: SL = ob_bear_top_px + buffer. Solo allarga lo SL (mai restringe) — size ridotta proporzionalmente." pos="top" width="wide">
+                  <label className={`flex items-start gap-2.5 cursor-pointer group p-3 rounded-xl border transition-all duration-200 h-full ${structuralSl ? 'border-violet-200 dark:border-violet-500/30 bg-violet-50/40 dark:bg-violet-500/5' : 'border-slate-100 dark:border-white/5 hover:bg-slate-50 dark:hover:bg-white/[0.03]'}`}>
+                    <div className="relative mt-0.5 flex-shrink-0">
+                      <input type="checkbox" className="sr-only" checked={structuralSl} onChange={e => setStructuralSl(e.target.checked)} />
+                      <div className={`w-9 h-[18px] rounded-full transition-all duration-300 ${structuralSl ? 'bg-violet-600' : 'bg-slate-200 dark:bg-white/10'}`} />
+                      <div className={`absolute top-[3px] left-[3px] w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${structuralSl ? 'translate-x-[18px]' : ''}`} />
+                    </div>
+                    <div className="min-w-0">
+                      <p className={`text-xs font-bold leading-tight transition-colors ${structuralSl ? 'text-violet-600 dark:text-violet-400' : 'text-slate-700 dark:text-slate-300'}`}>
+                        SL — OB
+                        {structuralSl && <span className="ml-1.5 px-1.5 py-0.5 rounded text-[9px] font-bold bg-violet-100 dark:bg-violet-500/20 text-violet-600 dark:text-violet-400 uppercase tracking-wider">Attivo</span>}
+                      </p>
+                      <p className="text-[10px] text-slate-400 dark:text-slate-500 leading-snug mt-0.5">Stop Loss oltre l'Order Block attivo più vicino</p>
+                    </div>
+                  </label>
+                </Tooltip>
+
+                {/* TP — OB */}
+                <Tooltip text="Usa il bordo dell'Order Block opposto come target del Take Profit. Per long: TP = ob_bear_top_px. Per short: TP = ob_bull_bot_px. Blend 100% OB = puro livello strutturale; 0% = puro ATR. Fallback automatico ad ATR." pos="top" width="wide">
+                  <label className={`flex items-start gap-2.5 cursor-pointer group p-3 rounded-xl border transition-all duration-200 h-full ${obTp ? 'border-emerald-200 dark:border-emerald-500/30 bg-emerald-50/40 dark:bg-emerald-500/5' : 'border-slate-100 dark:border-white/5 hover:bg-slate-50 dark:hover:bg-white/[0.03]'}`}>
+                    <div className="relative mt-0.5 flex-shrink-0">
+                      <input type="checkbox" className="sr-only" checked={obTp} onChange={e => { setObTp(e.target.checked); if (e.target.checked) { setFvgTp(false); setSwingTp(false); } }} />
+                      <div className={`w-9 h-[18px] rounded-full transition-all duration-300 ${obTp ? 'bg-emerald-600' : 'bg-slate-200 dark:bg-white/10'}`} />
+                      <div className={`absolute top-[3px] left-[3px] w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${obTp ? 'translate-x-[18px]' : ''}`} />
+                    </div>
+                    <div className="min-w-0">
+                      <p className={`text-xs font-bold leading-tight transition-colors ${obTp ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-700 dark:text-slate-300'}`}>
+                        TP — OB
+                        {obTp && <span className="ml-1.5 px-1.5 py-0.5 rounded text-[9px] font-bold bg-emerald-100 dark:bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 uppercase tracking-wider">Attivo</span>}
+                      </p>
+                      <p className="text-[10px] text-slate-400 dark:text-slate-500 leading-snug mt-0.5">Take Profit al primo Order Block opposto sopra/sotto l'entry</p>
+                    </div>
+                  </label>
+                </Tooltip>
+
+                {/* SL — FVG */}
+                <Tooltip text="Posiziona lo SL oltre il livello di invalidazione della Fair Value Gap più vicina. Per long: SL = fvg_bull_bot_px − buffer. Per short: SL = fvg_bear_top_px + buffer. Solo allarga lo SL — size ridotta proporzionalmente." pos="top" width="wide">
+                  <label className={`flex items-start gap-2.5 cursor-pointer group p-3 rounded-xl border transition-all duration-200 h-full ${fvgSl ? 'border-violet-200 dark:border-violet-500/30 bg-violet-50/40 dark:bg-violet-500/5' : 'border-slate-100 dark:border-white/5 hover:bg-slate-50 dark:hover:bg-white/[0.03]'}`}>
+                    <div className="relative mt-0.5 flex-shrink-0">
+                      <input type="checkbox" className="sr-only" checked={fvgSl} onChange={e => setFvgSl(e.target.checked)} />
+                      <div className={`w-9 h-[18px] rounded-full transition-all duration-300 ${fvgSl ? 'bg-violet-600' : 'bg-slate-200 dark:bg-white/10'}`} />
+                      <div className={`absolute top-[3px] left-[3px] w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${fvgSl ? 'translate-x-[18px]' : ''}`} />
+                    </div>
+                    <div className="min-w-0">
+                      <p className={`text-xs font-bold leading-tight transition-colors ${fvgSl ? 'text-violet-600 dark:text-violet-400' : 'text-slate-700 dark:text-slate-300'}`}>
+                        SL — FVG
+                        {fvgSl && <span className="ml-1.5 px-1.5 py-0.5 rounded text-[9px] font-bold bg-violet-100 dark:bg-violet-500/20 text-violet-600 dark:text-violet-400 uppercase tracking-wider">Attivo</span>}
+                      </p>
+                      <p className="text-[10px] text-slate-400 dark:text-slate-500 leading-snug mt-0.5">Stop Loss oltre la Fair Value Gap più vicina (invalidazione FVG)</p>
+                    </div>
+                  </label>
+                </Tooltip>
+
+                {/* TP — FVG */}
+                <Tooltip text="Usa il bordo della Fair Value Gap opposta come target del Take Profit. Per long: TP = fvg_bear_bot_px (fondo della bearish FVG sopra l'entry). Per short: TP = fvg_bull_top_px (tetto della bullish FVG sotto l'entry). Il prezzo tende a riempire i gap — la FVG opposta è un target naturale." pos="top" width="wide">
+                  <label className={`flex items-start gap-2.5 cursor-pointer group p-3 rounded-xl border transition-all duration-200 h-full ${fvgTp ? 'border-emerald-200 dark:border-emerald-500/30 bg-emerald-50/40 dark:bg-emerald-500/5' : 'border-slate-100 dark:border-white/5 hover:bg-slate-50 dark:hover:bg-white/[0.03]'}`}>
+                    <div className="relative mt-0.5 flex-shrink-0">
+                      <input type="checkbox" className="sr-only" checked={fvgTp} onChange={e => { setFvgTp(e.target.checked); if (e.target.checked) { setObTp(false); setSwingTp(false); } }} />
+                      <div className={`w-9 h-[18px] rounded-full transition-all duration-300 ${fvgTp ? 'bg-emerald-600' : 'bg-slate-200 dark:bg-white/10'}`} />
+                      <div className={`absolute top-[3px] left-[3px] w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${fvgTp ? 'translate-x-[18px]' : ''}`} />
+                    </div>
+                    <div className="min-w-0">
+                      <p className={`text-xs font-bold leading-tight transition-colors ${fvgTp ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-700 dark:text-slate-300'}`}>
+                        TP — FVG
+                        {fvgTp && <span className="ml-1.5 px-1.5 py-0.5 rounded text-[9px] font-bold bg-emerald-100 dark:bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 uppercase tracking-wider">Attivo</span>}
+                      </p>
+                      <p className="text-[10px] text-slate-400 dark:text-slate-500 leading-snug mt-0.5">Take Profit al fondo/tetto della Fair Value Gap opposta</p>
+                    </div>
+                  </label>
+                </Tooltip>
+
+                {/* SL — Swing */}
+                <Tooltip text="Posiziona lo SL oltre il più recente swing high/low confermato. Per long: SL = swing_low_px − 0.1% (rottura del minimo strutturale). Per short: SL = swing_high_px + 0.1% (rottura del massimo strutturale). Attivo solo quando il livello è entro 4 ATR dall'entry. Solo allarga lo SL." pos="top" width="wide">
+                  <label className={`flex items-start gap-2.5 cursor-pointer group p-3 rounded-xl border transition-all duration-200 h-full ${swingSl ? 'border-violet-200 dark:border-violet-500/30 bg-violet-50/40 dark:bg-violet-500/5' : 'border-slate-100 dark:border-white/5 hover:bg-slate-50 dark:hover:bg-white/[0.03]'}`}>
+                    <div className="relative mt-0.5 flex-shrink-0">
+                      <input type="checkbox" className="sr-only" checked={swingSl} onChange={e => setSwingSl(e.target.checked)} />
+                      <div className={`w-9 h-[18px] rounded-full transition-all duration-300 ${swingSl ? 'bg-violet-600' : 'bg-slate-200 dark:bg-white/10'}`} />
+                      <div className={`absolute top-[3px] left-[3px] w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${swingSl ? 'translate-x-[18px]' : ''}`} />
+                    </div>
+                    <div className="min-w-0">
+                      <p className={`text-xs font-bold leading-tight transition-colors ${swingSl ? 'text-violet-600 dark:text-violet-400' : 'text-slate-700 dark:text-slate-300'}`}>
+                        SL — Swing
+                        {swingSl && <span className="ml-1.5 px-1.5 py-0.5 rounded text-[9px] font-bold bg-violet-100 dark:bg-violet-500/20 text-violet-600 dark:text-violet-400 uppercase tracking-wider">Attivo</span>}
+                      </p>
+                      <p className="text-[10px] text-slate-400 dark:text-slate-500 leading-snug mt-0.5">Stop Loss oltre lo Swing High/Low strutturale più vicino</p>
+                    </div>
+                  </label>
+                </Tooltip>
+
+                {/* TP — Swing */}
+                <Tooltip text="Usa il più recente swing high/low confermato come target del Take Profit. Per long: TP = swing_high_px (prossimo massimo strutturale). Per short: TP = swing_low_px (prossimo minimo strutturale). Il blend controlla Swing vs ATR. Fallback automatico ad ATR se nessun swing valido." pos="top" width="wide">
+                  <label className={`flex items-start gap-2.5 cursor-pointer group p-3 rounded-xl border transition-all duration-200 h-full ${swingTp ? 'border-emerald-200 dark:border-emerald-500/30 bg-emerald-50/40 dark:bg-emerald-500/5' : 'border-slate-100 dark:border-white/5 hover:bg-slate-50 dark:hover:bg-white/[0.03]'}`}>
+                    <div className="relative mt-0.5 flex-shrink-0">
+                      <input type="checkbox" className="sr-only" checked={swingTp} onChange={e => { setSwingTp(e.target.checked); if (e.target.checked) { setObTp(false); setFvgTp(false); } }} />
+                      <div className={`w-9 h-[18px] rounded-full transition-all duration-300 ${swingTp ? 'bg-emerald-600' : 'bg-slate-200 dark:bg-white/10'}`} />
+                      <div className={`absolute top-[3px] left-[3px] w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${swingTp ? 'translate-x-[18px]' : ''}`} />
+                    </div>
+                    <div className="min-w-0">
+                      <p className={`text-xs font-bold leading-tight transition-colors ${swingTp ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-700 dark:text-slate-300'}`}>
+                        TP — Swing
+                        {swingTp && <span className="ml-1.5 px-1.5 py-0.5 rounded text-[9px] font-bold bg-emerald-100 dark:bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 uppercase tracking-wider">Attivo</span>}
+                      </p>
+                      <p className="text-[10px] text-slate-400 dark:text-slate-500 leading-snug mt-0.5">Take Profit al prossimo Swing High/Low strutturale</p>
+                    </div>
+                  </label>
+                </Tooltip>
               </div>
+
+              {/* SL buffer controls */}
+              {(structuralSl || fvgSl) && (
+                <div className="grid grid-cols-2 gap-3 px-1">
+                  <NumInput label="SL Buffer %" value={obBufferPct} onChange={setObBufferPct} step="0.1" min="0" max="2" unit="%" />
+                  <NumInput label="SL Buffer Min ATR" value={obBufferMinAtr} onChange={setObBufferMinAtr} step="0.05" min="0" max="1" unit="ATR" />
+                </div>
+              )}
+
+              {/* OB TP blend */}
+              {obTp && (
+                <div className="flex items-center gap-4 px-1">
+                  <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest whitespace-nowrap">OB TP — Blend ATR ↔ OB</span>
+                  <div className="flex items-center gap-3 flex-1">
+                    <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 font-mono">ATR</span>
+                    <input
+                      type="range" min="0" max="1" step="0.05"
+                      value={obTpBlend}
+                      onChange={e => setObTpBlend(e.target.value)}
+                      className="flex-1 h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/15 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3.5 [&::-webkit-slider-thumb]:h-3.5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-emerald-500 [&::-webkit-slider-thumb]:shadow-sm [&::-webkit-slider-thumb]:cursor-pointer [&::-moz-range-thumb]:w-3.5 [&::-moz-range-thumb]:h-3.5 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-emerald-500 [&::-moz-range-thumb]:border-0"
+                    />
+                    <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 font-mono">OB</span>
+                    <span className="text-[11px] font-bold font-mono text-emerald-600 dark:text-emerald-400 w-24 text-right">
+                      {Math.round((1 - parseFloat(obTpBlend || '1')) * 100)}% ATR · {Math.round(parseFloat(obTpBlend || '1') * 100)}% OB
+                    </span>
+                  </div>
+                </div>
+              )}
+
+              {/* FVG TP blend */}
+              {fvgTp && (
+                <div className="flex items-center gap-4 px-1">
+                  <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest whitespace-nowrap">FVG TP — Blend ATR ↔ FVG</span>
+                  <div className="flex items-center gap-3 flex-1">
+                    <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 font-mono">ATR</span>
+                    <input
+                      type="range" min="0" max="1" step="0.05"
+                      value={fvgTpBlend}
+                      onChange={e => setFvgTpBlend(e.target.value)}
+                      className="flex-1 h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/15 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3.5 [&::-webkit-slider-thumb]:h-3.5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-emerald-500 [&::-webkit-slider-thumb]:shadow-sm [&::-webkit-slider-thumb]:cursor-pointer [&::-moz-range-thumb]:w-3.5 [&::-moz-range-thumb]:h-3.5 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-emerald-500 [&::-moz-range-thumb]:border-0"
+                    />
+                    <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 font-mono">FVG</span>
+                    <span className="text-[11px] font-bold font-mono text-emerald-600 dark:text-emerald-400 w-24 text-right">
+                      {Math.round((1 - parseFloat(fvgTpBlend || '1')) * 100)}% ATR · {Math.round(parseFloat(fvgTpBlend || '1') * 100)}% FVG
+                    </span>
+                  </div>
+                </div>
+              )}
+
+              {/* Swing TP blend */}
+              {swingTp && (
+                <div className="flex items-center gap-4 px-1">
+                  <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest whitespace-nowrap">Swing TP — Blend ATR ↔ Swing</span>
+                  <div className="flex items-center gap-3 flex-1">
+                    <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 font-mono">ATR</span>
+                    <input
+                      type="range" min="0" max="1" step="0.05"
+                      value={swingTpBlend}
+                      onChange={e => setSwingTpBlend(e.target.value)}
+                      className="flex-1 h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/15 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3.5 [&::-webkit-slider-thumb]:h-3.5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-emerald-500 [&::-webkit-slider-thumb]:shadow-sm [&::-webkit-slider-thumb]:cursor-pointer [&::-moz-range-thumb]:w-3.5 [&::-moz-range-thumb]:h-3.5 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-emerald-500 [&::-moz-range-thumb]:border-0"
+                    />
+                    <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 font-mono">Swing</span>
+                    <span className="text-[11px] font-bold font-mono text-emerald-600 dark:text-emerald-400 w-24 text-right">
+                      {Math.round((1 - parseFloat(swingTpBlend || '1')) * 100)}% ATR · {Math.round(parseFloat(swingTpBlend || '1') * 100)}% Sw
+                    </span>
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Active strategy badges */}
@@ -2584,34 +2792,6 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                       checked={exhaustionGuard}
                       onChange={setExhaustionGuard}
                     />
-                    <Toggle
-                      label="Structural SL (OB-aware)"
-                      desc="Posiziona lo SL oltre l'Order Block attivo più vicino — size ridotta proporzionalmente"
-                      checked={structuralSl}
-                      onChange={setStructuralSl}
-                    />
-                    {structuralSl && (
-                      <div className="flex flex-col gap-2 px-1">
-                        <NumInput
-                          label="OB Buffer %"
-                          value={obBufferPct}
-                          onChange={setObBufferPct}
-                          step="0.1"
-                          min="0"
-                          max="2"
-                          unit="%"
-                        />
-                        <NumInput
-                          label="OB Buffer Min ATR (0 = off)"
-                          value={obBufferMinAtr}
-                          onChange={setObBufferMinAtr}
-                          step="0.05"
-                          min="0"
-                          max="1"
-                          unit="ATR"
-                        />
-                      </div>
-                    )}
                     <Toggle
                       label="Dual ATR — SL su ATR_21, TP su ATR_14"
                       desc="SL calcolato su ATR_21 (smooth, meno sensibile agli spike) — TP su ATR_14 (reattivo). Produce SL più stabile e R:R migliorato."

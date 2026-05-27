@@ -77,6 +77,14 @@ interface Config {
   structural_sl_enabled: boolean;
   ob_buffer_pct: number;
   ob_buffer_min_atr: number;
+  ob_tp_enabled: boolean;
+  ob_tp_blend: number;
+  fvg_sl_enabled: boolean;
+  fvg_tp_enabled: boolean;
+  fvg_tp_blend: number;
+  swing_sl_enabled: boolean;
+  swing_tp_enabled: boolean;
+  swing_tp_blend: number;
   // Late Entry Distance Filter
   late_entry_filter_enabled: boolean;
   late_entry_max_ob_dist: number;
@@ -168,6 +176,14 @@ const DEFAULTS: Config = {
   structural_sl_enabled: true,
   ob_buffer_pct: 0.3,
   ob_buffer_min_atr: 0.0,
+  ob_tp_enabled: false,
+  ob_tp_blend: 1.0,
+  fvg_sl_enabled: false,
+  fvg_tp_enabled: false,
+  fvg_tp_blend: 1.0,
+  swing_sl_enabled: false,
+  swing_tp_enabled: false,
+  swing_tp_blend: 1.0,
   // Late Entry Distance Filter
   late_entry_filter_enabled: false,
   late_entry_max_ob_dist: 3.0,
@@ -608,32 +624,56 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
       {/* Risk Management */}
       <Section title="Risk Management" description="Gestione dell'esposizione e dei livelli di uscita. Questi parametri determinano la conservatività del bot.">
 
-        {/* ── Dynamic SL/TP toggle ── */}
-        <div className={`flex flex-col gap-3 mb-6 pb-6 border-b transition-colors duration-200 ${config.dynamic_sl_tp_enabled ? 'border-violet-200 dark:border-violet-500/25' : 'border-slate-100 dark:border-white/5'}`}>
-          <Tooltip text="Quando attivo, SL e TP vengono calcolati blendando ATR con le previsioni probabilistiche p10/p90 di Chronos-2. I moltiplicatori fissi SL/TP vengono ignorati. Richiede Chronos-2 attivo nel bot." width="wide" pos="bottom">
-            <label className="flex items-center gap-3 cursor-pointer group">
-              <div className="relative">
-                <input type="checkbox" className="sr-only" checked={config.dynamic_sl_tp_enabled} onChange={e => setConfig(c => ({ ...c, dynamic_sl_tp_enabled: e.target.checked }))} />
-                <div className={`w-10 h-5 rounded-full transition-all duration-300 ${config.dynamic_sl_tp_enabled ? 'bg-violet-600' : 'bg-slate-200 dark:bg-white/10'}`} />
-                <div className={`absolute top-1 left-1 w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.dynamic_sl_tp_enabled ? 'translate-x-5' : ''}`} />
-              </div>
-              <div>
-                <p className={`text-sm font-bold transition-colors ${config.dynamic_sl_tp_enabled ? 'text-violet-600 dark:text-violet-400' : 'text-slate-800 dark:text-slate-200 group-hover:text-violet-600 dark:group-hover:text-violet-400'}`}>
-                  SL/TP Adattativi (AI-driven)
-                  {config.dynamic_sl_tp_enabled && (
-                    <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-violet-100 dark:bg-violet-500/20 text-violet-600 dark:text-violet-400 uppercase tracking-wider">Attivo</span>
-                  )}
-                </p>
-                <p className="text-[11px] font-medium text-slate-400 dark:text-slate-500 leading-tight">
-                  {config.dynamic_sl_tp_enabled
-                    ? 'Moltiplicatori SL/TP fissi disabilitati — livelli calcolati da Chronos p10/p90'
-                    : 'Attiva per sostituire i moltiplicatori fissi con livelli AI adattativi basati su Chronos-2'}
-                </p>
-              </div>
-            </label>
-          </Tooltip>
+        {/* ── AI Adattivo — Chronos-2 ── */}
+        <div className={`flex flex-col gap-3 mb-6 pb-6 border-b transition-colors duration-200 ${(config.dynamic_sl_tp_enabled || config.p10_sl_floor_enabled) ? 'border-violet-200 dark:border-violet-500/25' : 'border-slate-100 dark:border-white/5'}`}>
+          <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest">AI Adattivo — Chronos-2</p>
+          <div className="grid grid-cols-2 gap-3">
+
+            {/* SL/TP Adattativi */}
+            <Tooltip text="Quando attivo, SL e TP vengono calcolati blendando ATR con le previsioni probabilistiche p10/p90 di Chronos-2. I moltiplicatori fissi SL/TP vengono ignorati. Richiede Chronos-2 attivo nel bot." width="wide" pos="bottom">
+              <label className={`flex items-start gap-2.5 cursor-pointer group p-3 rounded-xl border transition-all duration-200 h-full ${config.dynamic_sl_tp_enabled ? 'border-violet-200 dark:border-violet-500/30 bg-violet-50/40 dark:bg-violet-500/5' : 'border-slate-100 dark:border-white/5 hover:bg-slate-50 dark:hover:bg-white/[0.03]'}`}>
+                <div className="relative mt-0.5 flex-shrink-0">
+                  <input type="checkbox" className="sr-only" checked={config.dynamic_sl_tp_enabled} onChange={e => setConfig(c => ({ ...c, dynamic_sl_tp_enabled: e.target.checked }))} />
+                  <div className={`w-9 h-[18px] rounded-full transition-all duration-300 ${config.dynamic_sl_tp_enabled ? 'bg-violet-600' : 'bg-slate-200 dark:bg-white/10'}`} />
+                  <div className={`absolute top-[3px] left-[3px] w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.dynamic_sl_tp_enabled ? 'translate-x-[18px]' : ''}`} />
+                </div>
+                <div className="min-w-0">
+                  <p className={`text-xs font-bold leading-tight transition-colors ${config.dynamic_sl_tp_enabled ? 'text-violet-600 dark:text-violet-400' : 'text-slate-700 dark:text-slate-300'}`}>
+                    SL/TP Adattativi
+                    {config.dynamic_sl_tp_enabled && <span className="ml-1.5 px-1.5 py-0.5 rounded text-[9px] font-bold bg-violet-100 dark:bg-violet-500/20 text-violet-600 dark:text-violet-400 uppercase tracking-wider">Attivo</span>}
+                  </p>
+                  <p className="text-[10px] text-slate-400 dark:text-slate-500 leading-snug mt-0.5">
+                    SL/TP calcolati da Chronos p10/p90 — moltiplicatori ATR fissi disabilitati
+                  </p>
+                </div>
+              </label>
+            </Tooltip>
+
+            {/* P10 SL Floor */}
+            <Tooltip text="Usa il percentile p10 di Chronos come floor per lo Stop Loss. Quando il forecast è confidenti e il p10 è più vicino all'entry dell'ATR-SL, lo SL viene tirato al livello p10. Migliora il R:R nelle previsioni ad alta confidenza. Richiede Chronos-2 attivo." width="wide" pos="bottom">
+              <label className={`flex items-start gap-2.5 cursor-pointer group p-3 rounded-xl border transition-all duration-200 h-full ${config.p10_sl_floor_enabled && config.chronos_enabled ? 'border-amber-200 dark:border-amber-500/30 bg-amber-50/40 dark:bg-amber-500/5' : 'border-slate-100 dark:border-white/5 hover:bg-slate-50 dark:hover:bg-white/[0.03]'} ${!config.chronos_enabled ? 'opacity-50 pointer-events-none' : ''}`}>
+                <div className="relative mt-0.5 flex-shrink-0">
+                  <input type="checkbox" className="sr-only" checked={config.p10_sl_floor_enabled} onChange={e => setConfig(c => ({ ...c, p10_sl_floor_enabled: e.target.checked }))} disabled={!config.chronos_enabled} />
+                  <div className={`w-9 h-[18px] rounded-full transition-all duration-300 ${config.p10_sl_floor_enabled && config.chronos_enabled ? 'bg-amber-500' : 'bg-slate-200 dark:bg-white/10'}`} />
+                  <div className={`absolute top-[3px] left-[3px] w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.p10_sl_floor_enabled ? 'translate-x-[18px]' : ''}`} />
+                </div>
+                <div className="min-w-0">
+                  <p className={`text-xs font-bold leading-tight transition-colors ${config.p10_sl_floor_enabled && config.chronos_enabled ? 'text-amber-600 dark:text-amber-400' : 'text-slate-700 dark:text-slate-300'}`}>
+                    P10 SL Floor
+                    {config.p10_sl_floor_enabled && config.chronos_enabled && <span className="ml-1.5 px-1.5 py-0.5 rounded text-[9px] font-bold bg-amber-100 dark:bg-amber-500/20 text-amber-600 dark:text-amber-400 uppercase tracking-wider">Attivo</span>}
+                    {!config.chronos_enabled && <span className="ml-1.5 px-1.5 py-0.5 rounded text-[9px] font-bold bg-slate-100 dark:bg-white/10 text-slate-400 dark:text-slate-500 uppercase tracking-wider">Richiede C2</span>}
+                  </p>
+                  <p className="text-[10px] text-slate-400 dark:text-slate-500 leading-snug mt-0.5">
+                    Chronos p10 come floor per lo SL — migliora R:R con forecast confidenti
+                  </p>
+                </div>
+              </label>
+            </Tooltip>
+          </div>
+
+          {/* Blend slider */}
           {config.dynamic_sl_tp_enabled && (
-            <div className="flex items-center gap-4 pl-12">
+            <div className="flex items-center gap-4 px-1">
               <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest whitespace-nowrap">Blend ATR ↔ C2</span>
               <div className="flex items-center gap-3 flex-1">
                 <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 font-mono">ATR</span>
@@ -650,7 +690,29 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
               </div>
             </div>
           )}
-          {config.dynamic_sl_tp_enabled && !config.chronos_enabled && (
+
+          {/* Recalibrated thresholds toggle */}
+          {config.dynamic_sl_tp_enabled && (
+            <div className="flex items-center justify-between gap-3 px-1">
+              <div>
+                <p className="text-[11px] font-bold text-slate-600 dark:text-slate-300">Soglie uncertainty ricalibrate</p>
+                <p className="text-[10px] text-slate-400 dark:text-slate-500 leading-tight mt-0.5">
+                  {config.recalibrated_uncertainty_thresholds
+                    ? 'Distribuzione reale BTC 4H — +20% attivo da 3%, −25% da 4.2%'
+                    : 'Soglie originali teoriche — +20% sotto 2%, −25% sopra 4%'}
+                </p>
+              </div>
+              <button
+                onClick={() => setConfig(c => ({ ...c, recalibrated_uncertainty_thresholds: !c.recalibrated_uncertainty_thresholds }))}
+                className={`relative flex-shrink-0 w-9 h-[18px] rounded-full transition-all duration-300 focus:outline-none ${config.recalibrated_uncertainty_thresholds ? 'bg-violet-600' : 'bg-slate-200 dark:bg-white/10'}`}
+              >
+                <span className={`absolute top-[3px] left-[3px] w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.recalibrated_uncertainty_thresholds ? 'translate-x-[18px]' : ''}`} />
+              </button>
+            </div>
+          )}
+
+          {/* Chronos warning */}
+          {(config.dynamic_sl_tp_enabled || config.p10_sl_floor_enabled) && !config.chronos_enabled && (
             <div className="flex items-start gap-3 bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/30 rounded-xl px-4 py-3">
               <svg className="w-4 h-4 text-amber-500 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
@@ -658,21 +720,204 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
               <div>
                 <p className="text-[11px] font-bold text-amber-700 dark:text-amber-400 uppercase tracking-wide">Chronos-2 non attivo</p>
                 <p className="text-[11px] text-amber-600 dark:text-amber-500 leading-snug mt-0.5">
-                  SL/TP Adattativi richiede Chronos-2. Il bot userà SL e TP fissi (ATR) finché Chronos non viene abilitato nelle Impostazioni avanzate.
+                  SL/TP Adattativi e P10 Floor richiedono Chronos-2. Il bot userà SL e TP fissi (ATR) finché Chronos non viene abilitato nelle Impostazioni avanzate.
                 </p>
               </div>
             </div>
           )}
         </div>
 
+        {/* ── Livelli Strutturali — OB / FVG ── */}
+        <div className={`flex flex-col gap-3 mb-6 pb-6 border-b transition-colors duration-200 ${(config.structural_sl_enabled || config.ob_tp_enabled || config.fvg_sl_enabled || config.fvg_tp_enabled || config.swing_sl_enabled || config.swing_tp_enabled) ? 'border-violet-200 dark:border-violet-500/25' : 'border-slate-100 dark:border-white/5'}`}>
+          <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest">Livelli Strutturali — OB / FVG / Swing</p>
+          <div className="grid grid-cols-2 gap-3">
+
+            {/* SL — OB */}
+            <Tooltip text="Posiziona lo SL oltre l'Order Block attivo più vicino (entro 2 ATR dall'entry). Per short: SL = ob_bear_top_px + buffer. Per long: SL = ob_bull_bot_px − buffer. Solo allarga lo SL (mai restringe) — size ridotta proporzionalmente per mantenere il rischio USD costante." width="wide" pos="bottom">
+              <label className={`flex items-start gap-2.5 cursor-pointer group p-3 rounded-xl border transition-all duration-200 h-full ${config.structural_sl_enabled ? 'border-violet-200 dark:border-violet-500/30 bg-violet-50/40 dark:bg-violet-500/5' : 'border-slate-100 dark:border-white/5 hover:bg-slate-50 dark:hover:bg-white/[0.03]'}`}>
+                <div className="relative mt-0.5 flex-shrink-0">
+                  <input type="checkbox" className="sr-only" checked={config.structural_sl_enabled} onChange={e => setConfig(c => ({ ...c, structural_sl_enabled: e.target.checked }))} />
+                  <div className={`w-9 h-[18px] rounded-full transition-all duration-300 ${config.structural_sl_enabled ? 'bg-violet-600' : 'bg-slate-200 dark:bg-white/10'}`} />
+                  <div className={`absolute top-[3px] left-[3px] w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.structural_sl_enabled ? 'translate-x-[18px]' : ''}`} />
+                </div>
+                <div className="min-w-0">
+                  <p className={`text-xs font-bold leading-tight transition-colors ${config.structural_sl_enabled ? 'text-violet-600 dark:text-violet-400' : 'text-slate-700 dark:text-slate-300'}`}>
+                    SL — OB
+                    {config.structural_sl_enabled && <span className="ml-1.5 px-1.5 py-0.5 rounded text-[9px] font-bold bg-violet-100 dark:bg-violet-500/20 text-violet-600 dark:text-violet-400 uppercase tracking-wider">Attivo</span>}
+                  </p>
+                  <p className="text-[10px] text-slate-400 dark:text-slate-500 leading-snug mt-0.5">Stop Loss oltre l'Order Block attivo più vicino</p>
+                </div>
+              </label>
+            </Tooltip>
+
+            {/* TP — OB */}
+            <Tooltip text="Usa il bordo dell'Order Block opposto come target del Take Profit invece di un multiplo ATR fisso. Per long: TP = ob_bear_top_px (prima resistenza OB sopra l'entry). Per short: TP = ob_bull_bot_px (primo supporto OB sotto l'entry). Il blend controlla quanto peso dare all'OB vs il TP ATR corrente. Fallback automatico a ATR se nessun OB valido è presente." width="wide" pos="bottom">
+              <label className={`flex items-start gap-2.5 cursor-pointer group p-3 rounded-xl border transition-all duration-200 h-full ${config.ob_tp_enabled ? 'border-emerald-200 dark:border-emerald-500/30 bg-emerald-50/40 dark:bg-emerald-500/5' : 'border-slate-100 dark:border-white/5 hover:bg-slate-50 dark:hover:bg-white/[0.03]'}`}>
+                <div className="relative mt-0.5 flex-shrink-0">
+                  <input type="checkbox" className="sr-only" checked={config.ob_tp_enabled} onChange={e => setConfig(c => ({ ...c, ob_tp_enabled: e.target.checked, fvg_tp_enabled: e.target.checked ? false : c.fvg_tp_enabled, swing_tp_enabled: e.target.checked ? false : c.swing_tp_enabled }))} />
+                  <div className={`w-9 h-[18px] rounded-full transition-all duration-300 ${config.ob_tp_enabled ? 'bg-emerald-600' : 'bg-slate-200 dark:bg-white/10'}`} />
+                  <div className={`absolute top-[3px] left-[3px] w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.ob_tp_enabled ? 'translate-x-[18px]' : ''}`} />
+                </div>
+                <div className="min-w-0">
+                  <p className={`text-xs font-bold leading-tight transition-colors ${config.ob_tp_enabled ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-700 dark:text-slate-300'}`}>
+                    TP — OB
+                    {config.ob_tp_enabled && <span className="ml-1.5 px-1.5 py-0.5 rounded text-[9px] font-bold bg-emerald-100 dark:bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 uppercase tracking-wider">Attivo</span>}
+                  </p>
+                  <p className="text-[10px] text-slate-400 dark:text-slate-500 leading-snug mt-0.5">Take Profit al primo Order Block opposto sopra/sotto l'entry</p>
+                </div>
+              </label>
+            </Tooltip>
+
+            {/* SL — FVG */}
+            <Tooltip text="Posiziona lo SL oltre il livello di invalidazione della Fair Value Gap più vicina. Per long: SL = fvg_bull_bot_px − buffer (rottura del fondo del gap bullish = invalidazione). Per short: SL = fvg_bear_top_px + buffer (rottura del tetto del gap bearish = invalidazione). Solo allarga lo SL — size ridotta proporzionalmente. Usa gli stessi parametri buffer dell'OB SL." width="wide" pos="bottom">
+              <label className={`flex items-start gap-2.5 cursor-pointer group p-3 rounded-xl border transition-all duration-200 h-full ${config.fvg_sl_enabled ? 'border-violet-200 dark:border-violet-500/30 bg-violet-50/40 dark:bg-violet-500/5' : 'border-slate-100 dark:border-white/5 hover:bg-slate-50 dark:hover:bg-white/[0.03]'}`}>
+                <div className="relative mt-0.5 flex-shrink-0">
+                  <input type="checkbox" className="sr-only" checked={config.fvg_sl_enabled} onChange={e => setConfig(c => ({ ...c, fvg_sl_enabled: e.target.checked }))} />
+                  <div className={`w-9 h-[18px] rounded-full transition-all duration-300 ${config.fvg_sl_enabled ? 'bg-violet-600' : 'bg-slate-200 dark:bg-white/10'}`} />
+                  <div className={`absolute top-[3px] left-[3px] w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.fvg_sl_enabled ? 'translate-x-[18px]' : ''}`} />
+                </div>
+                <div className="min-w-0">
+                  <p className={`text-xs font-bold leading-tight transition-colors ${config.fvg_sl_enabled ? 'text-violet-600 dark:text-violet-400' : 'text-slate-700 dark:text-slate-300'}`}>
+                    SL — FVG
+                    {config.fvg_sl_enabled && <span className="ml-1.5 px-1.5 py-0.5 rounded text-[9px] font-bold bg-violet-100 dark:bg-violet-500/20 text-violet-600 dark:text-violet-400 uppercase tracking-wider">Attivo</span>}
+                  </p>
+                  <p className="text-[10px] text-slate-400 dark:text-slate-500 leading-snug mt-0.5">Stop Loss oltre la Fair Value Gap più vicina (invalidazione FVG)</p>
+                </div>
+              </label>
+            </Tooltip>
+
+            {/* TP — FVG */}
+            <Tooltip text="Usa il bordo della Fair Value Gap opposta come target del Take Profit. Per long: TP = fvg_bear_bot_px (fondo della prima bearish FVG sopra l'entry — il prezzo tende a riempire i gap). Per short: TP = fvg_bull_top_px (tetto della prima bullish FVG sotto l'entry). Il blend controlla ATR vs FVG. Fallback automatico a ATR se nessuna FVG valida è presente." width="wide" pos="bottom">
+              <label className={`flex items-start gap-2.5 cursor-pointer group p-3 rounded-xl border transition-all duration-200 h-full ${config.fvg_tp_enabled ? 'border-emerald-200 dark:border-emerald-500/30 bg-emerald-50/40 dark:bg-emerald-500/5' : 'border-slate-100 dark:border-white/5 hover:bg-slate-50 dark:hover:bg-white/[0.03]'}`}>
+                <div className="relative mt-0.5 flex-shrink-0">
+                  <input type="checkbox" className="sr-only" checked={config.fvg_tp_enabled} onChange={e => setConfig(c => ({ ...c, fvg_tp_enabled: e.target.checked, ob_tp_enabled: e.target.checked ? false : c.ob_tp_enabled, swing_tp_enabled: e.target.checked ? false : c.swing_tp_enabled }))} />
+                  <div className={`w-9 h-[18px] rounded-full transition-all duration-300 ${config.fvg_tp_enabled ? 'bg-emerald-600' : 'bg-slate-200 dark:bg-white/10'}`} />
+                  <div className={`absolute top-[3px] left-[3px] w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.fvg_tp_enabled ? 'translate-x-[18px]' : ''}`} />
+                </div>
+                <div className="min-w-0">
+                  <p className={`text-xs font-bold leading-tight transition-colors ${config.fvg_tp_enabled ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-700 dark:text-slate-300'}`}>
+                    TP — FVG
+                    {config.fvg_tp_enabled && <span className="ml-1.5 px-1.5 py-0.5 rounded text-[9px] font-bold bg-emerald-100 dark:bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 uppercase tracking-wider">Attivo</span>}
+                  </p>
+                  <p className="text-[10px] text-slate-400 dark:text-slate-500 leading-snug mt-0.5">Take Profit al fondo/tetto della Fair Value Gap opposta</p>
+                </div>
+              </label>
+            </Tooltip>
+
+            {/* SL — Swing */}
+            <Tooltip text="Posiziona lo SL oltre il più recente swing high/low confermato nella direzione dell'invalidazione. Per long: SL = swing_low_px − 0.1% (rottura del minimo strutturale). Per short: SL = swing_high_px + 0.1% (rottura del massimo strutturale). Attiva solo quando il livello è entro 4 ATR dall'entry. Solo allarga lo SL — size ridotta proporzionalmente." width="wide" pos="bottom">
+              <label className={`flex items-start gap-2.5 cursor-pointer group p-3 rounded-xl border transition-all duration-200 h-full ${config.swing_sl_enabled ? 'border-violet-200 dark:border-violet-500/30 bg-violet-50/40 dark:bg-violet-500/5' : 'border-slate-100 dark:border-white/5 hover:bg-slate-50 dark:hover:bg-white/[0.03]'}`}>
+                <div className="relative mt-0.5 flex-shrink-0">
+                  <input type="checkbox" className="sr-only" checked={config.swing_sl_enabled} onChange={e => setConfig(c => ({ ...c, swing_sl_enabled: e.target.checked }))} />
+                  <div className={`w-9 h-[18px] rounded-full transition-all duration-300 ${config.swing_sl_enabled ? 'bg-violet-600' : 'bg-slate-200 dark:bg-white/10'}`} />
+                  <div className={`absolute top-[3px] left-[3px] w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.swing_sl_enabled ? 'translate-x-[18px]' : ''}`} />
+                </div>
+                <div className="min-w-0">
+                  <p className={`text-xs font-bold leading-tight transition-colors ${config.swing_sl_enabled ? 'text-violet-600 dark:text-violet-400' : 'text-slate-700 dark:text-slate-300'}`}>
+                    SL — Swing
+                    {config.swing_sl_enabled && <span className="ml-1.5 px-1.5 py-0.5 rounded text-[9px] font-bold bg-violet-100 dark:bg-violet-500/20 text-violet-600 dark:text-violet-400 uppercase tracking-wider">Attivo</span>}
+                  </p>
+                  <p className="text-[10px] text-slate-400 dark:text-slate-500 leading-snug mt-0.5">Stop Loss oltre lo Swing High/Low strutturale più vicino</p>
+                </div>
+              </label>
+            </Tooltip>
+
+            {/* TP — Swing */}
+            <Tooltip text="Usa il più recente swing high/low confermato come target del Take Profit nella direzione del trade. Per long: TP = swing_high_px (prossimo massimo strutturale). Per short: TP = swing_low_px (prossimo minimo strutturale). Il blend controlla quanto peso dare allo Swing vs il TP ATR corrente. Fallback automatico a ATR se nessun swing valido è presente." width="wide" pos="bottom">
+              <label className={`flex items-start gap-2.5 cursor-pointer group p-3 rounded-xl border transition-all duration-200 h-full ${config.swing_tp_enabled ? 'border-emerald-200 dark:border-emerald-500/30 bg-emerald-50/40 dark:bg-emerald-500/5' : 'border-slate-100 dark:border-white/5 hover:bg-slate-50 dark:hover:bg-white/[0.03]'}`}>
+                <div className="relative mt-0.5 flex-shrink-0">
+                  <input type="checkbox" className="sr-only" checked={config.swing_tp_enabled} onChange={e => setConfig(c => ({ ...c, swing_tp_enabled: e.target.checked, ob_tp_enabled: e.target.checked ? false : c.ob_tp_enabled, fvg_tp_enabled: e.target.checked ? false : c.fvg_tp_enabled }))} />
+                  <div className={`w-9 h-[18px] rounded-full transition-all duration-300 ${config.swing_tp_enabled ? 'bg-emerald-600' : 'bg-slate-200 dark:bg-white/10'}`} />
+                  <div className={`absolute top-[3px] left-[3px] w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.swing_tp_enabled ? 'translate-x-[18px]' : ''}`} />
+                </div>
+                <div className="min-w-0">
+                  <p className={`text-xs font-bold leading-tight transition-colors ${config.swing_tp_enabled ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-700 dark:text-slate-300'}`}>
+                    TP — Swing
+                    {config.swing_tp_enabled && <span className="ml-1.5 px-1.5 py-0.5 rounded text-[9px] font-bold bg-emerald-100 dark:bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 uppercase tracking-wider">Attivo</span>}
+                  </p>
+                  <p className="text-[10px] text-slate-400 dark:text-slate-500 leading-snug mt-0.5">Take Profit al prossimo Swing High/Low strutturale</p>
+                </div>
+              </label>
+            </Tooltip>
+          </div>
+
+          {/* SL buffer controls */}
+          {(config.structural_sl_enabled || config.fvg_sl_enabled) && (
+            <div className="grid grid-cols-2 gap-3 px-1">
+              <NumInput label="SL Buffer %" value={config.ob_buffer_pct} onChange={v => setConfig(c => ({ ...c, ob_buffer_pct: v }))} step={0.1} min={0.0} max={2.0} />
+              <NumInput label="SL Buffer Min ATR" value={config.ob_buffer_min_atr} onChange={v => setConfig(c => ({ ...c, ob_buffer_min_atr: v }))} step={0.05} min={0.0} max={1.0} />
+            </div>
+          )}
+
+          {/* OB TP blend slider */}
+          {config.ob_tp_enabled && (
+            <div className="flex items-center gap-4 px-1">
+              <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest whitespace-nowrap">OB TP — Blend ATR ↔ OB</span>
+              <div className="flex items-center gap-3 flex-1">
+                <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 font-mono">ATR</span>
+                <input
+                  type="range" min="0" max="1" step="0.05"
+                  value={config.ob_tp_blend}
+                  onChange={e => setConfig(c => ({ ...c, ob_tp_blend: parseFloat(e.target.value) }))}
+                  className="flex-1 h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/15 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3.5 [&::-webkit-slider-thumb]:h-3.5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-emerald-500 [&::-webkit-slider-thumb]:shadow-sm [&::-webkit-slider-thumb]:cursor-pointer [&::-moz-range-thumb]:w-3.5 [&::-moz-range-thumb]:h-3.5 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-emerald-500 [&::-moz-range-thumb]:border-0"
+                />
+                <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 font-mono">OB</span>
+                <span className="text-[11px] font-bold font-mono text-emerald-600 dark:text-emerald-400 w-24 text-right">
+                  {Math.round((1 - config.ob_tp_blend) * 100)}% ATR · {Math.round(config.ob_tp_blend * 100)}% OB
+                </span>
+              </div>
+            </div>
+          )}
+
+          {/* FVG TP blend slider */}
+          {config.fvg_tp_enabled && (
+            <div className="flex items-center gap-4 px-1">
+              <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest whitespace-nowrap">FVG TP — Blend ATR ↔ FVG</span>
+              <div className="flex items-center gap-3 flex-1">
+                <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 font-mono">ATR</span>
+                <input
+                  type="range" min="0" max="1" step="0.05"
+                  value={config.fvg_tp_blend}
+                  onChange={e => setConfig(c => ({ ...c, fvg_tp_blend: parseFloat(e.target.value) }))}
+                  className="flex-1 h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/15 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3.5 [&::-webkit-slider-thumb]:h-3.5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-emerald-500 [&::-webkit-slider-thumb]:shadow-sm [&::-webkit-slider-thumb]:cursor-pointer [&::-moz-range-thumb]:w-3.5 [&::-moz-range-thumb]:h-3.5 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-emerald-500 [&::-moz-range-thumb]:border-0"
+                />
+                <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 font-mono">FVG</span>
+                <span className="text-[11px] font-bold font-mono text-emerald-600 dark:text-emerald-400 w-24 text-right">
+                  {Math.round((1 - config.fvg_tp_blend) * 100)}% ATR · {Math.round(config.fvg_tp_blend * 100)}% FVG
+                </span>
+              </div>
+            </div>
+          )}
+
+          {/* Swing TP blend slider */}
+          {config.swing_tp_enabled && (
+            <div className="flex items-center gap-4 px-1">
+              <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest whitespace-nowrap">Swing TP — Blend ATR ↔ Swing</span>
+              <div className="flex items-center gap-3 flex-1">
+                <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 font-mono">ATR</span>
+                <input
+                  type="range" min="0" max="1" step="0.05"
+                  value={config.swing_tp_blend}
+                  onChange={e => setConfig(c => ({ ...c, swing_tp_blend: parseFloat(e.target.value) }))}
+                  className="flex-1 h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/15 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3.5 [&::-webkit-slider-thumb]:h-3.5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-emerald-500 [&::-webkit-slider-thumb]:shadow-sm [&::-webkit-slider-thumb]:cursor-pointer [&::-moz-range-thumb]:w-3.5 [&::-moz-range-thumb]:h-3.5 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-emerald-500 [&::-moz-range-thumb]:border-0"
+                />
+                <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 font-mono">Swing</span>
+                <span className="text-[11px] font-bold font-mono text-emerald-600 dark:text-emerald-400 w-24 text-right">
+                  {Math.round((1 - config.swing_tp_blend) * 100)}% ATR · {Math.round(config.swing_tp_blend * 100)}% Swing
+                </span>
+              </div>
+            </div>
+          )}
+        </div>
+
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-6">
-          <div className={`transition-all duration-200 ${config.dynamic_sl_tp_enabled ? 'opacity-35 pointer-events-none' : ''}`}>
-            <Tooltip text={config.dynamic_sl_tp_enabled ? 'Disabilitato: in modalità AI-driven il valore viene calcolato da Chronos p10/p90.' : 'Distanza dello Stop Loss dal prezzo di entrata, espressa come multiplo dell\'ATR.'} width="wide" pos="bottom">
+          <div>
+            <Tooltip text="Distanza dello Stop Loss dal prezzo di entrata, espressa come multiplo dell'ATR. Usato come base anche in modalità AI-driven e strutturale." width="wide" pos="bottom">
               <NumInput label="SL Multiplier (× ATR)" value={config.sl_atr_mult} min={0.5} max={5} step={0.1} onChange={upd('sl_atr_mult')} />
             </Tooltip>
           </div>
-          <div className={`transition-all duration-200 ${config.dynamic_sl_tp_enabled ? 'opacity-35 pointer-events-none' : ''}`}>
-            <Tooltip text={config.dynamic_sl_tp_enabled ? 'Disabilitato: in modalità AI-driven il valore viene calcolato da Chronos p10/p90.' : 'Distanza del Take Profit dal prezzo di entrata, in multipli di ATR.'} width="wide" pos="bottom">
+          <div>
+            <Tooltip text="Distanza del Take Profit dal prezzo di entrata, in multipli di ATR. Usato come base e come fallback quando nessun livello strutturale è disponibile." width="wide" pos="bottom">
               <NumInput label="TP Multiplier (× ATR)" value={config.tp_atr_mult} min={1} max={10} step={0.1} onChange={upd('tp_atr_mult')} />
             </Tooltip>
           </div>
@@ -2185,26 +2430,6 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
           )}
         </div>
 
-        {/* P10 SL Floor */}
-        <div className={`flex flex-col gap-3 mt-6 pb-6 border-b transition-colors duration-200 ${config.p10_sl_floor_enabled ? 'border-amber-200 dark:border-amber-500/25' : 'border-slate-100 dark:border-white/5'}`}>
-          <label className="flex items-center gap-3 cursor-pointer group">
-            <div className="relative">
-              <input type="checkbox" className="sr-only" checked={config.p10_sl_floor_enabled} onChange={e => setConfig(c => ({ ...c, p10_sl_floor_enabled: e.target.checked }))} disabled={!config.chronos_enabled} />
-              <div className={`w-10 h-5 rounded-full transition-all duration-300 ${config.p10_sl_floor_enabled ? 'bg-amber-500' : 'bg-slate-200 dark:bg-white/10'} ${!config.chronos_enabled ? 'opacity-40' : ''}`} />
-              <div className={`absolute top-1 left-1 w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.p10_sl_floor_enabled ? 'translate-x-5' : ''}`} />
-            </div>
-            <div>
-              <p className={`text-sm font-bold transition-colors ${config.p10_sl_floor_enabled ? 'text-amber-600 dark:text-amber-400' : !config.chronos_enabled ? 'text-slate-400 dark:text-slate-600' : 'text-slate-800 dark:text-slate-200 group-hover:text-amber-600 dark:group-hover:text-amber-400'}`}>
-                P10 SL Floor (Chronos)
-                {config.p10_sl_floor_enabled && <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-amber-100 dark:bg-amber-500/20 text-amber-600 dark:text-amber-400 uppercase tracking-wider">Attivo</span>}
-              </p>
-              <p className="text-[11px] font-medium text-slate-400 dark:text-slate-500 leading-tight">
-                {!config.chronos_enabled ? 'Richiede Chronos-2 attivo' : 'Usa il p10 Chronos come floor per lo SL — migliora R:R quando la forecast è confidenti'}
-              </p>
-            </div>
-          </label>
-        </div>
-
         {/* Max Hold Bars */}
         <div className={`flex flex-col gap-3 mt-6 transition-colors duration-200`}>
           <label className="flex items-center gap-3 cursor-pointer group">
@@ -2280,32 +2505,6 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
             </div>
           </label>
           </Tooltip>
-
-          {/* Structural SL */}
-          <Tooltip text="Posiziona lo SL dietro l'Order Block attivo più vicino (entro 2 ATR dall'entry). Per short: SL = ob_bear_top_px × 1.003. Per long: SL = ob_bull_bot_px × 0.997. Lo SL viene solo allargato (mai ristretto); la size viene ridotta proporzionalmente per mantenere il rischio USD invariato." width="wide" pos="top">
-          <label className={`flex items-start gap-3 cursor-pointer group p-4 rounded-xl border transition-all duration-200 ${config.structural_sl_enabled ? 'border-violet-200 dark:border-violet-500/30 bg-violet-50/40 dark:bg-violet-500/5' : 'border-slate-100 dark:border-white/5 hover:bg-slate-50 dark:hover:bg-white/[0.03]'}`}>
-            <div className="relative mt-0.5 flex-shrink-0">
-              <input type="checkbox" className="sr-only" checked={config.structural_sl_enabled} onChange={e => setConfig(c => ({ ...c, structural_sl_enabled: e.target.checked }))} />
-              <div className={`w-9 h-[18px] rounded-full transition-all duration-300 ${config.structural_sl_enabled ? 'bg-violet-600' : 'bg-slate-200 dark:bg-white/10'}`} />
-              <div className={`absolute top-[3px] left-[3px] w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.structural_sl_enabled ? 'translate-x-[18px]' : ''}`} />
-            </div>
-            <div className="min-w-0">
-              <p className={`text-xs font-bold leading-tight transition-colors ${config.structural_sl_enabled ? 'text-violet-600 dark:text-violet-400' : 'text-slate-700 dark:text-slate-300'}`}>
-                Structural SL — OB-aware
-                {config.structural_sl_enabled && <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-violet-100 dark:bg-violet-500/20 text-violet-600 dark:text-violet-400 uppercase tracking-wider">Attivo</span>}
-              </p>
-              <p className="text-[10px] text-slate-400 dark:text-slate-500 leading-snug mt-1">
-                Se un Order Block attivo è entro <span className="font-mono text-slate-600 dark:text-slate-300">2 ATR</span> dall'entry nella direzione dello SL, posiziona lo stop <span className="font-mono text-slate-600 dark:text-slate-300">0.3%</span> oltre l'OB. Solo allarga lo SL (mai restringe) — size ridotta proporzionalmente per mantenere il rischio USD costante.
-              </p>
-            </div>
-          </label>
-          </Tooltip>
-          {config.structural_sl_enabled && (
-            <div className="px-4 pb-2 flex flex-col gap-2">
-              <NumInput label="OB Buffer %" value={config.ob_buffer_pct} onChange={v => setConfig(c => ({ ...c, ob_buffer_pct: v }))} step={0.1} min={0.0} max={2.0} />
-              <NumInput label="OB Buffer Min ATR (0 = disabilitato)" value={config.ob_buffer_min_atr} onChange={v => setConfig(c => ({ ...c, ob_buffer_min_atr: v }))} step={0.05} min={0.0} max={1.0} />
-            </div>
-          )}
 
           {/* Late Entry Distance Filter */}
           <Tooltip text="Blocca l'entry se il prezzo è già troppo lontano dall'Order Block attivo (ob_dist > soglia ATR). Il filtro è attivo solo quando esiste un OB nella direzione del trade — se non c'è OB viene ignorato per non bloccare trade legittimi senza struttura vicina." width="wide" pos="top">

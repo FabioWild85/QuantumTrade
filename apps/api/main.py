@@ -197,6 +197,17 @@ class BotConfig(BaseModel):
     structural_sl_enabled:     bool  = Field(True)
     ob_buffer_pct:             float = Field(0.3, ge=0.0, le=2.0)
     ob_buffer_min_atr:         float = Field(0.0, ge=0.0, le=1.0)
+    # OB-based TP
+    ob_tp_enabled:             bool  = Field(False)
+    ob_tp_blend:               float = Field(1.0, ge=0.0, le=1.0)
+    # FVG-based SL
+    fvg_sl_enabled:            bool  = Field(False)
+    fvg_tp_enabled:            bool  = Field(False)
+    fvg_tp_blend:              float = Field(1.0, ge=0.0, le=1.0)
+    # Swing High/Low SL + TP
+    swing_sl_enabled:          bool  = Field(False)
+    swing_tp_enabled:          bool  = Field(False)
+    swing_tp_blend:            float = Field(1.0, ge=0.0, le=1.0)
     # Dual ATR: separate ATR periods for SL (ATR_21, smoother) and TP (ATR_14, reactive)
     dual_atr_enabled: bool = Field(False)
     # Late Entry Distance Filter

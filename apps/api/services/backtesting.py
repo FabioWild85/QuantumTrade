@@ -16,7 +16,7 @@ import pandas as pd
 from services.hyperliquid_data import HyperliquidData
 from services.smc import build_all_features
 from services.decision import DecisionEngine, compute_qt_score
-from services.risk import RiskManager, apply_structural_sl
+from services.risk import RiskManager, apply_structural_sl, apply_fvg_sl, apply_swing_sl
 from services.trainer import load_correct_model
 
 log = logging.getLogger(__name__)
@@ -88,6 +88,14 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
     structural_sl_enabled     = getattr(cfg, "structural_sl_enabled",     True)
     ob_buffer_pct             = getattr(cfg, "ob_buffer_pct",             0.3)
     ob_buffer_min_atr         = getattr(cfg, "ob_buffer_min_atr",         0.0)
+    ob_tp_enabled             = getattr(cfg, "ob_tp_enabled",             False)
+    ob_tp_blend               = getattr(cfg, "ob_tp_blend",               1.0)
+    fvg_sl_enabled            = getattr(cfg, "fvg_sl_enabled",            False)
+    fvg_tp_enabled            = getattr(cfg, "fvg_tp_enabled",            False)
+    fvg_tp_blend              = getattr(cfg, "fvg_tp_blend",              1.0)
+    swing_sl_enabled          = getattr(cfg, "swing_sl_enabled",          False)
+    swing_tp_enabled          = getattr(cfg, "swing_tp_enabled",          False)
+    swing_tp_blend            = getattr(cfg, "swing_tp_blend",            1.0)
     # Dual ATR for SL
     dual_atr_enabled          = getattr(cfg, "dual_atr_enabled",          False)
     # Late Entry Distance Filter
@@ -474,6 +482,18 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                     dynamic_sl_tp_blend=dynamic_sl_tp_blend,
                     recalibrated_uncertainty_thresholds=recalibrated_uncertainty_thresholds,
                     p10_sl_floor_enabled=p10_sl_floor_enabled and _p10_available,
+                    ob_tp_enabled=ob_tp_enabled,
+                    ob_tp_blend=ob_tp_blend,
+                    ob_bear_top_px=float(v) if (v := result.features_snapshot.get("ob_bear_top_px")) is not None and pd.notna(v) and float(v) > 0 else None,
+                    ob_bull_bot_px=float(v) if (v := result.features_snapshot.get("ob_bull_bot_px")) is not None and pd.notna(v) and float(v) > 0 else None,
+                    fvg_tp_enabled=fvg_tp_enabled,
+                    fvg_tp_blend=fvg_tp_blend,
+                    fvg_bear_bot_px=float(v) if (v := result.features_snapshot.get("fvg_bear_bot_px")) is not None and pd.notna(v) and float(v) > 0 else None,
+                    fvg_bull_top_px=float(v) if (v := result.features_snapshot.get("fvg_bull_top_px")) is not None and pd.notna(v) and float(v) > 0 else None,
+                    swing_tp_enabled=swing_tp_enabled,
+                    swing_tp_blend=swing_tp_blend,
+                    swing_high_px=float(v) if (v := result.features_snapshot.get("swing_high_px")) is not None and pd.notna(v) and float(v) > 0 else None,
+                    swing_low_px=float(v) if (v := result.features_snapshot.get("swing_low_px")) is not None and pd.notna(v) and float(v) > 0 else None,
                 )
                 # Structural SL: mirror live execution — place SL behind OB when within 2%.
                 if structural_sl_enabled:
@@ -481,6 +501,16 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                         params, result.features_snapshot, close_price,
                         ob_buffer_pct=ob_buffer_pct,
                         ob_buffer_min_atr=ob_buffer_min_atr,
+                    )
+                if fvg_sl_enabled:
+                    apply_fvg_sl(
+                        params, result.features_snapshot, close_price,
+                        ob_buffer_pct=ob_buffer_pct,
+                        ob_buffer_min_atr=ob_buffer_min_atr,
+                    )
+                if swing_sl_enabled:
+                    apply_swing_sl(
+                        params, result.features_snapshot, close_price,
                     )
                 effective_size_usd = params.size_usd * result.size_factor
                 fee_entry = effective_size_usd * HL_TAKER_FEE

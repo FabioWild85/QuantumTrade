@@ -262,6 +262,15 @@ def build_all_features(
     d["adx_14"]    = ta.trend.ADXIndicator(high, low, close, 14).adx()
     d["atr_14"]    = ta.volatility.AverageTrueRange(high, low, close, 14).average_true_range()
     d["atr_21"]    = ta.volatility.AverageTrueRange(high, low, close, 21).average_true_range()
+
+    # Swing High / Low: centered rolling max/min shifted N bars to avoid lookahead.
+    # Identifies the most recent confirmed swing pivot (price that was the N-bar extreme).
+    _sw_n = 5
+    _sh   = d["high"].rolling(2 * _sw_n + 1, center=True).max()
+    _sl_r = d["low"].rolling(2 * _sw_n + 1, center=True).min()
+    d["swing_high_px"] = d["high"].where(d["high"] == _sh).shift(_sw_n).ffill()
+    d["swing_low_px"]  = d["low"].where(d["low"] == _sl_r).shift(_sw_n).ffill()
+
     d["macd_hist"] = ta.trend.MACD(close).macd_diff()
     bb             = ta.volatility.BollingerBands(close, 20)
     d["bb_width"]  = (bb.bollinger_hband() - bb.bollinger_lband()) / close

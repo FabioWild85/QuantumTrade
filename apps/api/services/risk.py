@@ -79,6 +79,18 @@ class RiskManager:
         dynamic_sl_tp_blend: float = 0.50,
         recalibrated_uncertainty_thresholds: bool = True,
         p10_sl_floor_enabled: bool = False,
+        ob_tp_enabled: bool = False,
+        ob_tp_blend: float = 1.0,
+        ob_bear_top_px: Optional[float] = None,
+        ob_bull_bot_px: Optional[float] = None,
+        fvg_tp_enabled: bool = False,
+        fvg_tp_blend: float = 1.0,
+        fvg_bear_bot_px: Optional[float] = None,
+        fvg_bull_top_px: Optional[float] = None,
+        swing_tp_enabled: bool = False,
+        swing_tp_blend: float = 1.0,
+        swing_high_px: Optional[float] = None,
+        swing_low_px: Optional[float] = None,
     ) -> TradeParams:
         # Dual ATR: sl_atr (ATR_21, smoother) for SL distance; atr (ATR_14) for TP and all floors.
         _sl_atr     = sl_atr if (sl_atr is not None and sl_atr > 0) else atr
@@ -164,6 +176,54 @@ class RiskManager:
                 sl_dist, atr, size_mult,
             )
 
+        # ── OB-based TP ───────────────────────────────────────────────────────
+        # Blends current tp_dist with the structural OB target in the trade direction.
+        # Long TP target = nearest bear OB top (first resistance above entry).
+        # Short TP target = nearest bull OB bottom (first support below entry).
+        # ob_tp_blend=1.0 → pure OB level; 0.0 → pure ATR/Chronos (no change).
+        # Floor: tp_dist never < 1×ATR to prevent degenerate targets.
+        ob_tp_applied = False
+        if ob_tp_enabled:
+            if side == "long" and ob_bear_top_px is not None and ob_bear_top_px > entry_price:
+                ob_tp_dist = ob_bear_top_px - entry_price
+                tp_dist    = (1.0 - ob_tp_blend) * tp_dist + ob_tp_blend * ob_tp_dist
+                tp_dist    = max(tp_dist, 1.0 * atr)
+                ob_tp_applied = True
+            elif side == "short" and ob_bull_bot_px is not None and ob_bull_bot_px < entry_price:
+                ob_tp_dist = entry_price - ob_bull_bot_px
+                tp_dist    = (1.0 - ob_tp_blend) * tp_dist + ob_tp_blend * ob_tp_dist
+                tp_dist    = max(tp_dist, 1.0 * atr)
+                ob_tp_applied = True
+
+        fvg_tp_applied = False
+        if fvg_tp_enabled:
+            if side == "long" and fvg_bear_bot_px is not None and fvg_bear_bot_px > entry_price:
+                fvg_tp_dist = fvg_bear_bot_px - entry_price
+                tp_dist     = (1.0 - fvg_tp_blend) * tp_dist + fvg_tp_blend * fvg_tp_dist
+                tp_dist     = max(tp_dist, 1.0 * atr)
+                fvg_tp_applied = True
+            elif side == "short" and fvg_bull_top_px is not None and fvg_bull_top_px < entry_price:
+                fvg_tp_dist = entry_price - fvg_bull_top_px
+                tp_dist     = (1.0 - fvg_tp_blend) * tp_dist + fvg_tp_blend * fvg_tp_dist
+                tp_dist     = max(tp_dist, 1.0 * atr)
+                fvg_tp_applied = True
+
+        # ── Swing High/Low TP ─────────────────────────────────────────────────
+        # Long TP target = nearest confirmed swing high above entry (first resistance).
+        # Short TP target = nearest confirmed swing low below entry (first support).
+        swing_tp_applied = False
+        if swing_tp_enabled:
+            if side == "long" and swing_high_px is not None and swing_high_px > entry_price:
+                sw_tp_dist = swing_high_px - entry_price
+                tp_dist    = (1.0 - swing_tp_blend) * tp_dist + swing_tp_blend * sw_tp_dist
+                tp_dist    = max(tp_dist, 1.0 * atr)
+                swing_tp_applied = True
+            elif side == "short" and swing_low_px is not None and swing_low_px < entry_price:
+                sw_tp_dist = entry_price - swing_low_px
+                tp_dist    = (1.0 - swing_tp_blend) * tp_dist + swing_tp_blend * sw_tp_dist
+                tp_dist    = max(tp_dist, 1.0 * atr)
+                swing_tp_applied = True
+
         if side == "long":
             stop_loss   = entry_price - sl_dist
             take_profit = entry_price + tp_dist
@@ -188,6 +248,9 @@ class RiskManager:
             + (f" [adaptive: uncertainty={c2_uncertainty:.3f} size_mult={size_mult:.2f}]"
                if dynamic_sl_tp_enabled and c2_uncertainty is not None else "")
             + (" [P10 SL floor applied]" if p10_floor_applied else "")
+            + (f" [OB TP: blend={ob_tp_blend:.2f} tp_dist={tp_dist:.0f}]" if ob_tp_applied else "")
+            + (f" [FVG TP: blend={fvg_tp_blend:.2f} tp_dist={tp_dist:.0f}]" if fvg_tp_applied else "")
+            + (f" [Swing TP: blend={swing_tp_blend:.2f} tp_dist={tp_dist:.0f}]" if swing_tp_applied else "")
         )
         return TradeParams(
             side=side,
@@ -327,6 +390,138 @@ def apply_structural_sl(
                 msg = (
                     f"StructuralSL: bull OB bot={_ob_bot_f:.2f} ({_ob_dist_f:.2f} ATR below) → "
                     f"SL={ob_sl:.2f} buf={max(_pct_buf, _atr_buf):.2f} (was {orig_sl:.2f})"
+                )
+                _rescale_size(params, orig_sl, entry_price)
+                return True, msg
+
+    return False, ""
+
+
+# ── FVG SL helper (shared by live execution and backtesting) ──────────────────
+
+def apply_fvg_sl(
+    params: TradeParams,
+    features: dict,
+    entry_price: float,
+    fvg_proximity_atr: float = 3.0,
+    ob_buffer_pct: float = 0.3,
+    ob_buffer_min_atr: float = 0.0,
+) -> tuple[bool, str]:
+    """
+    Widens params.stop_loss when a Fair Value Gap level is within fvg_proximity_atr
+    ATR units of entry in the SL direction.
+
+    For short: SL anchor = fvg_bear_top_px + buffer (FVG top above entry = bearish gap invalidation).
+    For long:  SL anchor = fvg_bull_bot_px - buffer (FVG bottom below entry = bullish gap invalidation).
+
+    Buffer = max(level × ob_buffer_pct/100, ob_buffer_min_atr × params.atr).
+    Only ever widens — never tightens — the SL.
+    Rescales size to keep dollar risk constant.
+
+    Returns (applied: bool, log_msg: str).
+    Modifies params in-place.
+    """
+    is_short  = params.side == "short"
+    orig_sl   = params.stop_loss
+    atr       = params.atr
+
+    if is_short:
+        fvg_top_px = features.get("fvg_bear_top_px")
+        _top = float(fvg_top_px) if fvg_top_px is not None else 0.0
+        if (
+            _top > entry_price                                       # FVG above entry
+            and (_top - entry_price) / atr < fvg_proximity_atr      # within N ATR
+        ):
+            _pct_buf = _top * ob_buffer_pct / 100.0
+            _atr_buf = ob_buffer_min_atr * atr if ob_buffer_min_atr > 0 else 0.0
+            fvg_sl = _top + max(_pct_buf, _atr_buf)
+            if fvg_sl > params.stop_loss:
+                params.stop_loss = fvg_sl
+                msg = (
+                    f"FVG_SL: bear FVG top={_top:.2f} → "
+                    f"SL={fvg_sl:.2f} buf={max(_pct_buf, _atr_buf):.2f} (was {orig_sl:.2f})"
+                )
+                _rescale_size(params, orig_sl, entry_price)
+                return True, msg
+    else:
+        fvg_bot_px = features.get("fvg_bull_bot_px")
+        _bot = float(fvg_bot_px) if fvg_bot_px is not None else 0.0
+        if (
+            0 < _bot < entry_price                                   # FVG below entry
+            and (entry_price - _bot) / atr < fvg_proximity_atr      # within N ATR
+        ):
+            _pct_buf = _bot * ob_buffer_pct / 100.0
+            _atr_buf = ob_buffer_min_atr * atr if ob_buffer_min_atr > 0 else 0.0
+            fvg_sl = _bot - max(_pct_buf, _atr_buf)
+            if fvg_sl < params.stop_loss:
+                params.stop_loss = fvg_sl
+                msg = (
+                    f"FVG_SL: bull FVG bot={_bot:.2f} → "
+                    f"SL={fvg_sl:.2f} buf={max(_pct_buf, _atr_buf):.2f} (was {orig_sl:.2f})"
+                )
+                _rescale_size(params, orig_sl, entry_price)
+                return True, msg
+
+    return False, ""
+
+
+# ── Swing High/Low SL helper (shared by live execution and backtesting) ──────────
+
+def apply_swing_sl(
+    params: TradeParams,
+    features: dict,
+    entry_price: float,
+    swing_proximity_atr: float = 4.0,
+) -> tuple[bool, str]:
+    """
+    Widens params.stop_loss to beyond the nearest confirmed swing level in the
+    SL direction, when that swing is within swing_proximity_atr ATR of entry.
+
+    For short: SL = swing_high_px (swing high above entry = bearish invalidation).
+    For long:  SL = swing_low_px  (swing low below entry = bullish invalidation).
+
+    A small 0.1 % buffer is added beyond the swing level so the stop sits cleanly
+    outside the structural zone rather than exactly on it.
+
+    Only ever widens — never tightens — the SL.
+    Rescales size to keep dollar risk constant.
+
+    Returns (applied: bool, log_msg: str).
+    Modifies params in-place.
+    """
+    is_short = params.side == "short"
+    orig_sl  = params.stop_loss
+    atr      = params.atr
+
+    if is_short:
+        sw_px = features.get("swing_high_px")
+        _sw   = float(sw_px) if sw_px is not None else 0.0
+        if (
+            _sw > entry_price                                          # swing above entry
+            and (_sw - entry_price) / atr < swing_proximity_atr       # within N ATR
+        ):
+            swing_sl = _sw * 1.001                                     # 0.1 % buffer above
+            if swing_sl > params.stop_loss:
+                params.stop_loss = swing_sl
+                msg = (
+                    f"SwingSL: swing high={_sw:.2f} → "
+                    f"SL={swing_sl:.2f} (was {orig_sl:.2f})"
+                )
+                _rescale_size(params, orig_sl, entry_price)
+                return True, msg
+    else:
+        sw_px = features.get("swing_low_px")
+        _sw   = float(sw_px) if sw_px is not None else 0.0
+        if (
+            0 < _sw < entry_price                                      # swing below entry
+            and (entry_price - _sw) / atr < swing_proximity_atr       # within N ATR
+        ):
+            swing_sl = _sw * 0.999                                     # 0.1 % buffer below
+            if swing_sl < params.stop_loss:
+                params.stop_loss = swing_sl
+                msg = (
+                    f"SwingSL: swing low={_sw:.2f} → "
+                    f"SL={swing_sl:.2f} (was {orig_sl:.2f})"
                 )
                 _rescale_size(params, orig_sl, entry_price)
                 return True, msg

@@ -21,7 +21,7 @@ from services.hyperliquid_data import HyperliquidData
 from services.smc import build_all_features, ALL_FEATURES
 from services.chronos_model import ChronosForecaster
 from services.decision import DecisionEngine, DecisionResult, compute_qt_score
-from services.risk import RiskManager, apply_structural_sl
+from services.risk import RiskManager, apply_structural_sl, apply_fvg_sl, apply_swing_sl
 from services.notifications import TelegramNotifier
 from services.trainer import LGBMTrainer, load_model, load_correct_model, load_1h_model, _retrain_lock
 from services.covariates import update_covariates, get_latest_covariates
@@ -1177,6 +1177,18 @@ class ExecutionEngine:
             dynamic_sl_tp_blend=cfg.dynamic_sl_tp_blend,
             recalibrated_uncertainty_thresholds=getattr(cfg, "recalibrated_uncertainty_thresholds", True),
             p10_sl_floor_enabled=cfg.p10_sl_floor_enabled and _p10_available,
+            ob_tp_enabled=getattr(cfg, "ob_tp_enabled", False),
+            ob_tp_blend=getattr(cfg, "ob_tp_blend", 1.0),
+            ob_bear_top_px=self._safe_float(result.features_snapshot.get("ob_bear_top_px")),
+            ob_bull_bot_px=self._safe_float(result.features_snapshot.get("ob_bull_bot_px")),
+            fvg_tp_enabled=getattr(cfg, "fvg_tp_enabled", False),
+            fvg_tp_blend=getattr(cfg, "fvg_tp_blend", 1.0),
+            fvg_bear_bot_px=self._safe_float(result.features_snapshot.get("fvg_bear_bot_px")),
+            fvg_bull_top_px=self._safe_float(result.features_snapshot.get("fvg_bull_top_px")),
+            swing_tp_enabled=getattr(cfg, "swing_tp_enabled", False),
+            swing_tp_blend=getattr(cfg, "swing_tp_blend", 1.0),
+            swing_high_px=self._safe_float(result.features_snapshot.get("swing_high_px")),
+            swing_low_px=self._safe_float(result.features_snapshot.get("swing_low_px")),
         )
 
         # Restore original risk manager state
@@ -1196,6 +1208,24 @@ class ExecutionEngine:
             if _ob_applied:
                 log.info("StructuralSL [%s]: %s", result.action, _ob_msg)
                 result.reasoning.append(_ob_msg)
+
+        if getattr(cfg, "fvg_sl_enabled", False):
+            _fvg_applied, _fvg_msg = apply_fvg_sl(
+                params, result.features_snapshot, price,
+                ob_buffer_pct=getattr(cfg, "ob_buffer_pct", 0.3),
+                ob_buffer_min_atr=getattr(cfg, "ob_buffer_min_atr", 0.0),
+            )
+            if _fvg_applied:
+                log.info("FVG_SL [%s]: %s", result.action, _fvg_msg)
+                result.reasoning.append(_fvg_msg)
+
+        if getattr(cfg, "swing_sl_enabled", False):
+            _sw_applied, _sw_msg = apply_swing_sl(
+                params, result.features_snapshot, price,
+            )
+            if _sw_applied:
+                log.info("SwingSL [%s]: %s", result.action, _sw_msg)
+                result.reasoning.append(_sw_msg)
 
         # Apply regime bias size reduction for counter-trend trades
         eff_size_usd       = params.size_usd       * result.size_factor
