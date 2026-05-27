@@ -411,7 +411,10 @@ export const Monitor: React.FC<{ apiBase: string }> = ({ apiBase }) => {
           <KpiCard
             label="Prossima Candela"
             value={`${String(Math.floor(countdown / 3600)).padStart(2,'0')}:${String(Math.floor((countdown % 3600) / 60)).padStart(2,'0')}:${String(countdown % 60).padStart(2,'0')}`}
-            sub={`Cicli: ${status?.cycle_count ?? 0} · Retrain: ${120 - ((status?.cycle_count ?? 0) % 120)}`}
+            sub={(() => {
+              const n = (status?.config?.retrain_every_n_cycles as number) ?? 120;
+              return `Cicli: ${status?.cycle_count ?? 0} · Retrain: ${n - ((status?.cycle_count ?? 0) % n)}`;
+            })()}
           />
         </Tooltip>
         <Tooltip text="Stato operativo del bot. 'Running' = analizza il mercato attivamente. 'Idle' = in pausa. Mostra anche se la connessione WebSocket a Hyperliquid è attiva.">

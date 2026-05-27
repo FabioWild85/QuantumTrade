@@ -2308,7 +2308,7 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
           )}
 
           {/* Late Entry Distance Filter */}
-          <Tooltip text="Blocca l'entry se il prezzo è già troppo lontano dall'Order Block che ha generato il momentum. ob_bull_dist = (close − OB_mid) / ATR_14: se supera la soglia e l'OB è attivo, il segnale viene scartato. Evita entrate tardive dove il momentum è già esaurito e il R:R è compromesso. Inattivo se nessun OB è rilevato." width="wide" pos="top">
+          <Tooltip text="Blocca l'entry se il prezzo è già troppo lontano dall'Order Block attivo (ob_dist > soglia ATR). Il filtro è attivo solo quando esiste un OB nella direzione del trade — se non c'è OB viene ignorato per non bloccare trade legittimi senza struttura vicina." width="wide" pos="top">
           <label className={`flex items-start gap-3 cursor-pointer group p-4 rounded-xl border transition-all duration-200 ${config.late_entry_filter_enabled ? 'border-amber-200 dark:border-amber-500/30 bg-amber-50/40 dark:bg-amber-500/5' : 'border-slate-100 dark:border-white/5 hover:bg-slate-50 dark:hover:bg-white/[0.03]'}`}>
             <div className="relative mt-0.5 flex-shrink-0">
               <input type="checkbox" className="sr-only" checked={config.late_entry_filter_enabled} onChange={e => setConfig(c => ({ ...c, late_entry_filter_enabled: e.target.checked }))} />
@@ -2358,7 +2358,7 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
           )}
 
           {/* Consecutive Bars Filter */}
-          <Tooltip text="Blocca l'entry se il trend ha troppi bar consecutivi nella stessa direzione — il momentum è già prezzato e il rischio di pullback è elevato. consec_bars > 0 = bar bullish consecutive, < 0 = bearish. Inattivo se consec_bars_filter_enabled = false." width="wide" pos="top">
+          <Tooltip text="Blocca l'entry se il trend ha troppi bar consecutivi nella stessa direzione — il momentum è già prezzato e il rischio di pullback/rimbalzo è elevato. consec_bars ≥ max_long blocca long (bull overextension); consec_bars ≤ −max_short blocca short (bear overextension)." width="wide" pos="top">
           <label className={`flex items-start gap-3 cursor-pointer group p-4 rounded-xl border transition-all duration-200 ${config.consec_bars_filter_enabled ? 'border-rose-200 dark:border-rose-500/30 bg-rose-50/40 dark:bg-rose-500/5' : 'border-slate-100 dark:border-white/5 hover:bg-slate-50 dark:hover:bg-white/[0.03]'}`}>
             <div className="relative mt-0.5 flex-shrink-0">
               <input type="checkbox" className="sr-only" checked={config.consec_bars_filter_enabled} onChange={e => setConfig(c => ({ ...c, consec_bars_filter_enabled: e.target.checked }))} />
@@ -2371,7 +2371,7 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                 {config.consec_bars_filter_enabled && <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-rose-100 dark:bg-rose-500/20 text-rose-600 dark:text-rose-400 uppercase tracking-wider">Attivo</span>}
               </p>
               <p className="text-[10px] text-slate-400 dark:text-slate-500 leading-snug mt-1">
-                Salta long se ≥ <span className="font-mono text-slate-600 dark:text-slate-300">{config.consec_bars_max_long}</span> bar bull consecutivi — salta short se ≥ <span className="font-mono text-slate-600 dark:text-slate-300">{config.consec_bars_max_short}</span> bar bear. Trend troppo esteso.
+                Salta long se ≥ <span className="font-mono text-slate-600 dark:text-slate-300">{config.consec_bars_max_long}</span> bar bull consecutivi — salta short se ≥ <span className="font-mono text-slate-600 dark:text-slate-300">{config.consec_bars_max_short}</span> bar bear. Trend overexteso, alto rischio inversione.
               </p>
             </div>
           </label>

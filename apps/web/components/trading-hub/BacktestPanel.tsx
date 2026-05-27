@@ -1717,6 +1717,15 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
       `Dynamic SL/TP:          ${dynamicSlTp ? `ATTIVO — blend ${dynamicSlTpBlend}` : 'DISATTIVATO'}`,
       `Recalibrated uncertainty: ${recalibratedUncertainty ? 'SÌ' : 'NO'}`,
       `P10 SL floor:           ${p10SlFloor && useChronos ? 'ATTIVO' : 'DISATTIVATO'}`,
+      '',
+      '━━━ SIGNAL QUALITY FILTERS ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
+      `Exhaustion Guard:       ${exhaustionGuard ? 'ATTIVO' : 'DISATTIVATO'}`,
+      `Absorption Filter:      ${absorptionFilter ? `ATTIVO — soglia z ${absorptionZThresh}σ` : 'DISATTIVATO'}`,
+      `Dual ATR (SL/TP):       ${dualAtr ? 'ATTIVO (SL=ATR_21, TP=ATR_14)' : 'DISATTIVATO'}`,
+      `Structural SL (OB):     ${structuralSl ? `ATTIVO — buffer ${obBufferPct}% | min ATR floor ${obBufferMinAtr}` : 'DISATTIVATO'}`,
+      `Late Entry Filter:      ${lateEntryFilter ? `ATTIVO — max OB dist ${lateEntryMaxObDist} ATR` : 'DISATTIVATO'}`,
+      `Path Obstruction Gate:  ${pathObstruction ? `ATTIVO — max dist contrario ${pathObstMaxDist} ATR` : 'DISATTIVATO'}`,
+      `Consecutive Bars Filter:${consecBarsFilter ? ` ATTIVO — max long ${consecBarsMaxLong} bar | max short ${consecBarsMaxShort} bar` : ' DISATTIVATO'}`,
     ];
 
     if (result) {
@@ -2611,13 +2620,13 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                     />
                     <Toggle
                       label="Late Entry Filter — OB Distance"
-                      desc="Salta l'entry se il prezzo è già troppo lontano dall'Order Block (ob_dist > soglia ATR)"
+                      desc="Salta l'entry se il prezzo è già troppo lontano dall'Order Block attivo (ob_dist > soglia ATR). Attivo solo quando esiste un OB nella direzione del trade."
                       checked={lateEntryFilter}
                       onChange={setLateEntryFilter}
                     />
                     {lateEntryFilter && (
                       <div className="pl-1">
-                        <Tooltip text="Distanza massima ATR-normalizzata tra il prezzo e il midpoint dell'Order Block. Se ob_bull_dist supera questa soglia e l'OB è attivo, il long viene saltato. Default 3.0 ATR." pos="top" width="wide">
+                        <Tooltip text="Distanza massima ATR-normalizzata tra il prezzo e il midpoint dell'Order Block. Se ob_bull_dist (long) o ob_bear_dist (short) supera questa soglia e l'OB è attivo, il trade viene saltato. Se nessun OB è attivo il filtro è inattivo. Default 3.0 ATR." pos="top" width="wide">
                           <NumInput
                             label="Distanza Massima OB (ATR)"
                             value={lateEntryMaxObDist}
@@ -2649,13 +2658,13 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                     )}
                     <Toggle
                       label="Consecutive Bars Filter — Trend Age"
-                      desc="Blocca long/short se ci sono troppi bar consecutivi nella stessa direzione (trend esteso, alto rischio pullback)"
+                      desc="Blocca long/short se ci sono troppi bar consecutivi nella stessa direzione del trade (trend esteso, momentum già prezzato, alto rischio pullback)."
                       checked={consecBarsFilter}
                       onChange={setConsecBarsFilter}
                     />
                     {consecBarsFilter && (
                       <div className="pl-1 flex flex-col gap-2">
-                        <Tooltip text="Numero massimo di bar bullish consecutivi prima che un long venga bloccato. Default 8. Range 3–20." pos="top" width="wide">
+                        <Tooltip text="Numero massimo di bar bullish consecutivi prima che un long venga bloccato. Es. con 6: dopo 6 chiuse bullish consecutive il long è saltato — il trend è overextended e il rischio di pullback è alto. Default 8." pos="top" width="wide">
                           <NumInput
                             label="Max Bar Bull Consecutivi (Long)"
                             value={consecBarsMaxLong}
@@ -2664,7 +2673,7 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                             unit="bar"
                           />
                         </Tooltip>
-                        <Tooltip text="Numero massimo di bar bearish consecutivi prima che uno short venga bloccato. Default 8. Range 3–20." pos="top" width="wide">
+                        <Tooltip text="Numero massimo di bar bearish consecutivi prima che uno short venga bloccato. Es. con 6: dopo 6 chiuse bearish consecutive lo short è saltato — il trend è overextended e il rischio di rimbalzo è alto. Default 8." pos="top" width="wide">
                           <NumInput
                             label="Max Bar Bear Consecutivi (Short)"
                             value={consecBarsMaxShort}

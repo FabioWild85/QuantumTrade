@@ -307,7 +307,8 @@ class DecisionEngine:
 
             # Late entry filter: skip if price is too far above the bull OB midpoint.
             # ob_bull_dist = (close - OB_mid) / ATR_14 — large positive = late entry.
-            # Only active when a bull OB is present (ob_bull_active == 1.0).
+            # Only active when a bull OB is present (ob_bull_active == 1.0); ignored otherwise
+            # to avoid blocking legitimate trades with no nearby structure.
             if self.late_entry_filter_enabled:
                 _ob_bull_active = float(features.get("ob_bull_active") or 0.0)
                 _ob_bull_dist   = float(features.get("ob_bull_dist")   or 0.0)
@@ -333,6 +334,7 @@ class DecisionEngine:
 
             if self.consec_bars_filter_enabled:
                 _consec = float(features.get("consec_bars") or 0.0)
+                # Block long when N+ consecutive BULL bars: trend is overextended, reversal risk high.
                 if _consec >= self.consec_bars_max_long:
                     reasoning.append(
                         f"FILTER: ConsecBars — {int(_consec)} consecutive bull bars ≥ "
@@ -375,7 +377,8 @@ class DecisionEngine:
 
             # Late entry filter: skip if price is too far below the bear OB midpoint.
             # ob_bear_dist = (OB_mid - close) / ATR_14 — large positive = late entry.
-            # Only active when a bear OB is present (ob_bear_active == 1.0).
+            # Only active when a bear OB is present (ob_bear_active == 1.0); ignored otherwise
+            # to avoid blocking legitimate trades with no nearby structure.
             if self.late_entry_filter_enabled:
                 _ob_bear_active = float(features.get("ob_bear_active") or 0.0)
                 _ob_bear_dist   = float(features.get("ob_bear_dist")   or 0.0)
@@ -401,6 +404,7 @@ class DecisionEngine:
 
             if self.consec_bars_filter_enabled:
                 _consec = float(features.get("consec_bars") or 0.0)
+                # Block short when N+ consecutive BEAR bars: trend is overextended, reversal risk high.
                 if _consec <= -self.consec_bars_max_short:
                     reasoning.append(
                         f"FILTER: ConsecBars — {int(abs(_consec))} consecutive bear bars ≥ "
