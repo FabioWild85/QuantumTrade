@@ -93,17 +93,7 @@ const App: React.FC = () => {
   // Render AI Trading Hub as full-page overlay
   if (activeView === 'trading-hub') {
     return (
-      <div>
-        <div className="fixed top-4 left-4 z-50">
-          <button
-            onClick={() => setActiveView('dashboard')}
-            className="px-3 py-1.5 bg-slate-800/90 hover:bg-slate-700 text-slate-300 text-xs font-semibold rounded-lg backdrop-blur border border-slate-600 transition-colors"
-          >
-            ← Dashboard
-          </button>
-        </div>
-        <TradingHubTab />
-      </div>
+      <TradingHubTab onBackToDashboard={() => setActiveView('dashboard')} />
     );
   }
 
@@ -239,6 +229,20 @@ const App: React.FC = () => {
                           <span>Dev: abilita Fresh Scan</span>
                         )}
                       </span>
+                    </button>
+                  </div>
+
+                  {/* Mobile-only AI Trading Hub button */}
+                  <div className="mt-6 flex justify-center sm:hidden">
+                    <button
+                      onClick={() => setActiveView('trading-hub')}
+                      className="flex items-center gap-2 px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-bold rounded-xl transition-colors shadow-lg shadow-indigo-600/20"
+                    >
+                      <svg className="w-4 h-4" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                        <polyline points="1,14 6,8 10,11 14,5 19,9" />
+                        <polyline points="14,5 19,5 19,9" />
+                      </svg>
+                      AI Trading Hub
                     </button>
                   </div>
                </div>

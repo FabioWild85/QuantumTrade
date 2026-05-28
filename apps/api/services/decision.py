@@ -141,7 +141,6 @@ class DecisionEngine:
         """
         reasoning = []
         adx      = features.get("adx_14", 0.0)
-        rv_72    = features.get("rv_72", 0.0)
         sweep    = features.get("sweep", 0.0)
         fvg_bear = features.get("fvg_bear", 0.0)
         fvg_bull = features.get("fvg_bull", 0.0)

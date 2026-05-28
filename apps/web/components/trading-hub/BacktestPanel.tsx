@@ -671,7 +671,7 @@ const ConfigSummary: React.FC<{ config: Record<string, any> }> = ({ config: c })
         <span className="w-1 h-3 bg-indigo-500 rounded-full" />
         Parametri Utilizzati in questo Backtest
       </h4>
-      <div className="grid grid-cols-3 sm:grid-cols-6 gap-x-6 gap-y-3">
+      <div className="grid grid-cols-2 sm:grid-cols-6 gap-x-6 gap-y-3">
         {param('SL Mult', c.sl_atr_mult, '× ATR')}
         {param('TP Mult', c.tp_atr_mult, '× ATR')}
         {param('Size', c.position_size_pct, '%')}
@@ -1500,6 +1500,7 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     if (p.fng_greed_thr           !== undefined) setFngGreedThr(String(p.fng_greed_thr));
     if (p.fng_extreme_greed_thr   !== undefined) setFngExtremeGreedThr(String(p.fng_extreme_greed_thr));
     if (p.fng_bias_delta          !== undefined) setFngBiasDelta(String(p.fng_bias_delta));
+    if (p.chronos_enabled         !== undefined) setUseChronos(!!p.chronos_enabled);
     if (p.be_sl_enabled                 !== undefined) setAdvBeSL(!!p.be_sl_enabled);
     if (p.be_sl_activation      !== undefined) setAdvBeSLAct(String(p.be_sl_activation));
     if (p.max_hold_bars_enabled !== undefined) setAdvMaxHold(!!p.max_hold_bars_enabled);
@@ -1814,14 +1815,14 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
       lines.push(`Trade totali:         ${s.total_trades}`);
       lines.push(`Win rate:             ${s.win_rate.toFixed(1)}%`);
       lines.push(`Profit factor:        ${s.profit_factor?.toFixed(2) ?? '—'}`);
-      lines.push(`Sharpe ratio:         ${s.sharpe_ratio?.toFixed(2) ?? '—'}`);
-      lines.push(`Sortino ratio:        ${s.sortino_ratio?.toFixed(2) ?? '—'}`);
+      lines.push(`Sharpe ratio:         ${s.sharpe?.toFixed(2) ?? '—'}`);
+      lines.push(`Sortino ratio:        ${s.sortino?.toFixed(2) ?? '—'}`);
       lines.push(`Max drawdown:         ${s.max_drawdown_pct.toFixed(2)}%`);
       lines.push(`Avg win:              +${s.avg_win_pct?.toFixed(2) ?? '0.00'}%`);
       lines.push(`Avg loss:             ${s.avg_loss_pct?.toFixed(2) ?? '0.00'}%`);
       lines.push(`Best trade:           +${s.best_trade_pct?.toFixed(2) ?? '0.00'}%`);
       lines.push(`Worst trade:          ${s.worst_trade_pct?.toFixed(2) ?? '0.00'}%`);
-      lines.push(`Avg holding:          ${s.avg_holding_bars?.toFixed(1) ?? '—'} barre (${((s.avg_holding_bars ?? 0) * 4).toFixed(0)}h)`);
+      lines.push(`Avg holding:          ${s.avg_holding_h?.toFixed(1) ?? '—'} h`);
     }
 
     lines.push('');
@@ -1898,7 +1899,8 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     || c2UncertaintyGate || c2ContProbGate || regimeBias
     || sweepDirectional || absorptionFilter || !exhaustionGuard || !structuralSl
     || lateEntryFilter || pathObstruction || dualAtr || consecBarsFilter
-    || fundingGate || fngGate;
+    || fundingGate || fngGate
+    || dynamicSlTp || p10SlFloor || obTp || fvgSl || fvgTp || swingSl || swingTp;
 
   return (
     <>
@@ -1943,16 +1945,15 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
       {activeTab === 'nuovo' && (
         <>
           {/* ── Config card ──────────────────────────────────────────────────── */}
-          <div className="elegant-card p-6 bg-white dark:bg-[#151E32] space-y-6 relative">
-            {/* Advanced config button moved to top-right absolute */}
-            <div className="absolute top-6 right-6 z-10">
+          <div className="elegant-card p-6 bg-white dark:bg-[#151E32] space-y-6">
+            <div className="flex flex-col md:flex-row items-center justify-between space-y-2 md:space-y-0">
+              <h2 className="text-sm font-bold text-slate-900 dark:text-white uppercase tracking-wider">Parametri di Simulazione</h2>
               <Tooltip text="Apre il pannello delle impostazioni avanzate: filtri segnale, strategie di uscita (Trailing SL, Partial TP, LGBM Exit, Break-even SL), e configurazione Chronos-2. Indipendente dalle impostazioni del bot live." width="wide" pos="bottom">
                 <button
                   onClick={() => setIsDrawerOpen(true)}
-                  className={`flex items-center gap-2 px-4 py-2 rounded-xl text-[10px] font-bold uppercase tracking-widest border transition-all ${
-                    drawerHasCustom
-                      ? 'bg-indigo-50 dark:bg-indigo-500/10 border-indigo-200 dark:border-indigo-500/30 text-indigo-600 dark:text-indigo-400'
-                      : 'bg-slate-50 dark:bg-white/5 border-slate-100 dark:border-white/10 text-slate-400 dark:text-slate-500 hover:text-slate-900 dark:hover:text-white'
+                  className={`flex items-center gap-2 w-full md:w-auto px-4 py-2 rounded-xl text-[10px] font-bold uppercase tracking-widest border transition-all ${drawerHasCustom
+                    ? 'bg-indigo-50 dark:bg-indigo-500/10 border-indigo-200 dark:border-indigo-500/30 text-indigo-600 dark:text-indigo-400'
+                    : 'bg-slate-50 dark:bg-white/5 border-slate-100 dark:border-white/10 text-slate-400 dark:text-slate-500 hover:text-slate-900 dark:hover:text-white'
                   }`}
                 >
                   <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
@@ -1960,22 +1961,13 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                     <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
                   </svg>
                   Configurazione Avanzata
-                  {drawerHasCustom && <span className="w-1.5 h-1.5 rounded-full bg-indigo-500 animate-pulse" />}
+                  {drawerHasCustom && <span className="w-1.5 h-1.5 rounded-full bg-indigo-500 animate-pulse"></span>}
                 </button>
               </Tooltip>
             </div>
 
-            {/* Header */}
-            <div className="flex items-center justify-between">
-              <h2 className="text-sm font-bold text-slate-900 dark:text-white uppercase tracking-wider flex items-center gap-2">
-                 <span className="w-1.5 h-4 bg-indigo-500 rounded-full"></span>
-                 Parametri di Simulazione
-              </h2>
-            </div>
-
             {/* ── Presets bar ── */}
             <div className="flex items-center gap-2.5">
-              {/* Preset dropdown */}
               <div className="relative flex-1 min-w-0" ref={presetDropRef}>
                 <button
                   type="button"
@@ -2047,7 +2039,6 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                 )}
               </div>
 
-              {/* Save button */}
               <button
                 type="button"
                 onClick={openSaveModal}
@@ -2088,7 +2079,6 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
 
             {/* ── Regime / Period Quick Selector ───────────────────────────────── */}
             <div className="pt-1">
-              {/* Section header */}
               <div className="flex items-center gap-3 mb-3">
                 <div className="flex items-center gap-2">
                   <span className="w-1 h-3 bg-indigo-400/60 rounded-full" />
@@ -2105,9 +2095,9 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                 )}
               </div>
 
-              <div className="flex gap-3 items-start">
+              <div className="flex flex-col sm:flex-row gap-3 items-start">
                 {/* ── Regime dropdown ── */}
-                <div className="relative flex-shrink-0 w-52" ref={regimeRef}>
+                <div className="relative w-full sm:w-52 flex-shrink-0" ref={regimeRef}>
                   <span className="block text-[9px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-1.5 ml-1">Regime</span>
                   <button
                     type="button"
@@ -2161,7 +2151,7 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                 </div>
 
                 {/* ── Period dropdown ── */}
-                <div className="relative w-60 flex-shrink-0" ref={periodRef}>
+                <div className="relative w-full sm:w-60 flex-shrink-0" ref={periodRef}>
                   <span className="block text-[9px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-1.5 ml-1">Periodo</span>
                   <button
                     type="button"
@@ -2197,7 +2187,7 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                   </button>
 
                   {periodDropOpen && selectedRegime && (
-                    <div className="absolute z-50 top-full left-0 mt-1.5 w-full min-w-[420px] bg-white dark:bg-[#1a2436] border border-slate-100 dark:border-white/10 rounded-2xl shadow-xl shadow-slate-900/10 dark:shadow-black/30 overflow-hidden animate-in fade-in slide-in-from-top-1 duration-150">
+                    <div className="absolute z-50 top-full left-0 mt-1.5 w-screen max-w-[calc(100vw-2rem)] sm:w-full sm:min-w-[420px] bg-white dark:bg-[#1a2436] border border-slate-100 dark:border-white/10 rounded-2xl shadow-xl shadow-slate-900/10 dark:shadow-black/30 overflow-hidden animate-in fade-in slide-in-from-top-1 duration-150">
                       {/* Header */}
                       <div className={`px-4 py-2.5 border-b ${REGIME_META[selectedRegime].bg} ${REGIME_META[selectedRegime].border}`}>
                         <span className={`text-[9px] font-bold uppercase tracking-widest ${REGIME_META[selectedRegime].text}`}>
@@ -2271,7 +2261,7 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
             {/* ── AI Adattivo — Chronos-2 ── */}
             <div className={`pt-4 border-t border-dashed space-y-3 transition-colors duration-200 ${(dynamicSlTp || p10SlFloor) ? 'border-violet-200 dark:border-violet-500/25' : 'border-slate-200 dark:border-white/8'}`}>
               <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest">AI Adattivo — Chronos-2</p>
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 {/* SL/TP Adattativi */}
                 <Tooltip text="Adatta SL e TP alle previsioni probabilistiche di Chronos-2. Quando attivo, SL e TP fissi vengono disabilitati: le distanze vengono calcolate blendando ATR con p10/p90 del forecast. Richiede Chronos attivo nel drawer." pos="bottom" width="wide">
                   <label className={`flex items-start gap-2.5 cursor-pointer group p-3 rounded-xl border transition-all duration-200 h-full ${dynamicSlTp ? 'border-violet-200 dark:border-violet-500/30 bg-violet-50/40 dark:bg-violet-500/5' : 'border-slate-100 dark:border-white/5 hover:bg-slate-50 dark:hover:bg-white/[0.03]'}`}>
@@ -2312,8 +2302,13 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
 
               {/* Blend + calibration */}
               {dynamicSlTp && (
-                <div className="flex items-center gap-4 px-1">
-                  <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest whitespace-nowrap">Blend ATR ↔ C2</span>
+                <div className="px-1 flex flex-col gap-1.5 sm:flex-row sm:items-center sm:gap-4">
+                  <div className="flex items-center justify-between sm:block">
+                    <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest whitespace-nowrap">Blend ATR ↔ C2</span>
+                    <span className="sm:hidden text-[11px] font-bold font-mono text-violet-600 dark:text-violet-400">
+                      {Math.round((1 - parseFloat(dynamicSlTpBlend || '0.5')) * 100)}% ATR · {Math.round(parseFloat(dynamicSlTpBlend || '0.5') * 100)}% C2
+                    </span>
+                  </div>
                   <div className="flex items-center gap-3 flex-1">
                     <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 font-mono">ATR</span>
                     <input
@@ -2323,7 +2318,7 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                       className="flex-1 h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/15 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3.5 [&::-webkit-slider-thumb]:h-3.5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-violet-500 [&::-webkit-slider-thumb]:shadow-sm [&::-webkit-slider-thumb]:cursor-pointer [&::-moz-range-thumb]:w-3.5 [&::-moz-range-thumb]:h-3.5 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-violet-500 [&::-moz-range-thumb]:border-0"
                     />
                     <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 font-mono">C2</span>
-                    <span className="text-[11px] font-bold font-mono text-violet-600 dark:text-violet-400 w-20 text-right">
+                    <span className="hidden sm:inline text-[11px] font-bold font-mono text-violet-600 dark:text-violet-400 w-20 text-right">
                       {Math.round((1 - parseFloat(dynamicSlTpBlend || '0.5')) * 100)}% ATR · {Math.round(parseFloat(dynamicSlTpBlend || '0.5') * 100)}% C2
                     </span>
                   </div>
@@ -2377,7 +2372,7 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
             {/* ── Livelli Strutturali — OB / FVG ── */}
             <div className={`pt-5 border-t transition-colors duration-200 space-y-3 ${(structuralSl || fvgSl || obTp || fvgTp || swingSl || swingTp) ? 'border-violet-200 dark:border-violet-500/25' : 'border-slate-100 dark:border-white/5'}`}>
               <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest">Livelli Strutturali — OB / FVG / Swing</p>
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
 
                 {/* SL — OB */}
                 <Tooltip text="Posiziona lo SL oltre l'Order Block attivo più vicino nella direzione dello stop. Per long: SL = ob_bull_bot_px − buffer. Per short: SL = ob_bear_top_px + buffer. Solo allarga lo SL (mai restringe) — size ridotta proporzionalmente." pos="top" width="wide">
@@ -2490,7 +2485,7 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
 
               {/* SL buffer controls */}
               {(structuralSl || fvgSl) && (
-                <div className="grid grid-cols-2 gap-3 px-1">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 px-1">
                   <NumInput label="SL Buffer %" value={obBufferPct} onChange={setObBufferPct} step="0.1" min="0" max="2" unit="%" />
                   <NumInput label="SL Buffer Min ATR" value={obBufferMinAtr} onChange={setObBufferMinAtr} step="0.05" min="0" max="1" unit="ATR" />
                 </div>
@@ -2498,8 +2493,13 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
 
               {/* OB TP blend */}
               {obTp && (
-                <div className="flex items-center gap-4 px-1">
-                  <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest whitespace-nowrap">OB TP — Blend ATR ↔ OB</span>
+                <div className="px-1 flex flex-col gap-1.5 sm:flex-row sm:items-center sm:gap-4">
+                  <div className="flex items-center justify-between sm:block">
+                    <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest whitespace-nowrap">OB TP — Blend ATR ↔ OB</span>
+                    <span className="sm:hidden text-[11px] font-bold font-mono text-emerald-600 dark:text-emerald-400">
+                      {Math.round((1 - parseFloat(obTpBlend || '1')) * 100)}% ATR · {Math.round(parseFloat(obTpBlend || '1') * 100)}% OB
+                    </span>
+                  </div>
                   <div className="flex items-center gap-3 flex-1">
                     <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 font-mono">ATR</span>
                     <input
@@ -2509,7 +2509,7 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                       className="flex-1 h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/15 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3.5 [&::-webkit-slider-thumb]:h-3.5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-emerald-500 [&::-webkit-slider-thumb]:shadow-sm [&::-webkit-slider-thumb]:cursor-pointer [&::-moz-range-thumb]:w-3.5 [&::-moz-range-thumb]:h-3.5 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-emerald-500 [&::-moz-range-thumb]:border-0"
                     />
                     <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 font-mono">OB</span>
-                    <span className="text-[11px] font-bold font-mono text-emerald-600 dark:text-emerald-400 w-24 text-right">
+                    <span className="hidden sm:inline text-[11px] font-bold font-mono text-emerald-600 dark:text-emerald-400 w-24 text-right">
                       {Math.round((1 - parseFloat(obTpBlend || '1')) * 100)}% ATR · {Math.round(parseFloat(obTpBlend || '1') * 100)}% OB
                     </span>
                   </div>
@@ -2518,8 +2518,13 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
 
               {/* FVG TP blend */}
               {fvgTp && (
-                <div className="flex items-center gap-4 px-1">
-                  <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest whitespace-nowrap">FVG TP — Blend ATR ↔ FVG</span>
+                <div className="px-1 flex flex-col gap-1.5 sm:flex-row sm:items-center sm:gap-4">
+                  <div className="flex items-center justify-between sm:block">
+                    <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest whitespace-nowrap">FVG TP — Blend ATR ↔ FVG</span>
+                    <span className="sm:hidden text-[11px] font-bold font-mono text-emerald-600 dark:text-emerald-400">
+                      {Math.round((1 - parseFloat(fvgTpBlend || '1')) * 100)}% ATR · {Math.round(parseFloat(fvgTpBlend || '1') * 100)}% FVG
+                    </span>
+                  </div>
                   <div className="flex items-center gap-3 flex-1">
                     <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 font-mono">ATR</span>
                     <input
@@ -2529,7 +2534,7 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                       className="flex-1 h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/15 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3.5 [&::-webkit-slider-thumb]:h-3.5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-emerald-500 [&::-webkit-slider-thumb]:shadow-sm [&::-webkit-slider-thumb]:cursor-pointer [&::-moz-range-thumb]:w-3.5 [&::-moz-range-thumb]:h-3.5 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-emerald-500 [&::-moz-range-thumb]:border-0"
                     />
                     <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 font-mono">FVG</span>
-                    <span className="text-[11px] font-bold font-mono text-emerald-600 dark:text-emerald-400 w-24 text-right">
+                    <span className="hidden sm:inline text-[11px] font-bold font-mono text-emerald-600 dark:text-emerald-400 w-24 text-right">
                       {Math.round((1 - parseFloat(fvgTpBlend || '1')) * 100)}% ATR · {Math.round(parseFloat(fvgTpBlend || '1') * 100)}% FVG
                     </span>
                   </div>
@@ -2538,8 +2543,13 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
 
               {/* Swing TP blend */}
               {swingTp && (
-                <div className="flex items-center gap-4 px-1">
-                  <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest whitespace-nowrap">Swing TP — Blend ATR ↔ Swing</span>
+                <div className="px-1 flex flex-col gap-1.5 sm:flex-row sm:items-center sm:gap-4">
+                  <div className="flex items-center justify-between sm:block">
+                    <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest whitespace-nowrap">Swing TP — Blend ATR ↔ Swing</span>
+                    <span className="sm:hidden text-[11px] font-bold font-mono text-emerald-600 dark:text-emerald-400">
+                      {Math.round((1 - parseFloat(swingTpBlend || '1')) * 100)}% ATR · {Math.round(parseFloat(swingTpBlend || '1') * 100)}% Sw
+                    </span>
+                  </div>
                   <div className="flex items-center gap-3 flex-1">
                     <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 font-mono">ATR</span>
                     <input
@@ -2549,7 +2559,7 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                       className="flex-1 h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/15 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3.5 [&::-webkit-slider-thumb]:h-3.5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-emerald-500 [&::-webkit-slider-thumb]:shadow-sm [&::-webkit-slider-thumb]:cursor-pointer [&::-moz-range-thumb]:w-3.5 [&::-moz-range-thumb]:h-3.5 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-emerald-500 [&::-moz-range-thumb]:border-0"
                     />
                     <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 font-mono">Swing</span>
-                    <span className="text-[11px] font-bold font-mono text-emerald-600 dark:text-emerald-400 w-24 text-right">
+                    <span className="hidden sm:inline text-[11px] font-bold font-mono text-emerald-600 dark:text-emerald-400 w-24 text-right">
                       {Math.round((1 - parseFloat(swingTpBlend || '1')) * 100)}% ATR · {Math.round(parseFloat(swingTpBlend || '1') * 100)}% Sw
                     </span>
                   </div>
@@ -2928,7 +2938,7 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                       {/* Forced regime selector */}
                       <div>
                         <p className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest mb-2">Regime di mercato</p>
-                        <div className="grid grid-cols-4 gap-1.5">
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
                           {(['auto', 'bull', 'bear', 'neutral'] as const).map(r => {
                             const labels: Record<string, string> = { auto: 'Auto', bull: 'Bull', bear: 'Bear', neutral: 'Neutro' };
                             const activeClass: Record<string, string> = {
@@ -3099,7 +3109,7 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                   <div className="space-y-3">
                     <Toggle label="Partial Take Profit" desc="Monetizza una parte della posizione a target intermedio" checked={partialTP} onChange={setPartialTP} />
                     {partialTP && (
-                      <div className="pl-12 grid grid-cols-2 gap-4">
+                      <div className="pl-12 grid grid-cols-1 sm:grid-cols-2 gap-4">
                         <NumInput label="Target TP1" value={partialMult} onChange={setPartialMult} step="0.1" min="0.5" max="5" unit="ATR" />
                         <NumInput label="Volume" value={partialPct} onChange={setPartialPct} step="5" min="10" max="90" unit="%" />
                       </div>
@@ -3152,7 +3162,7 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                     <Tooltip text="Se la probabilità LightGBM scende sotto questo valore per N barre consecutive, il trade viene chiuso anticipatamente." pos="top" width="wide">
                       <NumInput label="Soglia criticità p <" value={lgbmThresh} onChange={setLgbmThresh} step="0.01" min="0.20" max="0.50" />
                     </Tooltip>
-                    <div className="grid grid-cols-2 gap-4">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                       <NumInput label="Hold min (barre)" value={lgbmMinHold} onChange={setLgbmMinHold} step="1" min="1" max="48" />
                       <NumInput label="Conferma barre" value={lgbmConfirm} onChange={setLgbmConfirm} step="1" min="1" max="6" />
                     </div>

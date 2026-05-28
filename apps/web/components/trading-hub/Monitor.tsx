@@ -695,40 +695,84 @@ export const Monitor: React.FC<{ apiBase: string }> = ({ apiBase }) => {
           </div>
           {/* Open positions from HL (real fill prices) */}
           {(liveAccount.positions ?? []).length > 0 && (
-            <div className="space-y-2">
+            <div className="space-y-3">
               <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest">Posizioni Aperte (HL)</p>
-              {(liveAccount.positions ?? []).map((p, i) => {
-                const upnlColor = p.unrealized_pnl >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400';
-                const roe = (p.return_on_equity * 100);
-                return (
-                  <div key={i} className="flex items-center justify-between px-4 py-3 bg-slate-50 dark:bg-white/[0.03] border border-slate-100 dark:border-white/5 rounded-xl text-xs font-mono">
-                    <div className="flex items-center gap-3">
-                      <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-widest border ${p.side === 'long' ? 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-100 dark:border-emerald-500/20' : 'bg-rose-50 dark:bg-rose-500/10 text-rose-600 dark:text-rose-400 border-rose-100 dark:border-rose-500/20'}`}>
-                        {p.side.toUpperCase()}
-                      </span>
-                      <span className="text-slate-700 dark:text-slate-200 font-bold">{p.coin}</span>
-                      <span className="text-slate-500 dark:text-slate-400">{p.size.toFixed(4)} BTC</span>
+              
+              {/* Mobile Card List */}
+              <div className="sm:hidden space-y-3">
+                {(liveAccount.positions ?? []).map((p, i) => {
+                  const upnlColor = p.unrealized_pnl >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400';
+                  const roe = (p.return_on_equity * 100);
+                  return (
+                    <div key={i} className="bg-slate-50 dark:bg-white/[0.03] border border-slate-100 dark:border-white/5 rounded-xl p-4 text-xs font-mono space-y-3">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <span className={`px-2 py-0.5 rounded text-[9px] font-bold uppercase tracking-widest border ${p.side === 'long' ? 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-100 dark:border-emerald-500/20' : 'bg-rose-50 dark:bg-rose-500/10 text-rose-600 dark:text-rose-400 border-rose-100 dark:border-rose-500/20'}`}>
+                            {p.side.toUpperCase()}
+                          </span>
+                          <span className="text-slate-700 dark:text-slate-200 font-bold">{p.coin}</span>
+                        </div>
+                        <span className="text-slate-400 dark:text-slate-500 text-[10px]">{p.leverage_value}x {p.leverage_type}</span>
+                      </div>
+                      
+                      <div className="grid grid-cols-2 gap-y-2.5 gap-x-2 text-[11px]">
+                        <div>
+                          <p className="text-[9px] text-slate-400 uppercase tracking-wider">Size</p>
+                          <p className="text-slate-700 dark:text-slate-200 font-bold">{p.size.toFixed(4)} BTC</p>
+                        </div>
+                        <div>
+                          <p className="text-[9px] text-slate-400 uppercase tracking-wider">Fill Price</p>
+                          <p className="text-slate-700 dark:text-slate-200 font-bold">${p.entry_price.toLocaleString('en-US', { minimumFractionDigits: 2 })}</p>
+                        </div>
+                        <div>
+                          <p className="text-[9px] text-slate-400 uppercase tracking-wider">PnL non real.</p>
+                          <p className={`font-bold ${upnlColor}`}>{p.unrealized_pnl >= 0 ? '+' : ''}${p.unrealized_pnl.toFixed(2)}</p>
+                        </div>
+                        <div>
+                          <p className="text-[9px] text-slate-400 uppercase tracking-wider">ROE</p>
+                          <p className={`font-bold ${roe >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>{roe >= 0 ? '+' : ''}{roe.toFixed(2)}%</p>
+                        </div>
+                      </div>
                     </div>
-                    <div className="flex items-center gap-4 text-right">
-                      <div>
-                        <p className="text-[9px] text-slate-400 uppercase">Fill Price</p>
-                        <p className="text-slate-700 dark:text-slate-200 font-bold">${p.entry_price.toLocaleString('en-US', { minimumFractionDigits: 2 })}</p>
+                  );
+                })}
+              </div>
+
+              {/* Desktop Table List */}
+              <div className="hidden sm:block space-y-2">
+                {(liveAccount.positions ?? []).map((p, i) => {
+                  const upnlColor = p.unrealized_pnl >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400';
+                  const roe = (p.return_on_equity * 100);
+                  return (
+                    <div key={i} className="flex items-center justify-between px-4 py-3 bg-slate-50 dark:bg-white/[0.03] border border-slate-100 dark:border-white/5 rounded-xl text-xs font-mono">
+                      <div className="flex items-center gap-3">
+                        <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-widest border ${p.side === 'long' ? 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-100 dark:border-emerald-500/20' : 'bg-rose-50 dark:bg-rose-500/10 text-rose-600 dark:text-rose-400 border-rose-100 dark:border-rose-500/20'}`}>
+                          {p.side.toUpperCase()}
+                        </span>
+                        <span className="text-slate-700 dark:text-slate-200 font-bold">{p.coin}</span>
+                        <span className="text-slate-500 dark:text-slate-400">{p.size.toFixed(4)} BTC</span>
                       </div>
-                      <div>
-                        <p className="text-[9px] text-slate-400 uppercase">PnL non real.</p>
-                        <p className={`font-bold ${upnlColor}`}>{p.unrealized_pnl >= 0 ? '+' : ''}${p.unrealized_pnl.toFixed(2)}</p>
-                      </div>
-                      <div>
-                        <p className="text-[9px] text-slate-400 uppercase">ROE</p>
-                        <p className={`font-bold ${roe >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>{roe >= 0 ? '+' : ''}{roe.toFixed(2)}%</p>
-                      </div>
-                      <div className="text-slate-400 dark:text-slate-500 text-[9px]">
-                        {p.leverage_value}x {p.leverage_type}
+                      <div className="flex items-center gap-4 text-right">
+                        <div>
+                          <p className="text-[9px] text-slate-400 uppercase">Fill Price</p>
+                          <p className="text-slate-700 dark:text-slate-200 font-bold">${p.entry_price.toLocaleString('en-US', { minimumFractionDigits: 2 })}</p>
+                        </div>
+                        <div>
+                          <p className="text-[9px] text-slate-400 uppercase">PnL non real.</p>
+                          <p className={`font-bold ${upnlColor}`}>{p.unrealized_pnl >= 0 ? '+' : ''}${p.unrealized_pnl.toFixed(2)}</p>
+                        </div>
+                        <div>
+                          <p className="text-[9px] text-slate-400 uppercase">ROE</p>
+                          <p className={`font-bold ${roe >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>{roe >= 0 ? '+' : ''}{roe.toFixed(2)}%</p>
+                        </div>
+                        <div className="text-slate-400 dark:text-slate-500 text-[9px]">
+                          {p.leverage_value}x {p.leverage_type}
+                        </div>
                       </div>
                     </div>
-                  </div>
-                );
-              })}
+                  );
+                })}
+              </div>
             </div>
           )}
           {(liveAccount.positions ?? []).length === 0 && (
@@ -989,14 +1033,14 @@ const LiveTradeCard: React.FC<LiveTradeCardProps> = ({
       </div>
 
       {/* Key levels grid */}
-      <div className="grid grid-cols-3 divide-x divide-slate-100 dark:divide-white/5 border-b border-slate-100 dark:border-white/5">
+      <div className="grid grid-cols-1 sm:grid-cols-3 divide-y sm:divide-y-0 sm:divide-x divide-slate-100 dark:divide-white/5 border-b border-slate-100 dark:border-white/5">
         {[
           { label: 'Entry', value: `$${fmt(pos.entry_price)}`, color: 'text-slate-900 dark:text-white' },
           { label: 'Stop Loss', value: `$${fmt(pos.stop_loss)}`, color: 'text-rose-600 dark:text-rose-400',
             sub: slMoved ? `orig. $${fmt(pos.sl_original)}` : undefined },
           { label: 'Take Profit', value: `$${fmt(pos.take_profit)}`, color: 'text-emerald-600 dark:text-emerald-400' },
         ].map(({ label, value, color, sub }) => (
-          <div key={label} className="px-6 py-4">
+          <div key={label} className="px-4 py-3 sm:px-6 sm:py-4">
             <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-1">{label}</p>
             <p className={`text-base font-bold font-mono ${color}`}>{value}</p>
             {sub && <p className="text-[10px] text-slate-400 dark:text-slate-500 font-mono mt-0.5">{sub}</p>}
@@ -1113,7 +1157,7 @@ const LiveTradeCard: React.FC<LiveTradeCardProps> = ({
               {lastCycleSignals.action === pos.side ? '✓ Confermato' : lastCycleSignals.action === 'no_trade' ? 'Neutro' : '⚠ Contrario'}
             </span>
           </div>
-          <div className="grid grid-cols-4 gap-2 mb-3">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-3">
             {[
               { label: 'Ensemble', value: `${lastCycleSignals.ensemble_pct.toFixed(1)}%`, highlight: lastCycleSignals.ensemble_pct >= 60 },
               { label: 'LGBM 4H', value: `${lastCycleSignals.lgbm_pct.toFixed(1)}%`, highlight: lastCycleSignals.lgbm_pct >= 55 },
@@ -1139,8 +1183,8 @@ const LiveTradeCard: React.FC<LiveTradeCardProps> = ({
       )}
 
       {/* Size footer */}
-      <div className="px-6 py-3 flex items-center justify-between border-t border-slate-100 dark:border-white/5">
-        <div className="flex gap-6 text-[11px] font-mono text-slate-400 dark:text-slate-500">
+      <div className="px-6 py-4 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between border-t border-slate-100 dark:border-white/5">
+        <div className="flex flex-wrap gap-x-6 gap-y-2 text-[11px] font-mono text-slate-400 dark:text-slate-500">
           <span>Size: <span className="text-slate-600 dark:text-slate-300 font-bold">${pos.size_usd.toFixed(0)}</span></span>
           <span>Contratti: <span className="text-slate-600 dark:text-slate-300 font-bold">{pos.size_contracts?.toFixed(4)} BTC</span></span>
           {pos.entry_atr && (
@@ -1149,7 +1193,7 @@ const LiveTradeCard: React.FC<LiveTradeCardProps> = ({
         </div>
         <button
           onClick={onClose}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-bold uppercase tracking-widest border border-amber-300 dark:border-amber-500/40 bg-amber-50 dark:bg-amber-500/10 text-amber-700 dark:text-amber-400 hover:bg-amber-100 dark:hover:bg-amber-500/20 transition-colors"
+          className="w-full sm:w-auto flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-[11px] font-bold uppercase tracking-widest border border-amber-300 dark:border-amber-500/40 bg-amber-50 dark:bg-amber-500/10 text-amber-700 dark:text-amber-400 hover:bg-amber-100 dark:hover:bg-amber-500/20 transition-colors"
         >
           <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
             <path d="M18 6L6 18M6 6l12 12"/>
@@ -1269,7 +1313,7 @@ const KpiCard: React.FC<{ label: string; value: string; sub?: string; color?: st
   <div className="elegant-card p-5 bg-white dark:bg-[#151E32] w-full h-full flex flex-col justify-between">
     <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-2">{label}</p>
     <div>
-      <p className={`text-2xl font-bold font-mono tracking-tighter ${color}`}>{value}</p>
+      <p className={`text-lg sm:text-2xl font-bold font-mono tracking-tighter ${color}`}>{value}</p>
       {sub && <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 mt-1">{sub}</p>}
     </div>
   </div>

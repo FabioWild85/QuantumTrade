@@ -188,22 +188,42 @@ export const RegimePanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     <div className="space-y-4 max-w-4xl">
 
       {/* Header row */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-base font-bold text-slate-900 dark:text-slate-100">Regime Detection</h2>
-          <p className="text-xs text-slate-500 mt-0.5">
-            Automatic market regime classifier — runs every 4 cycles (≈16h)
-          </p>
+      <div className="space-y-2 sm:space-y-0">
+        <div className="flex items-center gap-3">
+          <div className="flex-1 min-w-0">
+            <h2 className="text-base font-bold text-slate-900 dark:text-slate-100">Regime Detection</h2>
+            <p className="text-xs text-slate-500 mt-0.5">
+              Automatic market regime classifier — runs every 4 cycles (≈16h)
+            </p>
+          </div>
+          {/* Badge desktop — inline con titolo */}
+          {fromDb && (
+            <Tooltip text="Il bot è stato riavviato di recente — questo dato proviene dall'ultimo snapshot salvato nel DB, non dall'analisi live corrente. Si aggiornerà al prossimo ciclo (ogni 4h)." pos="bottom" width="wide" fit>
+              <div className="hidden sm:inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-widest bg-amber-50 dark:bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-200 dark:border-amber-500/25 cursor-help whitespace-nowrap">
+                <svg className="w-2.5 h-2.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                Ultimo snapshot DB
+              </div>
+            </Tooltip>
+          )}
+          <button
+            onClick={() => { setLoading(true); fetchData(); }}
+            className="text-xs text-slate-500 dark:text-slate-400 hover:text-indigo-500 dark:hover:text-indigo-400 flex items-center gap-1.5 transition-colors flex-shrink-0"
+          >
+            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+              <path d="M1 4v6h6M23 20v-6h-6"/><path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10M23 14l-4.64 4.36A9 9 0 0 1 3.51 15"/>
+            </svg>
+            Refresh
+          </button>
         </div>
-        <button
-          onClick={() => { setLoading(true); fetchData(); }}
-          className="text-xs text-slate-500 dark:text-slate-400 hover:text-indigo-500 dark:hover:text-indigo-400 flex items-center gap-1.5 transition-colors"
-        >
-          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-            <path d="M1 4v6h6M23 20v-6h-6"/><path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10M23 14l-4.64 4.36A9 9 0 0 1 3.51 15"/>
-          </svg>
-          Refresh
-        </button>
+        {/* Badge mobile — sotto il titolo */}
+        {fromDb && (
+          <Tooltip text="Il bot è stato riavviato di recente — questo dato proviene dall'ultimo snapshot salvato nel DB, non dall'analisi live corrente. Si aggiornerà al prossimo ciclo (ogni 4h)." pos="bottom" width="wide" fit>
+            <div className="sm:hidden inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-widest bg-amber-50 dark:bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-200 dark:border-amber-500/25 cursor-help whitespace-nowrap">
+              <svg className="w-2.5 h-2.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+              Ultimo snapshot DB
+            </div>
+          </Tooltip>
+        )}
       </div>
 
       {error && (
@@ -220,29 +240,20 @@ export const RegimePanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
           {signal ? (
             <>
               {/* Regime badge + confidence inline · snapshot badge top-right */}
-              <div className="flex items-center gap-3">
+              <div className="flex flex-wrap items-center gap-2">
                 {/* Badge regime */}
                 <div className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-sm font-semibold flex-shrink-0 ${style.badge}`}>
                   <span className={`w-2 h-2 rounded-full ${style.dot} animate-pulse`} />
                   {REGIME_ICON[signal.regime]}
                   {label}
                 </div>
-                {/* Confidence — inline a destra del badge */}
-                <Tooltip text="Probabilità che il regime rilevato sia corretto. <50% = segnale debole, 50–70% = moderato, >70% = forte." pos="bottom" width="wide">
+                {/* Confidence */}
+                <Tooltip text="Probabilità che il regime rilevato sia corretto. <50% = segnale debole, 50–70% = moderato, >70% = forte." pos="bottom" width="wide" fit>
                   <span className="text-xs text-slate-500 dark:text-slate-400 cursor-help whitespace-nowrap flex-shrink-0">
                     <span className="font-semibold text-slate-700 dark:text-slate-300">{(signal.confidence * 100).toFixed(0)}%</span>
                     {' '}confidence
                   </span>
                 </Tooltip>
-                {/* Snapshot badge — spinto all'angolo destro */}
-                {fromDb && (
-                  <Tooltip text="Il bot è stato riavviato di recente — questo dato proviene dall'ultimo snapshot salvato nel DB, non dall'analisi live corrente. Si aggiornerà al prossimo ciclo (ogni 4h)." pos="bottom" width="wide">
-                    <div className="ml-auto inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-widest bg-amber-50 dark:bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-200 dark:border-amber-500/25 cursor-help flex-shrink-0">
-                      <svg className="w-2.5 h-2.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
-                      Ultimo snapshot DB
-                    </div>
-                  </Tooltip>
-                )}
               </div>
 
               {/* Confidence bar */}
@@ -251,7 +262,7 @@ export const RegimePanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
               </div>
 
               {/* Stats grid */}
-              <div className="grid grid-cols-2 gap-x-4 gap-y-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-3">
                 <StatBox
                   label="ADX"
                   value={signal.adx.toFixed(1)}
@@ -361,7 +372,7 @@ export const RegimePanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
           </div>
 
           {/* Recent table */}
-          <div className="rounded-lg border border-slate-200 dark:border-white/8 overflow-hidden">
+          <div className="rounded-lg border border-slate-200 dark:border-white/8 overflow-x-auto">
             <table className="w-full text-xs">
               <thead>
                 <tr className="border-b border-slate-200 dark:border-white/8 bg-slate-100/50 dark:bg-white/3">

@@ -53,7 +53,7 @@ export const ForecastView: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between mb-2">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-4">
         <div>
           <h2 className="text-xl font-bold text-slate-900 dark:text-white tracking-tight uppercase">Forecast Probabilistico</h2>
           <p className="text-xs font-medium text-slate-500 dark:text-slate-400 mt-1">
@@ -63,7 +63,7 @@ export const ForecastView: React.FC<{ apiBase: string }> = ({ apiBase }) => {
         <button
           onClick={fetchForecast}
           disabled={loading}
-          className="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-bold rounded-xl transition-all shadow-lg shadow-indigo-500/20 active:scale-95 disabled:opacity-50 flex items-center gap-2"
+          className="w-full sm:w-auto px-6 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-bold rounded-xl transition-all shadow-lg shadow-indigo-500/20 active:scale-95 disabled:opacity-50 flex items-center justify-center gap-2"
         >
           {loading
             ? <><span className="inline-block w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />Inference…</>
@@ -90,7 +90,7 @@ export const ForecastView: React.FC<{ apiBase: string }> = ({ apiBase }) => {
         <>
           {/* Price header */}
           <div className="elegant-card p-6 bg-white dark:bg-[#151E32]">
-            <div className="flex items-start justify-between mb-8">
+            <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-6 mb-8">
               <div>
                 <div className="flex items-center gap-4">
                    <div className="p-3 bg-indigo-50 dark:bg-indigo-500/10 rounded-xl">
@@ -107,13 +107,13 @@ export const ForecastView: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                    </div>
                 </div>
                 {/* Covariate badges — horizontal row, indented to align with price text */}
-                <div className="flex items-center gap-2 mt-3 ml-[3.75rem]">
+                <div className="flex flex-wrap items-center gap-2 mt-3 ml-0 sm:ml-[3.75rem]">
                   <CovariatesBadges covUsed={data.cov_used ?? []} />
                 </div>
               </div>
-              <div className="text-right">
+              <div className="text-left sm:text-right flex-shrink-0">
                 <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-1">Inferenza AI</p>
-                <div className="flex items-center justify-end gap-2">
+                <div className="flex items-center sm:justify-end gap-2">
                    <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse"></span>
                    <p className="text-sm font-bold font-mono text-slate-700 dark:text-slate-300">{data.latency_ms.toFixed(0)}ms</p>
                 </div>
@@ -373,7 +373,7 @@ const CovariatesBadges: React.FC<{ covUsed: string[] }> = ({ covUsed }) => {
         const active = covUsed.includes(k);
         const meta   = COV_META[k];
         return (
-          <Tooltip key={k} text={active ? meta.tooltip : `${meta.label} non disponibile — Chronos opera senza questo covariate`} pos="bottom">
+          <Tooltip key={k} text={active ? meta.tooltip : `${meta.label} non disponibile — Chronos opera senza questo covariate`} pos="bottom" fit>
             <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider cursor-default ${
               active
                 ? 'bg-indigo-100 dark:bg-indigo-500/20 text-indigo-600 dark:text-indigo-400'

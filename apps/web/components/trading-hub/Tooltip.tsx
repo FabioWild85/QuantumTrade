@@ -5,6 +5,7 @@ interface TooltipProps {
   children: React.ReactNode;
   pos?: 'top' | 'bottom' | 'left' | 'right';
   width?: 'narrow' | 'normal' | 'wide';
+  fit?: boolean;
 }
 
 const POS_CLASSES = {
@@ -21,9 +22,9 @@ const WIDTH_CLASSES = {
 };
 
 export const Tooltip: React.FC<TooltipProps> = ({
-  text, children, pos = 'top', width = 'normal',
+  text, children, pos = 'top', width = 'normal', fit = false,
 }) => (
-  <div className="relative flex w-full group/tip">
+  <div className={`relative flex group/tip ${fit ? 'w-fit' : 'w-full'}`}>
     {children}
     <div className={`
       pointer-events-none absolute z-50 ${WIDTH_CLASSES[width]} ${POS_CLASSES[pos]}

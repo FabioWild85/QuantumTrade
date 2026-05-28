@@ -32,13 +32,16 @@ export const Header: React.FC<Props> = ({ isDarkMode, toggleTheme, onOpenHub }) 
              <span className="text-xs font-semibold text-slate-600 dark:text-slate-400">Nodes Connected</span>
           </div>
 
-          {/* AI Trading Hub button */}
+          {/* AI Trading Hub button — desktop only, mobile version is in App.tsx below fresh scan */}
           {onOpenHub && (
             <button
               onClick={onOpenHub}
               className="hidden sm:flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold rounded-xl transition-colors shadow-lg shadow-indigo-600/20"
             >
-              <span>🤖</span>
+              <svg className="w-3.5 h-3.5" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="1,14 6,8 10,11 14,5 19,9" />
+                <polyline points="14,5 19,5 19,9" />
+              </svg>
               <span>AI Trading Hub</span>
             </button>
           )}

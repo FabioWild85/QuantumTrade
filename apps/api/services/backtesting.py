@@ -708,11 +708,25 @@ def _calculate_stats(trades: list, equity_curve: list, capital: float) -> dict:
     avg_loss      = np.mean(losses) if losses else 0.0
     profit_factor = abs(sum(wins) / sum(losses)) if losses else 99.0
 
-    # Sharpe from equity curve returns
-    eq_vals  = [e["equity"] for e in equity_curve]
-    eq_rets  = np.diff(eq_vals) / np.array(eq_vals[:-1]) if len(eq_vals) > 1 else [0]
+    # Build bar-by-bar equity by forward-filling the sparse equity_curve.
+    # equity_curve has entries only at trade events; flat (no-trade) bars must
+    # be filled with the last known equity so Sharpe/Sortino treat them as
+    # zero-return periods rather than ignoring them entirely.
+    total_pnl_pct = total_pnl_usd / capital * 100
     ann = np.sqrt(365 * 6)  # annualization factor for 4h bars
-    eq_arr  = np.array(eq_rets, dtype=float)
+    if len(equity_curve) >= 2:
+        n_bars = equity_curve[-1]["bar"] + 1
+        filled = np.empty(n_bars)
+        ec_idx = 0
+        for b in range(n_bars):
+            while ec_idx + 1 < len(equity_curve) and equity_curve[ec_idx + 1]["bar"] <= b:
+                ec_idx += 1
+            filled[b] = equity_curve[ec_idx]["equity"]
+        eq_arr = np.diff(filled) / (filled[:-1] + 1e-9)
+    else:
+        n_bars = 1
+        eq_arr = np.array([0.0])
+
     sharpe  = float(np.mean(eq_arr) / (np.std(eq_arr) + 1e-9) * ann) if len(eq_arr) > 1 else 0.0
 
     # Sortino: penalise only downside returns
@@ -734,9 +748,10 @@ def _calculate_stats(trades: list, equity_curve: list, capital: float) -> dict:
         if dd > max_dd:
             max_dd = dd
 
-    # Calmar: annualized return / max drawdown
-    total_pnl_pct = total_pnl_usd / capital * 100
-    calmar = round(total_pnl_pct / max_dd, 3) if max_dd > 0 else 0.0
+    # Calmar: annualized return / max drawdown (B5 fix — annualize before dividing)
+    duration_days = n_bars * 4 / 24  # each bar = 4h
+    annual_return = ((1 + total_pnl_pct / 100) ** (365.0 / max(duration_days, 1)) - 1) * 100
+    calmar = round(annual_return / max_dd, 3) if max_dd > 0 else 0.0
 
     avg_holding_h = np.mean([t["holding_bars"] * 4 for t in trades])
 

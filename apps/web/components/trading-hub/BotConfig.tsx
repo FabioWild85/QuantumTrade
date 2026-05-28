@@ -566,6 +566,10 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
           (next as any)[k] = Boolean(v);
         } else if (expectedType === 'number') {
           (next as any)[k] = Number(v);
+        } else if (k === 'forced_regime') {
+          if (['auto', 'bull', 'bear', 'neutral'].includes(String(v))) {
+            (next as any)[k] = String(v);
+          }
         } else {
           (next as any)[k] = v;
         }
@@ -748,7 +752,7 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
         {/* ── AI Adattivo — Chronos-2 ── */}
         <div className={`flex flex-col gap-3 mb-6 pb-6 border-b transition-colors duration-200 ${(config.dynamic_sl_tp_enabled || config.p10_sl_floor_enabled) ? 'border-violet-200 dark:border-violet-500/25' : 'border-slate-100 dark:border-white/5'}`}>
           <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest">AI Adattivo — Chronos-2</p>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
 
             {/* SL/TP Adattativi */}
             <Tooltip text="Quando attivo, SL e TP vengono calcolati blendando ATR con le previsioni probabilistiche p10/p90 di Chronos-2. I moltiplicatori fissi SL/TP vengono ignorati. Richiede Chronos-2 attivo nel bot." width="wide" pos="bottom">
@@ -794,8 +798,13 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
 
           {/* Blend slider */}
           {config.dynamic_sl_tp_enabled && (
-            <div className="flex items-center gap-4 px-1">
-              <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest whitespace-nowrap">Blend ATR ↔ C2</span>
+            <div className="px-1 flex flex-col gap-1.5 sm:flex-row sm:items-center sm:gap-4">
+              <div className="flex items-center justify-between sm:block">
+                <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest whitespace-nowrap">Blend ATR ↔ C2</span>
+                <span className="sm:hidden text-[11px] font-bold font-mono text-violet-600 dark:text-violet-400">
+                  {Math.round((1 - config.dynamic_sl_tp_blend) * 100)}% ATR · {Math.round(config.dynamic_sl_tp_blend * 100)}% C2
+                </span>
+              </div>
               <div className="flex items-center gap-3 flex-1">
                 <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 font-mono">ATR</span>
                 <input
@@ -805,7 +814,7 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                   className="flex-1 h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/15 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3.5 [&::-webkit-slider-thumb]:h-3.5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-violet-500 [&::-webkit-slider-thumb]:shadow-sm [&::-webkit-slider-thumb]:cursor-pointer [&::-moz-range-thumb]:w-3.5 [&::-moz-range-thumb]:h-3.5 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-violet-500 [&::-moz-range-thumb]:border-0"
                 />
                 <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 font-mono">C2</span>
-                <span className="text-[11px] font-bold font-mono text-violet-600 dark:text-violet-400 w-20 text-right">
+                <span className="hidden sm:inline text-[11px] font-bold font-mono text-violet-600 dark:text-violet-400 w-20 text-right">
                   {Math.round((1 - config.dynamic_sl_tp_blend) * 100)}% ATR · {Math.round(config.dynamic_sl_tp_blend * 100)}% C2
                 </span>
               </div>
@@ -813,24 +822,22 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
           )}
 
           {/* Recalibrated thresholds toggle */}
-          {config.dynamic_sl_tp_enabled && (
-            <div className="flex items-center justify-between gap-3 px-1">
-              <div>
-                <p className="text-[11px] font-bold text-slate-600 dark:text-slate-300">Soglie uncertainty ricalibrate</p>
-                <p className="text-[10px] text-slate-400 dark:text-slate-500 leading-tight mt-0.5">
-                  {config.recalibrated_uncertainty_thresholds
-                    ? 'Distribuzione reale BTC 4H — +20% attivo da 3%, −25% da 4.2%'
-                    : 'Soglie originali teoriche — +20% sotto 2%, −25% sopra 4%'}
-                </p>
-              </div>
-              <button
-                onClick={() => setConfig(c => ({ ...c, recalibrated_uncertainty_thresholds: !c.recalibrated_uncertainty_thresholds }))}
-                className={`relative flex-shrink-0 w-9 h-[18px] rounded-full transition-all duration-300 focus:outline-none ${config.recalibrated_uncertainty_thresholds ? 'bg-violet-600' : 'bg-slate-200 dark:bg-white/10'}`}
-              >
-                <span className={`absolute top-[3px] left-[3px] w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.recalibrated_uncertainty_thresholds ? 'translate-x-[18px]' : ''}`} />
-              </button>
+          <div className="flex items-center justify-between gap-3 px-1">
+            <div>
+              <p className="text-[11px] font-bold text-slate-600 dark:text-slate-300">Soglie uncertainty ricalibrate</p>
+              <p className="text-[10px] text-slate-400 dark:text-slate-500 leading-tight mt-0.5">
+                {config.recalibrated_uncertainty_thresholds
+                  ? 'Distribuzione reale BTC 4H — +20% attivo da 3%, −25% da 4.2%'
+                  : 'Soglie originali teoriche — +20% sotto 2%, −25% sopra 4%'}
+              </p>
             </div>
-          )}
+            <button
+              onClick={() => setConfig(c => ({ ...c, recalibrated_uncertainty_thresholds: !c.recalibrated_uncertainty_thresholds }))}
+              className={`relative flex-shrink-0 w-9 h-[18px] rounded-full transition-all duration-300 focus:outline-none ${config.recalibrated_uncertainty_thresholds ? 'bg-violet-600' : 'bg-slate-200 dark:bg-white/10'}`}
+            >
+              <span className={`absolute top-[3px] left-[3px] w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.recalibrated_uncertainty_thresholds ? 'translate-x-[18px]' : ''}`} />
+            </button>
+          </div>
 
           {/* Chronos warning */}
           {(config.dynamic_sl_tp_enabled || config.p10_sl_floor_enabled) && !config.chronos_enabled && (
@@ -851,7 +858,7 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
         {/* ── Livelli Strutturali — OB / FVG ── */}
         <div className={`flex flex-col gap-3 mb-6 pb-6 border-b transition-colors duration-200 ${(config.structural_sl_enabled || config.ob_tp_enabled || config.fvg_sl_enabled || config.fvg_tp_enabled || config.swing_sl_enabled || config.swing_tp_enabled) ? 'border-violet-200 dark:border-violet-500/25' : 'border-slate-100 dark:border-white/5'}`}>
           <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest">Livelli Strutturali — OB / FVG / Swing</p>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
 
             {/* SL — OB */}
             <Tooltip text="Posiziona lo SL oltre l'Order Block attivo più vicino (entro 2 ATR dall'entry). Per short: SL = ob_bear_top_px + buffer. Per long: SL = ob_bull_bot_px − buffer. Solo allarga lo SL (mai restringe) — size ridotta proporzionalmente per mantenere il rischio USD costante." width="wide" pos="bottom">
@@ -964,7 +971,7 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
 
           {/* SL buffer controls */}
           {(config.structural_sl_enabled || config.fvg_sl_enabled) && (
-            <div className="grid grid-cols-2 gap-3 px-1">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 px-1">
               <NumInput label="SL Buffer %" value={config.ob_buffer_pct} onChange={v => setConfig(c => ({ ...c, ob_buffer_pct: v }))} step={0.1} min={0.0} max={2.0} />
               <NumInput label="SL Buffer Min ATR" value={config.ob_buffer_min_atr} onChange={v => setConfig(c => ({ ...c, ob_buffer_min_atr: v }))} step={0.05} min={0.0} max={1.0} />
             </div>
@@ -972,8 +979,13 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
 
           {/* OB TP blend slider */}
           {config.ob_tp_enabled && (
-            <div className="flex items-center gap-4 px-1">
-              <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest whitespace-nowrap">OB TP — Blend ATR ↔ OB</span>
+            <div className="px-1 flex flex-col gap-1.5 sm:flex-row sm:items-center sm:gap-4">
+              <div className="flex items-center justify-between sm:block">
+                <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest whitespace-nowrap">OB TP — Blend ATR ↔ OB</span>
+                <span className="sm:hidden text-[11px] font-bold font-mono text-emerald-600 dark:text-emerald-400">
+                  {Math.round((1 - config.ob_tp_blend) * 100)}% ATR · {Math.round(config.ob_tp_blend * 100)}% OB
+                </span>
+              </div>
               <div className="flex items-center gap-3 flex-1">
                 <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 font-mono">ATR</span>
                 <input
@@ -983,7 +995,7 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                   className="flex-1 h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/15 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3.5 [&::-webkit-slider-thumb]:h-3.5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-emerald-500 [&::-webkit-slider-thumb]:shadow-sm [&::-webkit-slider-thumb]:cursor-pointer [&::-moz-range-thumb]:w-3.5 [&::-moz-range-thumb]:h-3.5 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-emerald-500 [&::-moz-range-thumb]:border-0"
                 />
                 <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 font-mono">OB</span>
-                <span className="text-[11px] font-bold font-mono text-emerald-600 dark:text-emerald-400 w-24 text-right">
+                <span className="hidden sm:inline text-[11px] font-bold font-mono text-emerald-600 dark:text-emerald-400 w-24 text-right">
                   {Math.round((1 - config.ob_tp_blend) * 100)}% ATR · {Math.round(config.ob_tp_blend * 100)}% OB
                 </span>
               </div>
@@ -992,8 +1004,13 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
 
           {/* FVG TP blend slider */}
           {config.fvg_tp_enabled && (
-            <div className="flex items-center gap-4 px-1">
-              <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest whitespace-nowrap">FVG TP — Blend ATR ↔ FVG</span>
+            <div className="px-1 flex flex-col gap-1.5 sm:flex-row sm:items-center sm:gap-4">
+              <div className="flex items-center justify-between sm:block">
+                <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest whitespace-nowrap">FVG TP — Blend ATR ↔ FVG</span>
+                <span className="sm:hidden text-[11px] font-bold font-mono text-emerald-600 dark:text-emerald-400">
+                  {Math.round((1 - config.fvg_tp_blend) * 100)}% ATR · {Math.round(config.fvg_tp_blend * 100)}% FVG
+                </span>
+              </div>
               <div className="flex items-center gap-3 flex-1">
                 <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 font-mono">ATR</span>
                 <input
@@ -1003,7 +1020,7 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                   className="flex-1 h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/15 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3.5 [&::-webkit-slider-thumb]:h-3.5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-emerald-500 [&::-webkit-slider-thumb]:shadow-sm [&::-webkit-slider-thumb]:cursor-pointer [&::-moz-range-thumb]:w-3.5 [&::-moz-range-thumb]:h-3.5 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-emerald-500 [&::-moz-range-thumb]:border-0"
                 />
                 <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 font-mono">FVG</span>
-                <span className="text-[11px] font-bold font-mono text-emerald-600 dark:text-emerald-400 w-24 text-right">
+                <span className="hidden sm:inline text-[11px] font-bold font-mono text-emerald-600 dark:text-emerald-400 w-24 text-right">
                   {Math.round((1 - config.fvg_tp_blend) * 100)}% ATR · {Math.round(config.fvg_tp_blend * 100)}% FVG
                 </span>
               </div>
@@ -1012,8 +1029,13 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
 
           {/* Swing TP blend slider */}
           {config.swing_tp_enabled && (
-            <div className="flex items-center gap-4 px-1">
-              <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest whitespace-nowrap">Swing TP — Blend ATR ↔ Swing</span>
+            <div className="px-1 flex flex-col gap-1.5 sm:flex-row sm:items-center sm:gap-4">
+              <div className="flex items-center justify-between sm:block">
+                <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest whitespace-nowrap">Swing TP — Blend ATR ↔ Swing</span>
+                <span className="sm:hidden text-[11px] font-bold font-mono text-emerald-600 dark:text-emerald-400">
+                  {Math.round((1 - config.swing_tp_blend) * 100)}% ATR · {Math.round(config.swing_tp_blend * 100)}% Swing
+                </span>
+              </div>
               <div className="flex items-center gap-3 flex-1">
                 <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 font-mono">ATR</span>
                 <input
@@ -1023,7 +1045,7 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                   className="flex-1 h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/15 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3.5 [&::-webkit-slider-thumb]:h-3.5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-emerald-500 [&::-webkit-slider-thumb]:shadow-sm [&::-webkit-slider-thumb]:cursor-pointer [&::-moz-range-thumb]:w-3.5 [&::-moz-range-thumb]:h-3.5 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-emerald-500 [&::-moz-range-thumb]:border-0"
                 />
                 <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 font-mono">Swing</span>
-                <span className="text-[11px] font-bold font-mono text-emerald-600 dark:text-emerald-400 w-24 text-right">
+                <span className="hidden sm:inline text-[11px] font-bold font-mono text-emerald-600 dark:text-emerald-400 w-24 text-right">
                   {Math.round((1 - config.swing_tp_blend) * 100)}% ATR · {Math.round(config.swing_tp_blend * 100)}% Swing
                 </span>
               </div>
@@ -1209,7 +1231,7 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
               <Tooltip text="Scegli tu il regime di mercato manualmente, oppure lascia che sia il bot a rilevarlo automaticamente da EMA20+ADX. Con 'Neutro' il bias è attivo ma non penalizza nessuna direzione." width="wide" pos="bottom">
                 <p className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest mb-3">Regime di mercato</p>
               </Tooltip>
-              <div className="grid grid-cols-4 gap-2">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                 {(['auto', 'bull', 'bear', 'neutral'] as const).map(r => {
                   const labels: Record<string, string> = { auto: 'Auto', bull: 'Bull', bear: 'Bear', neutral: 'Neutro' };
                   const active: Record<string, string> = {
@@ -1468,7 +1490,7 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                 <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-2">Peso Chronos nell'Ensemble</p>
                 <div className="flex items-center gap-3">
                   <input
-                    type="range" min="0" max="1" step="0.05"
+                    type="range" min="0" max="0.9" step="0.05"
                     value={config.chronos_weight}
                     onChange={e => setConfig(c => ({ ...c, chronos_weight: parseFloat(e.target.value) }))}
                     className="flex-1 h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/15 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3.5 [&::-webkit-slider-thumb]:h-3.5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-sky-500 [&::-webkit-slider-thumb]:shadow-sm [&::-webkit-slider-thumb]:cursor-pointer [&::-moz-range-thumb]:w-3.5 [&::-moz-range-thumb]:h-3.5 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-sky-500 [&::-moz-range-thumb]:border-0"
@@ -2033,7 +2055,7 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
         <div className="my-6 border-t border-slate-100 dark:border-white/5" />
         {/* Toggle */}
         <div className={`flex flex-col gap-3 mb-6 pb-6 border-b transition-colors duration-200 ${config.use_1h_lgbm_gate ? 'border-violet-200 dark:border-violet-500/25' : 'border-slate-100 dark:border-white/5'}`}>
-          <div className="flex items-center justify-between gap-4">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
             <Tooltip
               text="Quando attivo, ogni segnale 4H (long/short) viene filtrato dal modello 1H: se P(direzione)_1H ≥ min_agreement → confermato; se block_threshold ≤ P < min_agreement → permesso con size ×0.70; se P < block_threshold → bloccato. Fail-safe: se il modello 1H non esiste o si verifica un errore, il trade procede normalmente senza il gate."
               width="wide"
@@ -2065,7 +2087,7 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
             </Tooltip>
 
             {/* Model status + Train button */}
-            <div className="flex items-center gap-2 flex-shrink-0">
+            <div className="flex items-center gap-2 flex-shrink-0 sm:flex-row">
               <div className="flex items-center gap-1.5">
                 <div className={`w-2 h-2 rounded-full ${lgbm1hLoaded === true ? 'bg-emerald-500' : lgbm1hLoaded === false ? 'bg-rose-400' : 'bg-slate-300 dark:bg-slate-600'}`} />
                 <span className="text-[10px] font-medium text-slate-500 dark:text-slate-400">
@@ -2076,7 +2098,7 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                 <button
                   onClick={handleRetrain1h}
                   disabled={lgbm1hRetraining}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-bold bg-violet-600 hover:bg-violet-700 disabled:opacity-50 disabled:cursor-not-allowed text-white transition-colors"
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-bold bg-violet-600 hover:bg-violet-700 disabled:opacity-50 disabled:cursor-not-allowed text-white transition-colors sm:flex-shrink-0"
                 >
                   {lgbm1hRetraining ? (
                     <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">

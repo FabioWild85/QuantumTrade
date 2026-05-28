@@ -302,21 +302,13 @@ class ExecutionEngine:
         positions_closed = 0
 
         if self._position:
-            if self.mode == "live":
-                try:
-                    await self._submit_close_order()
-                    snap  = await self._hl.get_market_snapshot(SYMBOL)
-                    price = snap.get("mark_price", self._position["entry_price"])
-                    await self._close_position(price, "kill")
-                    positions_closed = 1
-                except Exception as exc:
-                    log.error("Kill: close order failed: %s", exc)
-            else:
-                # Paper: book the position at current mark price
+            try:
                 snap  = await self._hl.get_market_snapshot(SYMBOL)
                 price = snap.get("mark_price", self._position["entry_price"])
                 await self._close_position(price, "kill")
                 positions_closed = 1
+            except Exception as exc:
+                log.error("Kill: close position failed: %s", exc)
 
         self._position = None  # safety net if _close_position was never reached
         log.warning("KILL SWITCH activated")
@@ -1734,14 +1726,14 @@ class ExecutionEngine:
         # pnl_pct as % of original position size (consistent with pnl_usd being total)
         total_pnl_pct = total_pnl_usd / original_size_usd * 100 if original_size_usd else price_pct
 
-        self._equity += pnl_usd
-        self._risk.record_trade_result(total_pnl_pct)
-
         if self.mode == "live":
             try:
                 await self._submit_close_order()
             except Exception as exc:
                 log.error("Close order failed: %s", exc)
+
+        self._equity += pnl_usd
+        self._risk.record_trade_result(total_pnl_pct)
 
         log.info(
             "Position closed: %s | %s | PnL %+.2f%% ($%+.2f) [price_pct=%+.2f%%]",
@@ -1782,7 +1774,7 @@ class ExecutionEngine:
                 },
             }).execute()
             # Insert completed trade into trades table (feeds TradeLog UI)
-            _valid_reasons = {"stop_loss", "take_profit", "manual", "kill", "lgbm_exit", "max_hold_bars", "max_funding", "macro_pause", "exchange_close"}
+            _valid_reasons = {"stop_loss", "take_profit", "manual", "kill", "lgbm_exit", "max_hold_bars", "macro_pause", "exchange_close"}
             _reason_close = reason if reason in _valid_reasons else "manual"
             db.table("trades").insert({
                 "bot_id":          "default",
@@ -1988,7 +1980,7 @@ class ExecutionEngine:
             db = get_supabase()
             db.table("inference_logs").insert({
                 "id":              inference_id,
-                "bot_id":          None,
+                "bot_id":          "default",
                 "model":           "chronos2_lgbm_ensemble_v2",
                 # Top-level probability columns — used by IsotonicCalibrator join
                 "c2_dir_prob":     self._safe_float(c2.get("c2_dir_prob")),
