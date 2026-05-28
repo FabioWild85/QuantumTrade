@@ -1,10 +1,15 @@
 """
 IsotonicCalibrator — corregge c2_dir_prob di Chronos-2 basandosi
-sugli esiti reali dei trade storici.
+sulla direzione effettiva del mercato sui trade storici.
 
 Addestrato su:
   X = c2_dir_prob al momento dell'inferenza (colonna top-level in inference_logs)
-  y = 1 se il trade corrispondente è stato profittevole (pnl_usd > 0), 0 altrimenti
+  y = 1 se il prezzo è salito (exit_price > entry_price), 0 altrimenti
+
+c2_dir_prob è P(price_horizon > current_price) — sempre P(bullish).
+Il target y deve riflettere la stessa cosa: il mercato è effettivamente salito?
+Usare pnl_usd > 0 è sbagliato perché per i trade SHORT profittevoli il mercato
+è sceso (y dovrebbe essere 0), non salito.
 
 Usa sklearn.isotonic.IsotonicRegression con vincolo monotono:
 se Chronos è più sicuro, la correzione non inverte mai la direzione.
@@ -50,24 +55,33 @@ class IsotonicCalibrator:
                 log.warning("Calibrator: no inference_logs with c2_dir_prob found")
                 return 0
 
-            # Fetch all closed trades with a linked inference_id
+            # Fetch all closed trades with a linked inference_id.
+            # We use entry_price / exit_price to derive actual market direction:
+            # exit > entry → market went UP → y=1 (matches c2_dir_prob = P(bullish))
+            # exit < entry → market went DOWN → y=0
+            # This is correct for both long and short trades; pnl_usd > 0 was wrong
+            # for shorts (profitable short = market fell = y should be 0, not 1).
             tr_res = (
                 db.table("trades")
-                .select("inference_id, pnl_usd")
+                .select("inference_id, entry_price, exit_price")
                 .not_.is_("inference_id", "null")
-                .not_.is_("pnl_usd", "null")
+                .not_.is_("entry_price", "null")
+                .not_.is_("exit_price", "null")
                 .execute()
             )
 
             X, y = [], []
             for trade in (tr_res.data or []):
-                inf_id = trade.get("inference_id")
+                inf_id   = trade.get("inference_id")
                 if inf_id not in logs:
                     continue
-                prob    = logs[inf_id]
-                outcome = 1 if float(trade.get("pnl_usd") or 0) > 0 else 0
+                entry_px = float(trade.get("entry_price") or 0)
+                exit_px  = float(trade.get("exit_price")  or 0)
+                if entry_px <= 0 or exit_px <= 0:
+                    continue
+                prob = logs[inf_id]
                 X.append(prob)
-                y.append(outcome)
+                y.append(1 if exit_px > entry_px else 0)
 
             if len(X) < MIN_SAMPLES:
                 log.warning(

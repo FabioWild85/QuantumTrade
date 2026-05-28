@@ -233,6 +233,9 @@ class BotConfig(BaseModel):
     use_1h_lgbm_gate:               bool  = Field(False)
     lgbm_1h_min_agreement:          float = Field(0.52, ge=0.50, le=0.70)
     lgbm_1h_block_threshold:        float = Field(0.45, ge=0.30, le=0.50)
+    # Optuna hyperparameter tuning (manual/deep retrains only)
+    use_optuna:                     bool  = Field(False)
+    optuna_n_trials:                int   = Field(50,  ge=10, le=200)
     # Macro Event Pause
     macro_pause_enabled:        bool  = Field(False)
     macro_pause_window_min:     int   = Field(60, ge=15, le=240)
@@ -380,18 +383,46 @@ async def close_position_manual():
     return result
 
 
+class RetrainRequest(BaseModel):
+    from_date: Optional[str] = Field(
+        None,
+        description="YYYY-MM-DD — se impostato usa Binance dal quella data a oggi (deep training). "
+                    "Se None usa gli ultimi 500 candles da HL (retrain standard).",
+    )
+    use_optuna: Optional[bool] = Field(
+        None,
+        description="Se True sovrascrive il valore in config per questo retrain.",
+    )
+    optuna_n_trials: Optional[int] = Field(
+        None, ge=10, le=200,
+        description="Numero di trial Optuna. Sovrascrive il valore in config se impostato.",
+    )
+
+
 @app.post("/retrain")
-async def force_retrain():
+async def force_retrain(req: Optional[RetrainRequest] = None):
     """
     Manually trigger a LightGBM retrain.
-    Blocks until complete (~10-30s). Returns metrics on success, {"status": "busy"} if already running.
+    Pass {"from_date": "2021-01-01"} in the body to train on full historical data via Binance.
+    Blocks until complete. Returns metrics on success, {"status": "busy"} if already running.
     """
     if not engine:
         raise HTTPException(503, "Engine not initialized")
-    result = await engine.retrain_manual()
+    from_date               = req.from_date        if req else None
+    use_optuna_override     = req.use_optuna       if req else None
+    optuna_n_trials_override = req.optuna_n_trials if req else None
+
+    result = await engine.retrain_manual(
+        from_date=from_date,
+        use_optuna_override=use_optuna_override,
+        optuna_n_trials_override=optuna_n_trials_override,
+    )
+    trigger = f"deep({from_date})" if from_date else "manual"
+    optuna_note = f" optuna_ll={result.get('optuna', {}).get('best_ll', 'N/A')}" if result.get("optuna") else ""
     _log_event(
         "lgbm_retrain_manual",
-        f"Retrain manuale: status={result.get('status')} oos_acc={result.get('oos_accuracy', 'N/A')} wf_acc={result.get('wf_avg_accuracy', 'N/A')}",
+        f"Retrain {trigger}: status={result.get('status')} oos_acc={result.get('oos_accuracy', 'N/A')} "
+        f"n_rows={result.get('train_rows', 'N/A')} n_features={result.get('n_features', 'N/A')}{optuna_note}",
         "info",
         result,
     )
@@ -640,6 +671,62 @@ async def get_pruning_stats():
         }
 
 
+# ─── Model Versioning ────────────────────────────────────────────────────────
+
+@app.get("/model/registry")
+async def model_registry_endpoint():
+    """
+    Return the versioned model registry.
+    Each entry has filename, trained_at, OOS metrics, and train metadata.
+    The most recent model is last in the list.
+    """
+    from services.trainer import MODEL_REGISTRY_PATH
+    import json as _json
+    if not MODEL_REGISTRY_PATH.exists():
+        return {"models": []}
+    with open(MODEL_REGISTRY_PATH) as _f:
+        return _json.load(_f)
+
+
+@app.post("/model/rollback/{filename}")
+async def model_rollback(filename: str):
+    """
+    Roll back the active model to a previously saved versioned file.
+    The current lgbm_latest.pkl is backed up to lgbm_latest.bak.pkl before overwriting.
+    Reloads the model into the running engine immediately.
+    Only accepts filenames matching the pattern lgbm_YYYYMMDDTHHMMSSZ.pkl.
+    """
+    if not engine:
+        raise HTTPException(503, "Engine not initialized")
+    from services.trainer import MODEL_DIR, MODEL_PATH, MODEL_REGISTRY_PATH
+    import json as _json
+
+    # Validate filename format — only versioned files, never overwrite with arbitrary paths
+    if not (filename.startswith("lgbm_") and filename.endswith(".pkl") and "latest" not in filename):
+        raise HTTPException(400, f"Invalid filename: must match lgbm_YYYYMMDDTHHMMSSZ.pkl")
+
+    # Confirm the file is in the registry (extra safety — no arbitrary path loading)
+    if MODEL_REGISTRY_PATH.exists():
+        with open(MODEL_REGISTRY_PATH) as _f:
+            registry = _json.load(_f)
+        known_files = {m["filename"] for m in registry.get("models", [])}
+        if filename not in known_files:
+            raise HTTPException(404, f"Version not in registry: {filename}")
+
+    target = MODEL_DIR / filename
+    if not target.exists():
+        raise HTTPException(404, f"File not found on disk: {filename}")
+
+    import shutil as _shutil
+    if MODEL_PATH.exists():
+        _shutil.copy2(MODEL_PATH, MODEL_PATH.with_name("lgbm_latest.bak.pkl"))
+    _shutil.copy2(target, MODEL_PATH)
+    engine._load_model_from_disk()
+
+    log.info("Model rolled back to %s", filename)
+    return {"status": "ok", "rolled_back_to": filename, "features": len(engine._lgbm_features or [])}
+
+
 # ─── Chronos Calibrator ───────────────────────────────────────────────────────
 
 @app.post("/calibrator/refit")
@@ -702,6 +789,40 @@ async def get_1h_model_status():
         "file_exists":      MODEL_1H_PATH.exists(),
         "n_features":       len(engine._lgbm_1h_features) if engine._lgbm_1h_features else 0,
     }
+
+
+# ─── Concept Drift ───────────────────────────────────────────────────────────
+
+@app.get("/drift/status")
+async def drift_status():
+    """
+    Return the result of the last concept drift check.
+    Shows recent log-loss vs the baseline stored at last retrain.
+    """
+    from services.trainer import DRIFT_BASELINE_PATH
+    import json as _json
+    baseline = None
+    if DRIFT_BASELINE_PATH.exists():
+        with open(DRIFT_BASELINE_PATH) as _f:
+            baseline = _json.load(_f)
+    last_check = engine._last_drift_result if engine else None
+    return {
+        "baseline":    baseline,
+        "last_check":  last_check,
+    }
+
+
+@app.post("/drift/check")
+async def drift_check_now():
+    """
+    Manually trigger a concept drift evaluation.
+    Does NOT trigger a retrain — read-only diagnostic.
+    """
+    if not engine:
+        raise HTTPException(503, "Engine not initialized")
+    result = await engine._trainer.check_drift("BTC", use_pruning=engine.config.use_feature_pruning)
+    engine._last_drift_result = {**result, "checked_at": datetime.now(timezone.utc).isoformat()}
+    return result
 
 
 # ─── Trade Events ────────────────────────────────────────────────────────────

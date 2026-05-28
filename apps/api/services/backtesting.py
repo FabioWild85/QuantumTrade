@@ -176,6 +176,20 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
     # ── 2. Build features ────────────────────────────────────────────────────
     df_feat = build_all_features(df_ohlcv, df_fund, df_oi, df_liq)
 
+    # ── 2b. Validate F&G date format against the actual feature index ────────
+    if fng_gate_enabled and fng_history:
+        _sample_idx = min(64, len(df_feat) - 1)
+        _sample_date = str(df_feat.index[_sample_idx].date()) if hasattr(df_feat.index[_sample_idx], "date") else ""
+        if _sample_date and _sample_date not in fng_history:
+            _first_key = next(iter(fng_history), "N/A")
+            log.warning(
+                "F&G date format mismatch — bar_date=%s not found in fng_history "
+                "(first history key=%s). F&G gate will fall back to neutral 50 on every bar.",
+                _sample_date, _first_key,
+            )
+        else:
+            log.info("F&G history loaded: %d days, date format OK (sample=%s)", len(fng_history), _sample_date)
+
     # ── 3. Load LightGBM model ───────────────────────────────────────────────
     _use_pruning = getattr(cfg, "use_feature_pruning", False)
     model_result = load_correct_model(_use_pruning)
@@ -494,10 +508,10 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
 
             # Funding Rate: rolling mean of last N closed bars at this point in time.
             avg_funding_bt = 0.0
-            if funding_gate_enabled and i > 0:
-                _lb = min(funding_gate_lookback, i)
-                _fund_vals = df_feat["funding"].values[i - _lb:i] if "funding" in df_feat.columns else None
-                if _fund_vals is not None and len(_fund_vals) > 0:
+            if funding_gate_enabled:
+                _lb = min(funding_gate_lookback, i + 1)   # include bar i (match live behaviour)
+                _fund_vals = df_feat["funding"].values[i + 1 - _lb:i + 1] if "funding" in df_feat.columns else None
+                if _fund_vals is not None and len(_fund_vals) > 0 and not np.all(np.isnan(_fund_vals)):
                     avg_funding_bt = float(np.nanmean(_fund_vals))
 
             # Fear & Greed: look up the value for this bar's date.

@@ -35,6 +35,9 @@ interface Config {
   use_1h_lgbm_gate: boolean;
   lgbm_1h_min_agreement: number;
   lgbm_1h_block_threshold: number;
+  // Optuna hyperparameter tuning
+  use_optuna: boolean;
+  optuna_n_trials: number;
   // Macro Event Pause
   macro_pause_enabled: boolean;
   macro_pause_window_min: number;
@@ -147,6 +150,9 @@ const DEFAULTS: Config = {
   use_1h_lgbm_gate: false,
   lgbm_1h_min_agreement: 0.52,
   lgbm_1h_block_threshold: 0.45,
+  // Optuna hyperparameter tuning
+  use_optuna: false,
+  optuna_n_trials: 50,
   // Macro Event Pause
   macro_pause_enabled: false,
   macro_pause_window_min: 60,
@@ -280,6 +286,18 @@ interface Preset {
   created_at?: string;
 }
 
+interface RegistryEntry {
+  filename: string;
+  trained_at: string;
+  oos_accuracy?: number;
+  oos_log_loss?: number;
+  wf_avg_accuracy?: number;
+  n_features?: number;
+  train_rows?: number;
+  best_iteration?: number;
+  neutral_excluded_pct?: number;
+}
+
 export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   const [config, setConfig]             = useState<Config>(DEFAULTS);
   const [saved, setSaved]               = useState(false);
@@ -309,6 +327,9 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   const [presetDropOpen,  setPresetDropOpen]  = useState(false);
   const [appliedPreset,   setAppliedPreset]   = useState<string | null>(null);
   const presetDropRef = useRef<HTMLDivElement>(null);
+  const [modelRegistry,  setModelRegistry]   = useState<RegistryEntry[]>([]);
+  const [rollingBack,    setRollingBack]      = useState<string | null>(null);
+  const [registryOpen,   setRegistryOpen]     = useState(false);
 
   useEffect(() => {
     if (!presetDropOpen) return;
@@ -344,6 +365,13 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
       .catch(() => {});
   };
 
+  const loadModelRegistry = () => {
+    fetch(`${apiBase}/model/registry`)
+      .then(r => r.ok ? r.json() : null)
+      .then(d => d?.models && setModelRegistry(d.models))
+      .catch(() => {});
+  };
+
   const handleRetrain1h = async () => {
     if (!confirm('Addestra il modello LightGBM 1H Gate su 2000 candele orarie?\n\nIl processo dura 20–60 secondi. Non interrompe il bot.')) return;
     setLgbm1hRetraining(true);
@@ -376,6 +404,25 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     }
   };
 
+  const handleRollback = async (filename: string) => {
+    if (!confirm(`Rollback al modello:\n${filename}\n\nIl modello corrente (lgbm_latest.pkl) verrà sostituito. Il bot ricaricherà il modello automaticamente.`)) return;
+    setRollingBack(filename);
+    try {
+      const r = await fetch(`${apiBase}/model/rollback/${encodeURIComponent(filename)}`, { method: 'POST' });
+      const data = await r.json();
+      if (data.status === 'ok') {
+        alert(`✓ Rollback completato.\nModello attivo: ${filename}`);
+        loadModelRegistry();
+      } else {
+        alert(`✕ Rollback fallito: ${data.detail ?? data.status}`);
+      }
+    } catch {
+      alert('✕ Errore di rete durante il rollback.');
+    } finally {
+      setRollingBack(null);
+    }
+  };
+
   useEffect(() => {
     fetch(`${apiBase}/bot`)
       .then(r => r.ok ? r.json() : null)
@@ -405,20 +452,68 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
       .then(r => r.ok ? r.json() : [])
       .then(d => setPresets(Array.isArray(d) ? d : []))
       .catch(e => console.error('[BotConfig] GET /presets failed:', e));
+    loadModelRegistry();
   }, [apiBase]);
 
   const handleRetrain = async () => {
-    if (!confirm('Avvia retrain manuale di LightGBM?\n\nIl modello verrà ricalcolato sugli ultimi 500 candles (4h). Il processo dura 10–30 secondi.')) return;
+    const optunaNotes = config.use_optuna
+      ? `\n\n⚠ Optuna attivo: durata stimata 3–8 minuti (${config.optuna_n_trials} trial).`
+      : '';
+    if (!confirm(`Avvia retrain manuale di LightGBM?\n\nIl modello verrà ricalcolato sugli ultimi 500 candles (4h). Il processo dura 10–30 secondi.${optunaNotes}`)) return;
     setRetraining(true);
     setRetrainResult(null);
     try {
-      const r = await fetch(`${apiBase}/retrain`, { method: 'POST' });
+      const r = await fetch(`${apiBase}/retrain`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ use_optuna: config.use_optuna, optuna_n_trials: config.optuna_n_trials }),
+      });
       const data: RetrainMetrics = await r.json();
       setRetrainResult(data);
       if (data.status === 'ok') {
         setModelLoaded(true);
         setLastRetrain(data);
-        // Refresh feature importance chart and pruning stats after retrain
+        loadFeatureImportance();
+        loadPruningStats();
+      }
+    } catch {
+      setRetrainResult({ status: 'busy' });
+    } finally {
+      setRetraining(false);
+    }
+  };
+
+  const [deepFromDate, setDeepFromDate] = useState('');
+
+  const handleDeepRetrain = async () => {
+    if (!deepFromDate) return;
+    const today = new Date().toISOString().slice(0, 10);
+    const diffDays = Math.round((new Date(today).getTime() - new Date(deepFromDate).getTime()) / 864e5);
+    const estCandles = Math.round(diffDays * 6);
+    const estMinutes = Math.round(estCandles / 500 * 0.5);
+    if (!confirm(
+      `Deep Training da ${deepFromDate} a oggi\n\n` +
+      `Stima: ~${estCandles.toLocaleString()} candele 4H (${diffDays} giorni).\n` +
+      `Durata stimata: ${estMinutes < 1 ? '<1' : estMinutes}–${estMinutes + 2} minuti.\n\n` +
+      `Il modello attuale verrà salvato come backup (lgbm_latest.bak.pkl).\n\nProcedere?`
+    )) return;
+    setRetraining(true);
+    setRetrainResult(null);
+    try {
+      const r = await fetch(`${apiBase}/retrain`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          from_date: deepFromDate,
+          use_optuna: config.use_optuna,
+          optuna_n_trials: config.optuna_n_trials,
+        }),
+      });
+      const data: RetrainMetrics = await r.json();
+      setRetrainResult(data);
+      if (data.status === 'ok') {
+        setModelLoaded(true);
+        setLastRetrain(data);
         loadFeatureImportance();
         loadPruningStats();
       }
@@ -1721,6 +1816,128 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
         <p className="text-[10px] text-slate-400 dark:text-slate-500 text-center mt-2">
           Addestra il modello sugli ultimi 500 candles 4h · non interrompe il bot
         </p>
+
+        {/* Deep Training */}
+        <div className="mt-5 p-4 rounded-xl border border-violet-200 dark:border-violet-500/20 bg-violet-50/40 dark:bg-violet-500/5 space-y-3">
+          <div className="flex items-center gap-2">
+            <svg className="w-3.5 h-3.5 text-violet-500 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/>
+            </svg>
+            <span className="text-[10px] font-bold text-violet-600 dark:text-violet-400 uppercase tracking-widest">Deep Training — Storia completa</span>
+          </div>
+          <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-relaxed">
+            Allena il modello su anni di dati BTC via Binance invece degli ultimi 500 candles HL.
+            Il modello attuale viene salvato come <span className="font-mono">lgbm_latest.bak.pkl</span> prima di essere sovrascritto.
+          </p>
+          {/* Preset year buttons */}
+          <div className="flex gap-1.5 flex-wrap">
+            {(['1Y','2Y','3Y','5Y'] as const).map(label => {
+              const years = parseInt(label);
+              const d = new Date();
+              d.setFullYear(d.getFullYear() - years);
+              const val = d.toISOString().slice(0, 10);
+              return (
+                <button
+                  key={label}
+                  onClick={() => setDeepFromDate(val)}
+                  disabled={retraining}
+                  className={`px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wider border transition-all ${
+                    deepFromDate === val
+                      ? 'bg-violet-500 text-white border-violet-500'
+                      : 'bg-white dark:bg-white/5 text-slate-600 dark:text-slate-400 border-slate-200 dark:border-white/10 hover:border-violet-400 dark:hover:border-violet-500/50'
+                  }`}
+                >{label}</button>
+              );
+            })}
+            <input
+              type="date"
+              value={deepFromDate}
+              onChange={e => setDeepFromDate(e.target.value)}
+              disabled={retraining}
+              className="flex-1 min-w-[110px] px-2 py-1.5 rounded-lg text-[10px] font-mono border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 text-slate-700 dark:text-slate-300 focus:outline-none focus:border-violet-400"
+            />
+          </div>
+          {/* Optuna toggle + trials slider */}
+          <div className={`rounded-xl border px-3 py-2.5 space-y-2.5 transition-colors ${config.use_optuna ? 'border-amber-300 dark:border-amber-500/30 bg-amber-50/60 dark:bg-amber-500/5' : 'border-slate-200 dark:border-white/8 bg-white/50 dark:bg-white/[0.02]'}`}>
+            <Tooltip
+              text="Quando attivo, prima del retrain Optuna esegue 50–200 trial di Bayesian optimization per trovare i parametri LightGBM ottimali (num_leaves, max_depth, learning_rate, reg_alpha, ecc.). Ogni trial è una mini-WF da 3 fold. Consigliato solo per Deep Training, non per retrain ciclici. Aggiunge 3–8 minuti al processo."
+              width="wide"
+              pos="top"
+            >
+              <label className="flex items-center justify-between gap-3 cursor-pointer">
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest cursor-help">
+                    Optuna Tuning
+                  </span>
+                  {config.use_optuna && (
+                    <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-400 uppercase tracking-wider">
+                      Attivo
+                    </span>
+                  )}
+                </div>
+                <div className="relative flex-shrink-0">
+                  <input
+                    type="checkbox"
+                    className="sr-only"
+                    checked={config.use_optuna}
+                    onChange={e => setConfig(c => ({ ...c, use_optuna: e.target.checked }))}
+                  />
+                  <div className={`w-9 h-[18px] rounded-full transition-all duration-300 ${config.use_optuna ? 'bg-amber-500' : 'bg-slate-200 dark:bg-white/10'}`} />
+                  <div className={`absolute top-[3px] left-[3px] w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.use_optuna ? 'translate-x-[18px]' : ''}`} />
+                </div>
+              </label>
+            </Tooltip>
+
+            {config.use_optuna && (
+              <div className="space-y-1.5 pt-1 border-t border-amber-200 dark:border-amber-500/20">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] text-slate-500 dark:text-slate-400">Trial Optuna</span>
+                  <span className="font-mono text-sm font-bold text-amber-600 dark:text-amber-400">{config.optuna_n_trials}</span>
+                </div>
+                <input
+                  type="range" min={10} max={200} step={10}
+                  value={config.optuna_n_trials}
+                  onChange={e => setConfig(c => ({ ...c, optuna_n_trials: parseInt(e.target.value) }))}
+                  className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/15 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3.5 [&::-webkit-slider-thumb]:h-3.5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-amber-500 [&::-webkit-slider-thumb]:shadow-sm [&::-webkit-slider-thumb]:cursor-pointer [&::-moz-range-thumb]:w-3.5 [&::-moz-range-thumb]:h-3.5 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-amber-500 [&::-moz-range-thumb]:border-0"
+                />
+                <div className="flex justify-between text-[9px] font-mono text-slate-400 dark:text-slate-500">
+                  <span>10 (~1 min)</span><span>50 (~4 min)</span><span>200 (~15 min)</span>
+                </div>
+                <p className="text-[9px] text-amber-700 dark:text-amber-400/80 leading-relaxed">
+                  Si applica a tutti i retrain manuali e deep. I retrain automatici e drift usano sempre i parametri default (velocità prioritaria).
+                </p>
+              </div>
+            )}
+          </div>
+
+          <button
+            onClick={handleDeepRetrain}
+            disabled={retraining || !deepFromDate}
+            className={`flex items-center justify-center gap-2 w-full py-2.5 rounded-xl text-[10px] font-bold uppercase tracking-widest transition-all border ${
+              retraining || !deepFromDate
+                ? 'bg-slate-100 dark:bg-white/5 text-slate-400 dark:text-slate-500 border-slate-200 dark:border-white/10 cursor-not-allowed'
+                : 'bg-violet-600 text-white border-transparent hover:bg-violet-700 shadow-md active:scale-[0.98]'
+            }`}
+          >
+            {retraining ? (
+              <>
+                <svg className="w-3.5 h-3.5 animate-spin" viewBox="0 0 24 24" fill="none">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4l3-3-3-3v4a8 8 0 00-8 8h4z" />
+                </svg>
+                Deep Training in corso…
+              </>
+            ) : (
+              <>
+                <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/>
+                </svg>
+                {deepFromDate ? `Deep Train da ${deepFromDate}` : 'Seleziona un periodo'}
+              </>
+            )}
+          </button>
+        </div>
+
         <div className="my-6 border-t border-slate-100 dark:border-white/5" />
         {/* retrain_every_n_cycles */}
         <div className="space-y-2 mb-6">
@@ -2000,6 +2217,110 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
             </p>
           </div>
         )}
+      </Section>
+
+      {/* Model Version Registry */}
+      <Section
+        title="Versioni Modello LightGBM"
+        description="Storico dei modelli addestrati con metriche OOS. Puoi fare rollback a qualsiasi versione precedente — il bot ricarica il modello automaticamente senza riavvio."
+      >
+        <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <button
+              onClick={() => { setRegistryOpen((o: boolean) => !o); if (!registryOpen) loadModelRegistry(); }}
+              className="flex items-center gap-2 text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors"
+            >
+              <span className={`transition-transform duration-200 ${registryOpen ? 'rotate-90' : ''}`}>▶</span>
+              {registryOpen ? 'Nascondi' : 'Mostra'} versioni ({modelRegistry.length})
+            </button>
+            <button
+              onClick={loadModelRegistry}
+              className="text-[10px] font-medium text-slate-400 dark:text-slate-500 hover:text-indigo-500 dark:hover:text-indigo-400 transition-colors"
+            >
+              ↻ Aggiorna
+            </button>
+          </div>
+
+          {registryOpen && (
+            <div className="space-y-2">
+              {modelRegistry.length === 0 ? (
+                <p className="text-[11px] text-slate-400 dark:text-slate-500 py-3 text-center">
+                  Nessun modello nel registry. Esegui un retrain per iniziare a tracciare le versioni.
+                </p>
+              ) : (
+                [...modelRegistry].reverse().map((entry, idx) => {
+                  const isLatest = idx === 0;
+                  const date = new Date(entry.trained_at);
+                  const dateStr = date.toLocaleDateString('it-IT', { day: '2-digit', month: '2-digit', year: '2-digit' });
+                  const timeStr = date.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' });
+                  return (
+                    <div
+                      key={entry.filename}
+                      className={`flex items-center gap-3 px-3 py-2.5 rounded-lg border text-[11px] transition-colors ${
+                        isLatest
+                          ? 'bg-indigo-50 dark:bg-indigo-500/10 border-indigo-200 dark:border-indigo-500/30'
+                          : 'bg-slate-50 dark:bg-white/[0.03] border-slate-100 dark:border-white/8'
+                      }`}
+                    >
+                      {/* Date/time */}
+                      <div className="flex-shrink-0 text-center min-w-[52px]">
+                        <div className={`font-mono font-bold ${isLatest ? 'text-indigo-600 dark:text-indigo-400' : 'text-slate-700 dark:text-slate-300'}`}>{dateStr}</div>
+                        <div className="text-[10px] text-slate-400 dark:text-slate-500 font-mono">{timeStr}</div>
+                      </div>
+
+                      <div className="w-px h-7 bg-slate-200 dark:bg-white/10 flex-shrink-0" />
+
+                      {/* Metrics */}
+                      <div className="flex-1 flex items-center gap-3 flex-wrap">
+                        {entry.oos_accuracy !== undefined && (
+                          <span className={`font-mono font-bold ${entry.oos_accuracy >= 0.55 ? 'text-emerald-600 dark:text-emerald-400' : entry.oos_accuracy >= 0.50 ? 'text-amber-500 dark:text-amber-400' : 'text-rose-500 dark:text-rose-400'}`}>
+                            {(entry.oos_accuracy * 100).toFixed(1)}%
+                            <span className="text-[9px] font-normal text-slate-400 dark:text-slate-500 ml-0.5">OOS</span>
+                          </span>
+                        )}
+                        {entry.oos_log_loss !== undefined && (
+                          <span className="text-slate-500 dark:text-slate-400 font-mono">
+                            LL <span className="font-bold">{entry.oos_log_loss.toFixed(3)}</span>
+                          </span>
+                        )}
+                        {entry.n_features !== undefined && (
+                          <span className="text-slate-400 dark:text-slate-500">{entry.n_features} feat</span>
+                        )}
+                        {entry.train_rows !== undefined && (
+                          <span className="text-slate-400 dark:text-slate-500">{entry.train_rows} bar</span>
+                        )}
+                        {entry.neutral_excluded_pct !== undefined && (
+                          <span className="text-slate-400 dark:text-slate-500">{entry.neutral_excluded_pct.toFixed(0)}% neutri</span>
+                        )}
+                      </div>
+
+                      {/* Badge + rollback */}
+                      <div className="flex items-center gap-2 flex-shrink-0">
+                        {isLatest && (
+                          <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-indigo-100 dark:bg-indigo-500/20 text-indigo-600 dark:text-indigo-400 uppercase tracking-wider">
+                            Attivo
+                          </span>
+                        )}
+                        {!isLatest && (
+                          <button
+                            onClick={() => handleRollback(entry.filename)}
+                            disabled={rollingBack !== null}
+                            className="px-2 py-1 rounded text-[10px] font-bold bg-slate-100 dark:bg-white/8 text-slate-600 dark:text-slate-300 hover:bg-indigo-100 dark:hover:bg-indigo-500/20 hover:text-indigo-600 dark:hover:text-indigo-400 border border-slate-200 dark:border-white/10 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                          >
+                            {rollingBack === entry.filename ? '…' : '↩ Rollback'}
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+              <p className="text-[10px] text-slate-400 dark:text-slate-500 leading-relaxed pt-1">
+                Max 10 versioni conservate. Dopo il rollback, il bot ricarica il modello senza interruzioni. Per tornare all'ultima versione, esegui un nuovo retrain.
+              </p>
+            </div>
+          )}
+        </div>
       </Section>
 
       {/* Feature Importance Pruning */}

@@ -44,6 +44,10 @@ RETRAIN_INTERVAL = 120  # default — ora configurabile via BotConfig.retrain_ev
 
 CIRCUIT_BREAKER_THRESHOLD = 5   # stop bot after N consecutive cycle errors
 
+# Concept drift: check every N cycles (~4 days on 4H), cooldown 24h between retrains
+DRIFT_CHECK_INTERVAL     = 24
+DRIFT_RETRAIN_COOLDOWN_H = 24
+
 
 # ── Config dataclass ──────────────────────────────────────────────────────────
 
@@ -106,6 +110,26 @@ class BotConfig:
         # Signal quality filters
         self.exhaustion_guard_enabled  = kw.get("exhaustion_guard_enabled",  True)
         self.structural_sl_enabled     = kw.get("structural_sl_enabled",     True)
+        # Structural SL/TP — OB, FVG, Swing (C4: were missing, silently lost on restart)
+        self.ob_buffer_pct             = kw.get("ob_buffer_pct",             0.3)
+        self.ob_buffer_min_atr         = kw.get("ob_buffer_min_atr",         0.0)
+        self.ob_tp_enabled             = kw.get("ob_tp_enabled",             False)
+        self.ob_tp_blend               = kw.get("ob_tp_blend",               1.0)
+        self.fvg_sl_enabled            = kw.get("fvg_sl_enabled",            False)
+        self.fvg_tp_enabled            = kw.get("fvg_tp_enabled",            False)
+        self.fvg_tp_blend              = kw.get("fvg_tp_blend",              1.0)
+        self.swing_sl_enabled          = kw.get("swing_sl_enabled",          False)
+        self.swing_tp_enabled          = kw.get("swing_tp_enabled",          False)
+        self.swing_tp_blend            = kw.get("swing_tp_blend",            1.0)
+        # Signal quality — entry filters (C4b: were missing, caused AttributeError on direct access)
+        self.dual_atr_enabled          = kw.get("dual_atr_enabled",          False)
+        self.late_entry_filter_enabled = kw.get("late_entry_filter_enabled", False)
+        self.late_entry_max_ob_dist    = kw.get("late_entry_max_ob_dist",    3.0)
+        self.path_obstruction_enabled  = kw.get("path_obstruction_enabled",  False)
+        self.path_obstruction_max_dist = kw.get("path_obstruction_max_dist", 1.5)
+        self.consec_bars_filter_enabled= kw.get("consec_bars_filter_enabled",False)
+        self.consec_bars_max_long      = kw.get("consec_bars_max_long",      8)
+        self.consec_bars_max_short     = kw.get("consec_bars_max_short",     8)
         # Walk-forward & retraining parameters
         self.retrain_every_n_cycles  = kw.get("retrain_every_n_cycles",  120)
         self.wf_n_splits             = kw.get("wf_n_splits",             5)
@@ -117,6 +141,9 @@ class BotConfig:
         self.use_chronos_calibration        = kw.get("use_chronos_calibration",        False)
         # Gate LightGBM 1H — confirmation model on 1H timeframe
         self.use_1h_lgbm_gate               = kw.get("use_1h_lgbm_gate",               False)
+        # Optuna hyperparameter tuning (manual/deep retrains only — skipped for auto/drift)
+        self.use_optuna                     = kw.get("use_optuna",                     False)
+        self.optuna_n_trials                = kw.get("optuna_n_trials",                50)
         self.lgbm_1h_min_agreement          = kw.get("lgbm_1h_min_agreement",          0.52)
         self.lgbm_1h_block_threshold        = kw.get("lgbm_1h_block_threshold",        0.45)
         # Macro Event Pause — block new entries (and optionally close) during high-impact events
@@ -182,9 +209,11 @@ class ExecutionEngine:
         self._consecutive_errors: int   = 0
         self._retrain_task: Optional[asyncio.Task] = None
         self._task: Optional[asyncio.Task]         = None
-        self._last_retrain_metrics: Optional[dict] = None
-        self._last_cycle_signals:   Optional[dict] = None
-        self._macro_pause_active:   Optional[str]  = None
+        self._last_retrain_metrics: Optional[dict]     = None
+        self._last_cycle_signals:   Optional[dict]     = None
+        self._macro_pause_active:   Optional[str]      = None
+        self._last_drift_retrain:   Optional[datetime] = None
+        self._last_drift_result:    Optional[dict]     = None
 
         # Economic calendar (loaded once at startup)
         from services.economic_calendar import get_calendar
@@ -541,6 +570,7 @@ class ExecutionEngine:
             "macro_pause_active":       self._macro_pause_active,
             "config":                   self.config.model_dump(),
             "regime_signal":            regime_data,
+            "last_drift_check":         self._last_drift_result,
         }
 
     # ── Main Loop ─────────────────────────────────────────────────────────────
@@ -1034,6 +1064,10 @@ class ExecutionEngine:
         if self._cycle_count % self.config.retrain_every_n_cycles == 0:
             asyncio.create_task(self._retrain_background())
 
+        # 12. Concept drift check (background — every DRIFT_CHECK_INTERVAL cycles)
+        if self._cycle_count % DRIFT_CHECK_INTERVAL == 0:
+            asyncio.create_task(self._drift_check_background())
+
         # Store latest signal snapshot for status endpoint and Monitor UI
         self._last_cycle_signals = {
             "action":       result.action,
@@ -1147,24 +1181,108 @@ class ExecutionEngine:
         except Exception as exc:
             log.error("Retraining failed: %s", exc, exc_info=True)
 
-    async def retrain_manual(self) -> dict:
+    async def _drift_check_background(self):
+        """
+        Runs check_drift() in background every DRIFT_CHECK_INTERVAL cycles.
+        If drift is detected and the DRIFT_RETRAIN_COOLDOWN_H window has passed,
+        triggers an emergency retrain and logs a 'concept_drift' event to Supabase.
+        """
+        try:
+            result = await self._trainer.check_drift(SYMBOL, use_pruning=self.config.use_feature_pruning)
+            self._last_drift_result = {**result, "checked_at": datetime.now(timezone.utc).isoformat()}
+
+            if not result.get("drift"):
+                log.info(
+                    "Drift check OK: ll=%.4f (threshold=%.4f) [%d samples]",
+                    result.get("recent_ll", 0.0),
+                    result.get("threshold", 0.0),
+                    result.get("n_samples", 0),
+                )
+                return
+
+            # Drift detected — enforce cooldown to avoid retrain storms
+            now = datetime.now(timezone.utc)
+            if (
+                self._last_drift_retrain is not None
+                and (now - self._last_drift_retrain).total_seconds() < DRIFT_RETRAIN_COOLDOWN_H * 3600
+            ):
+                log.warning(
+                    "Concept drift detected (ll=%.4f > %.4f) — cooldown active, skipping retrain",
+                    result["recent_ll"], result["threshold"],
+                )
+                return
+
+            log.warning(
+                "Concept drift detected (ll=%.4f > %.4f) — triggering emergency retrain (cycle %d)",
+                result["recent_ll"], result["threshold"], self._cycle_count,
+            )
+
+            # Persist drift event to Supabase for UI visibility
+            try:
+                db = get_supabase()
+                db.table("events").insert({
+                    "severity": "warning",
+                    "kind":     "concept_drift",
+                    "message":  (
+                        f"Concept drift: ll={result['recent_ll']:.4f} > "
+                        f"threshold={result['threshold']:.4f}. Emergency retrain triggered."
+                    ),
+                    "payload":  {**result, "cycle": self._cycle_count},
+                }).execute()
+            except Exception:
+                pass
+
+            self._last_drift_retrain = now
+            metrics = await self._trainer.retrain(
+                SYMBOL,
+                lookback_candles=500,
+                wf_n_splits=self.config.wf_n_splits,
+                wf_purge_gap=self.config.wf_purge_gap,
+                use_feature_pruning=self.config.use_feature_pruning,
+                feature_pruning_min_importance=self.config.feature_pruning_min_importance,
+                use_chronos_calibration=self.config.use_chronos_calibration,
+                use_1h_lgbm_gate=self.config.use_1h_lgbm_gate,
+            )
+            if metrics.get("status") == "ok":
+                await self._reload_model_after_retrain(metrics, trigger="drift")
+            elif metrics.get("status") == "busy":
+                log.info("Drift retrain skipped — another retrain already in progress")
+
+        except Exception as exc:
+            log.error("Drift check failed: %s", exc, exc_info=True)
+
+    async def retrain_manual(
+        self,
+        from_date: Optional[str] = None,
+        use_optuna_override: Optional[bool] = None,
+        optuna_n_trials_override: Optional[int] = None,
+    ) -> dict:
         """
         Manual retrain triggered from the UI.
-        Blocks until complete (~10-30s) and returns the metrics dict.
+        from_date: "YYYY-MM-DD" for deep training (uses Binance historical data).
+        use_optuna_override / optuna_n_trials_override: per-request overrides that take
+          precedence over config values without mutating engine.config permanently.
+          Auto/drift retrains always pass use_optuna=False (speed priority).
         Returns {"status": "busy"} immediately if a retrain is already in progress.
         """
+        use_optuna      = use_optuna_override      if use_optuna_override      is not None else self.config.use_optuna
+        optuna_n_trials = optuna_n_trials_override if optuna_n_trials_override is not None else self.config.optuna_n_trials
+
         metrics = await self._trainer.retrain(
             SYMBOL,
             lookback_candles=500,
+            from_date=from_date,
             wf_n_splits=self.config.wf_n_splits,
             wf_purge_gap=self.config.wf_purge_gap,
             use_feature_pruning=self.config.use_feature_pruning,
             feature_pruning_min_importance=self.config.feature_pruning_min_importance,
             use_chronos_calibration=self.config.use_chronos_calibration,
             use_1h_lgbm_gate=self.config.use_1h_lgbm_gate,
+            use_optuna=use_optuna,
+            optuna_n_trials=optuna_n_trials,
         )
         if metrics.get("status") == "ok":
-            await self._reload_model_after_retrain(metrics, trigger="manual")
+            await self._reload_model_after_retrain(metrics, trigger="manual" if not from_date else "deep")
         return metrics
 
     # ── Position management ───────────────────────────────────────────────────

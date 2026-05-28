@@ -9,6 +9,7 @@ import asyncio
 import json
 import logging
 import pickle
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -21,12 +22,23 @@ from sklearn.metrics import accuracy_score, log_loss
 from services.hyperliquid_data import HyperliquidData
 from services.smc import build_all_features, ALL_FEATURES
 
+try:
+    import optuna as _optuna
+    _optuna.logging.set_verbosity(_optuna.logging.WARNING)
+    _OPTUNA_AVAILABLE = True
+except ImportError:
+    _optuna = None  # type: ignore[assignment]
+    _OPTUNA_AVAILABLE = False
+
 log = logging.getLogger(__name__)
 
-MODEL_DIR         = Path(__file__).parent.parent / "models"
-MODEL_PATH        = MODEL_DIR / "lgbm_latest.pkl"
-PRUNED_MODEL_PATH = MODEL_DIR / "lgbm_pruned.pkl"
-MODEL_1H_PATH     = MODEL_DIR / "lgbm_1h_latest.pkl"
+MODEL_DIR              = Path(__file__).parent.parent / "models"
+MODEL_PATH             = MODEL_DIR / "lgbm_latest.pkl"
+PRUNED_MODEL_PATH      = MODEL_DIR / "lgbm_pruned.pkl"
+MODEL_1H_PATH          = MODEL_DIR / "lgbm_1h_latest.pkl"
+DRIFT_BASELINE_PATH    = MODEL_DIR / "drift_baseline.json"
+MODEL_REGISTRY_PATH    = MODEL_DIR / "model_registry.json"
+MODEL_REGISTRY_MAX_VERSIONS = 10  # versioned pkl files to keep on disk
 
 # Chronos-2 features are inference-time only — not available for historical retraining.
 # These names MUST match FEATURE_GROUPS["c2"] in smc.py exactly.
@@ -52,18 +64,141 @@ _LGB_PARAMS = dict(
 # Safety: never retrain concurrently
 _retrain_lock = asyncio.Lock()
 
+# ── Optuna hyperparameter search ──────────────────────────────────────────────
+OPTUNA_N_TRIALS_DEFAULT = 50
+
+
+def _optuna_objective(
+    trial,
+    X: pd.DataFrame,
+    y: pd.Series,
+    wf_n_splits: int,
+    wf_purge_gap: int,
+) -> float:
+    """
+    Objective for Optuna: avg WF log-loss over 3 fast folds with trial params.
+    n_estimators is capped at 300 here; the real value is derived from best_iteration_
+    in the main WF CV that runs after tuning with the winning params.
+    """
+    trial_params = {
+        "num_leaves":        trial.suggest_int("num_leaves",        15, 63),
+        "max_depth":         trial.suggest_int("max_depth",         3, 8),
+        "min_child_samples": trial.suggest_int("min_child_samples", 10, 60),
+        "subsample":         trial.suggest_float("subsample",        0.5, 1.0),
+        "colsample_bytree":  trial.suggest_float("colsample_bytree", 0.5, 1.0),
+        "reg_alpha":         trial.suggest_float("reg_alpha",        1e-3, 1.0, log=True),
+        "reg_lambda":        trial.suggest_float("reg_lambda",       1e-3, 1.0, log=True),
+        "learning_rate":     trial.suggest_float("learning_rate",    0.01, 0.1, log=True),
+        "n_estimators":      300,
+    }
+    n_folds = min(3, wf_n_splits)
+    folds = _walk_forward_splits(
+        X, y,
+        n_splits=n_folds,
+        purge_gap=wf_purge_gap,
+        params_override=trial_params,
+    )
+    if not folds:
+        return 1.0
+    return float(np.mean([f["log_loss"] for f in folds]))
+
+
+async def _run_optuna_tuning(
+    X: pd.DataFrame,
+    y: pd.Series,
+    wf_n_splits: int,
+    wf_purge_gap: int,
+    n_trials: int = OPTUNA_N_TRIALS_DEFAULT,
+) -> dict:
+    """
+    Bayesian hyperparameter search via Optuna TPE sampler.
+    Runs in a ThreadPoolExecutor to avoid blocking the async event loop.
+    Returns {"params": {...}, "best_ll": float, "n_trials": int}
+    or {} when Optuna is not installed.
+    """
+    if not _OPTUNA_AVAILABLE:
+        log.warning("Optuna not installed — skipping hyperparameter tuning. Run: pip install optuna")
+        return {}
+
+    log.info("Optuna tuning: %d trials × 3-fold fast CV (estimating best params before main WF CV)", n_trials)
+
+    study = _optuna.create_study(
+        direction="minimize",
+        sampler=_optuna.samplers.TPESampler(seed=42),
+    )
+
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(
+        None,
+        lambda: study.optimize(
+            lambda trial: _optuna_objective(trial, X, y, wf_n_splits, wf_purge_gap),
+            n_trials=n_trials,
+            show_progress_bar=False,
+        ),
+    )
+
+    best_params = study.best_params
+    best_value  = study.best_value
+    log.info(
+        "Optuna done: best_ll=%.4f (trial %d/%d) | num_leaves=%d max_depth=%d lr=%.4f",
+        best_value,
+        study.best_trial.number + 1,
+        n_trials,
+        best_params.get("num_leaves", 0),
+        best_params.get("max_depth", 0),
+        best_params.get("learning_rate", 0),
+    )
+    return {
+        "params":   best_params,
+        "best_ll":  round(best_value, 4),
+        "n_trials": n_trials,
+    }
+
+
+def _update_model_registry(entry: dict) -> int:
+    """
+    Append a versioned model entry to model_registry.json.
+    Prunes the oldest versioned pkl file and registry entry when the count
+    exceeds MODEL_REGISTRY_MAX_VERSIONS.
+    Returns the total number of entries in the registry after the update.
+    """
+    MODEL_REGISTRY_PATH.parent.mkdir(exist_ok=True)
+    if MODEL_REGISTRY_PATH.exists():
+        with open(MODEL_REGISTRY_PATH) as _f:
+            registry = json.load(_f)
+    else:
+        registry = {"models": []}
+
+    registry["models"].append(entry)
+
+    # Prune oldest entries + their pkl files when over the limit
+    while len(registry["models"]) > MODEL_REGISTRY_MAX_VERSIONS:
+        oldest = registry["models"].pop(0)
+        old_path = MODEL_DIR / oldest["filename"]
+        if old_path.exists():
+            old_path.unlink()
+            log.info("Model registry: pruned old version %s", oldest["filename"])
+
+    with open(MODEL_REGISTRY_PATH, "w") as _f:
+        json.dump(registry, _f, indent=2)
+
+    return len(registry["models"])
+
 
 def _walk_forward_splits(
     X: pd.DataFrame,
     y: pd.Series,
     n_splits: int = 5,
     purge_gap: int = 5,
+    params_override: Optional[dict] = None,
 ) -> list[dict]:
     """
     Expanding window walk-forward CV with purge gap.
     purge_gap: candele escluse tra train_end e val_start — elimina autocorrelazione
     temporale su serie finanziarie (look-ahead bias). Ogni fold espande il training set.
+    params_override: when set (e.g. from Optuna), overrides the base _LGB_PARAMS.
     """
+    params    = {**_LGB_PARAMS, **(params_override or {})}
     n         = len(X)
     min_train = int(n * 0.40)
     step      = max(1, (n - min_train - purge_gap * n_splits) // n_splits)
@@ -79,7 +214,7 @@ def _walk_forward_splits(
         X_tr, y_tr   = X.iloc[:train_end], y.iloc[:train_end]
         X_val, y_val = X.iloc[val_start:val_end], y.iloc[val_start:val_end]
 
-        m = lgb.LGBMClassifier(**_LGB_PARAMS)
+        m = lgb.LGBMClassifier(**params)
         m.fit(
             X_tr, y_tr,
             eval_set=[(X_val, y_val)],
@@ -90,11 +225,12 @@ def _walk_forward_splits(
         fold_ll  = float(log_loss(y_val, y_prob))
         fold_acc = float(accuracy_score(y_val, (y_prob > 0.5).astype(int)))
         results.append({
-            "fold":     i,
-            "train_n":  len(X_tr),
-            "val_n":    len(X_val),
-            "log_loss": round(fold_ll, 4),
-            "accuracy": round(fold_acc, 4),
+            "fold":           i,
+            "train_n":        len(X_tr),
+            "val_n":          len(X_val),
+            "log_loss":       round(fold_ll, 4),
+            "accuracy":       round(fold_acc, 4),
+            "best_iteration": getattr(m, "best_iteration_", None),
         })
         log.info(
             "WF fold %d/%d: train=%d val=%d acc=%.2f%% ll=%.4f",
@@ -112,15 +248,22 @@ class LGBMTrainer:
         self,
         symbol:                        str   = "BTC",
         lookback_candles:              int   = 500,
+        from_date:                     Optional[str] = None,
         wf_n_splits:                   int   = 5,
         wf_purge_gap:                  int   = 5,
         use_feature_pruning:           bool  = False,
         feature_pruning_min_importance: float = 0.005,
         use_chronos_calibration:       bool  = False,
         use_1h_lgbm_gate:              bool  = False,
+        use_optuna:                    bool  = False,
+        optuna_n_trials:               int   = OPTUNA_N_TRIALS_DEFAULT,
     ) -> dict:
         """
         Full retraining pipeline. Returns metrics dict.
+        from_date: "YYYY-MM-DD" — if set, fetches from Binance from that date to today
+                   instead of the last lookback_candles from HL.
+        use_optuna: when True, runs Bayesian hyperparameter search before the main WF CV.
+                    Adds ~3-8 min per retrain. Recommended for deep retrains only.
         Blocks if another retrain is in progress (returns immediately with status='busy').
         """
         if _retrain_lock.locked():
@@ -129,30 +272,45 @@ class LGBMTrainer:
 
         async with _retrain_lock:
             return await self._run(
-                symbol, lookback_candles, wf_n_splits, wf_purge_gap,
+                symbol, lookback_candles, from_date, wf_n_splits, wf_purge_gap,
                 use_feature_pruning, feature_pruning_min_importance,
                 use_chronos_calibration, use_1h_lgbm_gate,
+                use_optuna, optuna_n_trials,
             )
 
     async def _run(
         self,
         symbol:                        str,
         lookback_candles:              int,
+        from_date:                     Optional[str] = None,
         wf_n_splits:                   int   = 5,
         wf_purge_gap:                  int   = 5,
         use_feature_pruning:           bool  = False,
         feature_pruning_min_importance: float = 0.005,
         use_chronos_calibration:       bool  = False,
         use_1h_lgbm_gate:              bool  = False,
+        use_optuna:                    bool  = False,
+        optuna_n_trials:               int   = OPTUNA_N_TRIALS_DEFAULT,
     ) -> dict:
         t0 = datetime.now(timezone.utc)
-        log.info("LightGBM retraining started (lookback=%d candles)", lookback_candles)
 
         # ── 1. Fetch data ────────────────────────────────────────────────────
-        # Fetch extra candles to account for feature warm-up (indicators need ~64 bars)
-        fetch_n = lookback_candles + 128
-        df_ohlcv = await self._hl.get_ohlcv(symbol, "4h", limit=fetch_n)
-        df_fund  = await self._hl.get_funding_history(symbol, hours=fetch_n * 4)
+        if from_date:
+            from services.binance_data import get_ohlcv_binance
+            df_ohlcv = await get_ohlcv_binance(symbol, "4h", start_date=from_date)
+            log.info(
+                "Deep training: Binance OHLCV from %s — %d candles",
+                from_date, len(df_ohlcv),
+            )
+        else:
+            fetch_n  = lookback_candles + 128
+            df_ohlcv = await self._hl.get_ohlcv(symbol, "4h", limit=fetch_n)
+
+        log.info("LightGBM retraining started (%d OHLCV candles)", len(df_ohlcv))
+
+        # Funding history — HL only stores ~330 days; older bars will have 0 funding.
+        fund_hours = min(len(df_ohlcv) * 4 + 128, 8760)
+        df_fund    = await self._hl.get_funding_history(symbol, hours=fund_hours)
 
         # ── 2. Build features ────────────────────────────────────────────────
         df_feat = build_all_features(
@@ -160,24 +318,40 @@ class LGBMTrainer:
             pd.DataFrame(), pd.DataFrame()  # OI/liq placeholders (fetched live in prod)
         )
 
-        # ── 3. Target: next candle direction (1 = up, 0 = down) ─────────────
-        df_feat["_target"] = (df_feat["close"].shift(-1) > df_feat["close"]).astype(int)
+        # ── 3. Target: ATR-threshold direction ──────────────────────────────
+        # Label a candle 1 (up) only if the next close is > k×ATR above current,
+        # 0 (down) if > k×ATR below. Flat moves (|ret| < k×ATR_pct) are set to NaN
+        # and excluded from training — the model never learns to predict noise.
+        _atr_pct = df_feat["atr_14"] / df_feat["close"].replace(0, np.nan)
+        _fut_ret = df_feat["close"].shift(-1) / df_feat["close"].replace(0, np.nan) - 1
+        _k = 0.3
+        df_feat["_target"] = np.where(
+            _fut_ret > _k * _atr_pct, 1,
+            np.where(_fut_ret < -_k * _atr_pct, 0, np.nan),
+        )
 
         # Select only LGBM features that actually exist in the dataframe
         available = [f for f in LGBM_FEATURES if f in df_feat.columns]
 
         # Fill NaN in sparse features (funding, OI, liq) with 0 before dropping rows.
-        # These columns may be legitimately empty for some candles and must not
-        # cause entire rows to be eliminated by dropna.
         df_feat[available] = df_feat[available].fillna(0)
 
-        # Only require _target (last candle has NaN target — that's the only real drop)
-        df_clean = df_feat.dropna(subset=["_target"]).copy()
-        df_clean = df_clean.iloc[64:]  # skip indicator warm-up rows
+        # Skip warmup rows (indicators need ~64 bars to stabilise)
+        df_clean = df_feat.iloc[64:].copy()
 
-        # Trim to requested lookback
-        if len(df_clean) > lookback_candles:
+        # Trim to requested lookback only for short-history retrains.
+        # Deep training (from_date set) uses the full dataset.
+        if not from_date and len(df_clean) > lookback_candles:
             df_clean = df_clean.iloc[-lookback_candles:]
+
+        # Remove neutral bars and the last candle (no future target)
+        n_before = len(df_clean)
+        df_clean = df_clean.dropna(subset=["_target"]).copy()
+        n_excluded = n_before - len(df_clean)
+        log.info(
+            "Target filter (k=%.1f×ATR): %d/%d bars excluded as neutral (%.1f%%)",
+            _k, n_excluded, n_before, 100.0 * n_excluded / max(n_before, 1),
+        )
 
         if len(df_clean) < 100:
             raise ValueError(f"Insufficient clean rows for training: {len(df_clean)}")
@@ -186,8 +360,27 @@ class LGBMTrainer:
         y = df_clean["_target"]
         log.info("Training set: %d rows × %d features", len(X), len(available))
 
+        # ── 3.5 Optional Optuna hyperparameter search ────────────────────────
+        # Runs BEFORE the main WF CV so that CV and final model both use tuned params.
+        # Skipped for drift/auto retrains (use_optuna=False) to keep them fast.
+        optuna_result: Optional[dict] = None
+        tuned_params:  Optional[dict] = None
+        if use_optuna:
+            optuna_result = await _run_optuna_tuning(X, y, wf_n_splits, wf_purge_gap, optuna_n_trials)
+            tuned_params  = optuna_result.get("params") if optuna_result else None
+            if tuned_params:
+                log.info(
+                    "Optuna params accepted: num_leaves=%d max_depth=%d lr=%.4f — will use for WF CV and final model",
+                    tuned_params.get("num_leaves", 0),
+                    tuned_params.get("max_depth", 0),
+                    tuned_params.get("learning_rate", 0),
+                )
+            else:
+                log.warning("Optuna returned no params (not installed?) — using default _LGB_PARAMS")
+
         # ── 4. Purged walk-forward CV (OOS reale senza look-ahead bias) ──────
-        wf_results = _walk_forward_splits(X, y, n_splits=wf_n_splits, purge_gap=wf_purge_gap)
+        # Uses tuned_params if Optuna ran, otherwise falls back to default _LGB_PARAMS.
+        wf_results = _walk_forward_splits(X, y, n_splits=wf_n_splits, purge_gap=wf_purge_gap, params_override=tuned_params)
         wf_ll  = float(np.mean([r["log_loss"]  for r in wf_results])) if wf_results else None
         wf_acc = float(np.mean([r["accuracy"]  for r in wf_results])) if wf_results else None
         log.info(
@@ -195,35 +388,87 @@ class LGBMTrainer:
             (wf_acc or 0) * 100, wf_ll or 0, len(wf_results),
         )
 
-        # ── 5. Train finale — 80/20 split usato solo per l'early stopping ───
-        split   = int(len(X) * 0.80)
-        X_tr, X_val = X.iloc[:split], X.iloc[split:]
-        y_tr, y_val = y.iloc[:split], y.iloc[split:]
+        # ── 5. Derive optimal n_estimators from WF CV ────────────────────────
+        # Average best_iteration across folds — no fixed holdout needed.
+        # Early stopping was already measured honestly on OOS fold data.
+        best_iters = [r["best_iteration"] for r in wf_results if r.get("best_iteration")]
+        best_n_trees = int(np.mean(best_iters)) if best_iters else _LGB_PARAMS["n_estimators"]
+        log.info("WF-derived n_estimators: %d (avg of %d folds)", best_n_trees, len(best_iters))
 
-        # ── 6. Train ─────────────────────────────────────────────────────────
-        model = lgb.LGBMClassifier(**_LGB_PARAMS)
-        model.fit(
-            X_tr, y_tr,
-            eval_set=[(X_val, y_val)],
-            callbacks=[
-                lgb.early_stopping(50, verbose=False),
-                lgb.log_evaluation(0),
-            ],
-        )
+        # Internal 80/20 split — used ONLY for feature pruning eval, not for OOS metrics.
+        _split = int(len(X) * 0.80)
+        X_tr_prune, X_val_prune = X.iloc[:_split], X.iloc[_split:]
+        y_tr_prune, y_val_prune = y.iloc[:_split], y.iloc[_split:]
 
-        # ── 7. OOS metrics (split 80/20) ─────────────────────────────────────
-        y_pred    = model.predict(X_val)
-        y_prob    = model.predict_proba(X_val)[:, 1]
-        oos_acc   = float(accuracy_score(y_val, y_pred))
-        oos_ll    = float(log_loss(y_val, y_prob))
+        # ── 6. Train final model on ALL data ─────────────────────────────────
+        # n_estimators fixed from WF CV — no early stopping, no wasted holdout.
+        # Exponential decay weights: oldest ≈ 0.05, most recent = 1.0.
+        n_all = len(X)
+        sample_weights_all = np.exp(np.linspace(np.log(0.05), 0.0, n_all))
 
-        # ── 8. Save full model ────────────────────────────────────────────────
+        # Merge: base params ← Optuna tuned params ← WF-derived n_estimators (highest priority)
+        final_params = {**_LGB_PARAMS, **(tuned_params or {}), "n_estimators": best_n_trees}
+        model = lgb.LGBMClassifier(**final_params)
+        model.fit(X, y, sample_weight=sample_weights_all)
+
+        # ── 7. OOS metrics — last WF fold (most recent market, no look-ahead) ─
+        last_fold = wf_results[-1] if wf_results else {}
+        oos_acc   = float(last_fold.get("accuracy", 0.0))
+        oos_ll    = float(last_fold.get("log_loss",  0.0))
+
+        # ── 8. Save drift baseline ───────────────────────────────────────────
+        # Threshold = WF avg_ll + max(2×std, 0.05).
+        # The 0.05 floor prevents hair-trigger alerts when all folds were very similar.
+        # Only written when WF CV produced at least one fold (guards against empty results).
+        wf_lls    = [r["log_loss"] for r in wf_results] if wf_results else []
+        wf_std_ll = float(np.std(wf_lls)) if len(wf_lls) >= 2 else 0.05
+        _base_ll  = wf_ll if wf_ll is not None else oos_ll
+        if wf_results and _base_ll > 0:
+            drift_threshold = _base_ll + max(2.0 * wf_std_ll, 0.05)
+            MODEL_DIR.mkdir(exist_ok=True)
+            with open(DRIFT_BASELINE_PATH, "w") as _f:
+                json.dump({
+                    "trained_at":      t0.isoformat(),
+                    "wf_avg_log_loss": round(_base_ll,       4),
+                    "wf_std_log_loss": round(wf_std_ll,      4),
+                    "threshold":       round(drift_threshold, 4),
+                    "wf_avg_accuracy": round(wf_acc if wf_acc is not None else oos_acc, 4),
+                }, _f, indent=2)
+            log.info(
+                "Drift baseline saved: avg_ll=%.4f ± %.4f → threshold=%.4f",
+                _base_ll, wf_std_ll, drift_threshold,
+            )
+        else:
+            log.warning("Drift baseline not saved: WF CV produced no folds or baseline_ll=0")
+
+        # ── 9. Save full model (backup + versioned copy + registry) ────────
         MODEL_DIR.mkdir(exist_ok=True)
+        if MODEL_PATH.exists():
+            shutil.copy2(MODEL_PATH, MODEL_PATH.with_name("lgbm_latest.bak.pkl"))
         payload = {"model": model, "features": available}
         with open(MODEL_PATH, "wb") as f:
             pickle.dump(payload, f)
 
-        # ── 9. Feature importance JSON (always saved, used by UI endpoint) ────
+        # Versioned copy: lgbm_YYYYMMDDTHHMMSSZ.pkl — enables rollback to any past model
+        _ts_str      = t0.strftime("%Y%m%dT%H%M%SZ")
+        _version_path = MODEL_DIR / f"lgbm_{_ts_str}.pkl"
+        shutil.copy2(MODEL_PATH, _version_path)
+        _n_versions = _update_model_registry({
+            "filename":             _version_path.name,
+            "trained_at":           t0.isoformat(),
+            "oos_accuracy":         round(oos_acc, 4),
+            "oos_log_loss":         round(oos_ll, 4),
+            "wf_avg_accuracy":      round(wf_acc, 4) if wf_acc is not None else None,
+            "wf_avg_log_loss":      round(wf_ll,  4) if wf_ll  is not None else None,
+            "n_features":           len(available),
+            "train_rows":           n_all,
+            "best_iteration":       best_n_trees,
+            "neutral_excluded_pct": round(100.0 * n_excluded / max(n_before, 1), 1),
+            "optuna_best_ll":       optuna_result.get("best_ll") if optuna_result else None,
+        })
+        log.info("Model versioned as %s (registry: %d/%d)", _version_path.name, _n_versions, MODEL_REGISTRY_MAX_VERSIONS)
+
+        # ── 10. Feature importance JSON (always saved, used by UI endpoint) ───
         importances = model.feature_importances_
         total_imp   = importances.sum() or 1.0
         imp_dict    = {
@@ -236,24 +481,28 @@ class LGBMTrainer:
             json.dump({"trained_at": t0.isoformat(), "features": imp_dict}, f, indent=2)
         log.info("Feature importance saved (%d features)", len(imp_dict))
 
-        # ── 10. Optional feature pruning ──────────────────────────────────────
+        # ── 11. Optional feature pruning ──────────────────────────────────────
         prune_metrics: Optional[dict] = None
         if use_feature_pruning:
             _, _, prune_metrics = self._build_pruned_model(
-                model, X_tr, y_tr, X_val, y_val,
+                model, X_tr_prune, y_tr_prune, X_val_prune, y_val_prune,
                 threshold=feature_pruning_min_importance,
             )
 
-        # ── 11. Optional Chronos calibration ──────────────────────────────────
+        # ── 12. Optional Chronos calibration ──────────────────────────────────
         cal_metrics: Optional[dict] = None
         if use_chronos_calibration:
             cal_metrics = await self.retrain_calibrator()
 
-        # ── 12. Optional 1H gate model retrain ────────────────────────────────
+        # ── 13. Optional 1H gate model retrain ────────────────────────────────
         lgbm_1h_metrics: Optional[dict] = None
         if use_1h_lgbm_gate:
             try:
-                lgbm_1h_metrics = await self.retrain_1h(symbol)
+                lgbm_1h_metrics = await self.retrain_1h(
+                    symbol,
+                    wf_n_splits=wf_n_splits,
+                    wf_purge_gap=wf_purge_gap,
+                )
             except Exception as exc:
                 log.warning("1H gate retrain failed: %s", exc)
                 lgbm_1h_metrics = {"status": "failed", "error": str(exc)}
@@ -263,19 +512,21 @@ class LGBMTrainer:
             "status":          "ok",
             "trained_at":      t0.isoformat(),
             "elapsed_s":       round(elapsed_s, 1),
-            "train_rows":      split,
-            "val_rows":        len(X_val),
+            "train_rows":      n_all,
+            "val_rows":        last_fold.get("val_n", 0),
             "n_features":      len(available),
             "oos_accuracy":    round(oos_acc, 4),
             "oos_log_loss":    round(oos_ll, 4),
-            "best_iteration":  getattr(model, "best_iteration_", None),
+            "best_iteration":  best_n_trees,
             "wf_avg_accuracy": round(wf_acc, 4) if wf_acc is not None else None,
             "wf_avg_log_loss": round(wf_ll,  4) if wf_ll  is not None else None,
             "wf_folds":        wf_results,
-            "wf_n_splits":     wf_n_splits,
-            "wf_purge_gap":    wf_purge_gap,
-            "pruning":         prune_metrics,
-            "calibrator":      cal_metrics,
+            "wf_n_splits":        wf_n_splits,
+            "wf_purge_gap":       wf_purge_gap,
+            "neutral_excluded_pct": round(100.0 * n_excluded / max(n_before, 1), 1),
+            "pruning":            prune_metrics,
+            "calibrator":         cal_metrics,
+            "optuna":             optuna_result,
             "lgbm_1h":         lgbm_1h_metrics,
         }
         log.info(
@@ -309,53 +560,90 @@ class LGBMTrainer:
         self,
         symbol:           str = "BTC",
         lookback_candles: int = 2000,
+        wf_n_splits:      int = 5,
+        wf_purge_gap:     int = 5,
     ) -> dict:
         """
         Train LightGBM on 1H candles as a gate/confirmation model for 4H signals.
-        Uses the same LGBM_FEATURES and build_all_features pipeline.
-        Target: close[+1] > close[0] (1-candle horizon on 1H).
+        Mirrors the 4H pipeline exactly: ATR-threshold target, purged walk-forward CV,
+        WF-derived n_estimators, exponential decay sample weights, full dataset for
+        the final model. OOS metrics come from the last WF fold.
         Saves to models/lgbm_1h_latest.pkl.
         """
         t0 = datetime.now(timezone.utc)
         log.info("1H LightGBM gate training started (lookback=%d candles)", lookback_candles)
 
+        # ── 1. Fetch data ────────────────────────────────────────────────────
         fetch_n  = lookback_candles + 128
         df_ohlcv = await self._hl.get_ohlcv(symbol, "1h", limit=fetch_n)
         df_fund  = await self._hl.get_funding_history(symbol, hours=fetch_n)
+        log.info("1H data fetched: %d candles", len(df_ohlcv))
 
+        # ── 2. Build features ────────────────────────────────────────────────
         df_feat = build_all_features(df_ohlcv, df_fund, pd.DataFrame(), pd.DataFrame())
-        df_feat["_target"] = (df_feat["close"].shift(-1) > df_feat["close"]).astype(int)
+
+        # ── 3. Target: ATR-threshold direction (k=0.3, same as 4H model) ────
+        _atr_pct = df_feat["atr_14"] / df_feat["close"].replace(0, np.nan)
+        _fut_ret  = df_feat["close"].shift(-1) / df_feat["close"].replace(0, np.nan) - 1
+        _k = 0.3
+        df_feat["_target"] = np.where(
+            _fut_ret > _k * _atr_pct, 1,
+            np.where(_fut_ret < -_k * _atr_pct, 0, np.nan),
+        )
 
         available = [f for f in LGBM_FEATURES if f in df_feat.columns]
         df_feat[available] = df_feat[available].fillna(0)
-        df_clean = df_feat.dropna(subset=["_target"]).iloc[64:]
 
+        # Skip warmup rows (indicators need ~64 bars), then trim to lookback
+        df_clean = df_feat.iloc[64:].copy()
         if len(df_clean) > lookback_candles:
             df_clean = df_clean.iloc[-lookback_candles:]
 
+        # Exclude neutral bars
+        n_before   = len(df_clean)
+        df_clean   = df_clean.dropna(subset=["_target"]).copy()
+        n_excluded = n_before - len(df_clean)
+        log.info(
+            "1H target filter (k=%.1f×ATR): %d/%d bars excluded as neutral (%.1f%%)",
+            _k, n_excluded, n_before, 100.0 * n_excluded / max(n_before, 1),
+        )
+
         if len(df_clean) < 200:
-            raise ValueError(f"Insufficient 1H data for training: {len(df_clean)} rows")
+            raise ValueError(f"Insufficient 1H clean rows for training: {len(df_clean)}")
 
         X = df_clean[available]
         y = df_clean["_target"]
         log.info("1H training set: %d rows × %d features", len(X), len(available))
 
-        split        = int(len(X) * 0.80)
-        X_tr, X_val  = X.iloc[:split], X.iloc[split:]
-        y_tr, y_val  = y.iloc[:split], y.iloc[split:]
-
-        model_1h = lgb.LGBMClassifier(**_LGB_PARAMS)
-        model_1h.fit(
-            X_tr, y_tr,
-            eval_set=[(X_val, y_val)],
-            callbacks=[lgb.early_stopping(50, verbose=False), lgb.log_evaluation(0)],
+        # ── 4. Purged walk-forward CV ────────────────────────────────────────
+        wf_results = _walk_forward_splits(X, y, n_splits=wf_n_splits, purge_gap=wf_purge_gap)
+        wf_ll  = float(np.mean([r["log_loss"]  for r in wf_results])) if wf_results else None
+        wf_acc = float(np.mean([r["accuracy"]  for r in wf_results])) if wf_results else None
+        log.info(
+            "1H WF CV: avg_acc=%.2f%% avg_ll=%.4f (%d folds)",
+            (wf_acc or 0) * 100, wf_ll or 0, len(wf_results),
         )
 
-        y_pred_1h = model_1h.predict(X_val)
-        y_prob_1h = model_1h.predict_proba(X_val)[:, 1]
-        oos_acc   = float(accuracy_score(y_val, y_pred_1h))
-        oos_ll    = float(log_loss(y_val, y_prob_1h))
+        # ── 5. Derive optimal n_estimators from WF CV ────────────────────────
+        best_iters   = [r["best_iteration"] for r in wf_results if r.get("best_iteration")]
+        best_n_trees = int(np.mean(best_iters)) if best_iters else _LGB_PARAMS["n_estimators"]
+        log.info("1H WF-derived n_estimators: %d", best_n_trees)
 
+        # ── 6. Train final model on ALL data ─────────────────────────────────
+        # Exponential decay: oldest ≈ 0.05 weight, most recent = 1.0
+        n_all = len(X)
+        sample_weights_all = np.exp(np.linspace(np.log(0.05), 0.0, n_all))
+
+        final_params = {**_LGB_PARAMS, "n_estimators": best_n_trees}
+        model_1h = lgb.LGBMClassifier(**final_params)
+        model_1h.fit(X, y, sample_weight=sample_weights_all)
+
+        # ── 7. OOS metrics — last WF fold (most recent, no look-ahead) ───────
+        last_fold = wf_results[-1] if wf_results else {}
+        oos_acc   = float(last_fold.get("accuracy", 0.0))
+        oos_ll    = float(last_fold.get("log_loss",  0.0))
+
+        # ── 8. Save model ─────────────────────────────────────────────────────
         MODEL_DIR.mkdir(exist_ok=True)
         payload = {"model": model_1h, "features": available}
         with open(MODEL_1H_PATH, "wb") as f:
@@ -363,20 +651,104 @@ class LGBMTrainer:
 
         elapsed_s = (datetime.now(timezone.utc) - t0).total_seconds()
         log.info(
-            "1H model trained: OOS acc=%.2f%% ll=%.4f | best_iter=%s (%.1fs)",
+            "1H model trained: OOS acc=%.2f%% ll=%.4f | WF acc=%.2f%% ll=%.4f | n_est=%d (%.1fs)",
             oos_acc * 100, oos_ll,
-            getattr(model_1h, "best_iteration_", "?"), elapsed_s,
+            (wf_acc or 0) * 100, wf_ll or 0,
+            best_n_trees, elapsed_s,
         )
         return {
-            "status":          "ok",
-            "trained_at":      t0.isoformat(),
-            "elapsed_s":       round(elapsed_s, 1),
-            "train_rows":      split,
-            "val_rows":        len(X_val),
-            "n_features":      len(available),
-            "oos_accuracy":    round(oos_acc, 4),
-            "oos_log_loss":    round(oos_ll, 4),
-            "best_iteration":  getattr(model_1h, "best_iteration_", None),
+            "status":               "ok",
+            "trained_at":           t0.isoformat(),
+            "elapsed_s":            round(elapsed_s, 1),
+            "train_rows":           n_all,
+            "val_rows":             last_fold.get("val_n", 0),
+            "n_features":           len(available),
+            "oos_accuracy":         round(oos_acc, 4),
+            "oos_log_loss":         round(oos_ll, 4),
+            "best_iteration":       best_n_trees,
+            "wf_avg_accuracy":      round(wf_acc, 4) if wf_acc is not None else None,
+            "wf_avg_log_loss":      round(wf_ll,  4) if wf_ll  is not None else None,
+            "wf_folds":             wf_results,
+            "neutral_excluded_pct": round(100.0 * n_excluded / max(n_before, 1), 1),
+        }
+
+    async def check_drift(self, symbol: str = "BTC", use_pruning: bool = False) -> dict:
+        """
+        Evaluate the current model's log-loss on recent candles and compare to
+        the baseline saved at the last retrain.
+
+        use_pruning: must match the engine's use_feature_pruning config so the
+                     correct model (full or pruned) is evaluated.
+
+        Returns a dict:
+          drift        — True if log-loss exceeds the stored threshold
+          recent_ll    — log-loss on the last ~100 clean bars
+          recent_acc   — accuracy on the same bars
+          baseline_ll  — WF avg log-loss at last retrain
+          threshold    — baseline_ll + max(2×std, 0.05)
+          n_samples    — number of labeled bars evaluated
+          reason       — set only when drift=False due to a guard (no_baseline, etc.)
+        """
+        if not DRIFT_BASELINE_PATH.exists():
+            return {"drift": False, "reason": "no_baseline"}
+
+        with open(DRIFT_BASELINE_PATH) as _f:
+            baseline = json.load(_f)
+
+        model_data = load_correct_model(use_pruning)
+        if model_data is None:
+            return {"drift": False, "reason": "no_model"}
+        model, feat_cols = model_data
+
+        try:
+            df_ohlcv = await self._hl.get_ohlcv(symbol, "4h", limit=200)
+            df_fund  = await self._hl.get_funding_history(symbol, hours=900)
+        except Exception as exc:
+            log.warning("Drift check: data fetch failed — %s", exc)
+            return {"drift": False, "reason": f"fetch_error: {exc}"}
+
+        df_feat = build_all_features(df_ohlcv, df_fund, pd.DataFrame(), pd.DataFrame())
+
+        # Same ATR-threshold labeling as training
+        _atr_pct = df_feat["atr_14"] / df_feat["close"].replace(0, np.nan)
+        _fut_ret  = df_feat["close"].shift(-1) / df_feat["close"].replace(0, np.nan) - 1
+        _k = 0.3
+        df_feat["_target"] = np.where(
+            _fut_ret > _k * _atr_pct, 1,
+            np.where(_fut_ret < -_k * _atr_pct, 0, np.nan),
+        )
+
+        available = [f for f in feat_cols if f in df_feat.columns]
+        df_feat[available] = df_feat[available].fillna(0)
+        df_clean = df_feat.iloc[64:].dropna(subset=["_target"]).copy()
+
+        if len(df_clean) < 30:
+            log.warning("Drift check: only %d labeled bars (need 30) — skipping", len(df_clean))
+            return {"drift": False, "reason": "insufficient_data", "n_samples": len(df_clean)}
+
+        X_recent = df_clean[available]
+        y_recent  = df_clean["_target"]
+
+        y_prob     = model.predict_proba(X_recent)[:, 1]
+        recent_ll  = float(log_loss(y_recent, y_prob))
+        recent_acc = float(accuracy_score(y_recent, (y_prob > 0.5).astype(int)))
+
+        threshold      = baseline["threshold"]
+        drift_detected = recent_ll > threshold
+
+        log.info(
+            "Drift check: recent_ll=%.4f | baseline=%.4f | threshold=%.4f | drift=%s (%d samples)",
+            recent_ll, baseline["wf_avg_log_loss"], threshold, drift_detected, len(df_clean),
+        )
+
+        return {
+            "drift":       drift_detected,
+            "recent_ll":   round(recent_ll,  4),
+            "recent_acc":  round(recent_acc, 4),
+            "baseline_ll": round(baseline["wf_avg_log_loss"], 4),
+            "threshold":   round(threshold,  4),
+            "n_samples":   len(df_clean),
+            "baseline_at": baseline.get("trained_at"),
         }
 
     def _build_pruned_model(
