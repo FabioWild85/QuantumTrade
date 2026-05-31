@@ -51,13 +51,15 @@ rsync -avz --delete \
 ### Backend (sync file Python)
 
 ```bash
-rsync -avz --exclude='.venv' \
+rsync -avz --exclude='.venv' --exclude='models/' \
   -e "ssh -i ~/.ssh/id_ed25519" \
   "/Users/fabiowild/Desktop/Quantum Trade/apps/api/" \
   root@77.42.84.8:/opt/quantum-trade/apps/api/
 ```
 
-> **IMPORTANTE:** escludere sempre `.venv` dall'rsync — contiene binari macOS incompatibili con Linux.
+> **IMPORTANTE:** escludere sempre `.venv` e `models/` dall'rsync.
+> - `.venv` contiene binari macOS incompatibili con Linux.
+> - `models/` contiene i modelli LightGBM addestrati sul VPS — sovrascriverli con quelli locali degraderebbe silenziosamente le performance.
 > Il venv sul VPS è gestito separatamente. Se si aggiungono nuove dipendenze al `requirements.txt`,
 > installarle sul VPS manualmente:
 > ```bash

@@ -80,6 +80,7 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
     regime_bias_delta       = getattr(cfg, "regime_bias_delta",       0.08)
     regime_bias_size_factor = getattr(cfg, "regime_bias_size_factor", 1.0)
     forced_regime           = getattr(cfg, "forced_regime",           "auto")
+    regime_bias_enhanced    = getattr(cfg, "regime_bias_enhanced",    False)
     # CVD Absorption Filter
     absorption_filter_enabled = getattr(cfg, "absorption_filter_enabled", False)
     absorption_z_threshold    = getattr(cfg, "absorption_z_threshold",    2.0)
@@ -220,6 +221,7 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
         regime_bias_delta=regime_bias_delta,
         regime_bias_size_factor=regime_bias_size_factor,
         forced_regime=forced_regime,
+        regime_bias_enhanced=regime_bias_enhanced,
         absorption_filter_enabled=absorption_filter_enabled,
         absorption_z_threshold=absorption_z_threshold,
         exhaustion_guard_enabled=exhaustion_guard_enabled,
@@ -263,11 +265,32 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
     equity_curve  = [{"bar": 0, "equity": equity}]
     funding_col   = "funding" in df_feat.columns
 
+    # Enhanced regime detection — mirrors live behavior (every 4 bars, cached between).
+    # Instantiated once before the loop; detect() called on the growing slice df_feat[:i+1].
+    # Requires at least 120 bars of history before first call.
+    _bt_regime_detector = None
+    _bt_regime_sig      = None
+    if regime_bias_enhanced and forced_regime == "auto":
+        from services.regime_detector import RegimeDetector as _RegimeDetector
+        _bt_regime_detector = _RegimeDetector()
+
     for i in range(len(df_feat)):
         if cancel_event and cancel_event.is_set():
             raise RuntimeError("backtest_cancelled")
         row = df_feat.iloc[i]
         features = row.to_dict()
+
+        # Inject RegimeDetector signal — update every 4 bars (matching live cadence).
+        if _bt_regime_detector is not None and i % 4 == 0 and i >= 120:
+            try:
+                _bt_regime_sig = _bt_regime_detector.detect(df_feat.iloc[: i + 1])
+            except Exception:
+                pass
+        if _bt_regime_sig is not None:
+            features["regime_state"]      = _bt_regime_sig.regime
+            features["regime_confidence"] = _bt_regime_sig.confidence
+            features["transition_risk"]   = _bt_regime_sig.transition_risk
+            features["bars_in_regime"]    = float(_bt_regime_sig.bars_in_regime)
         atr_raw  = features.get("atr_14")
         atr      = float(atr_raw) if (atr_raw is not None and pd.notna(atr_raw) and atr_raw > 0) else float(row["close"]) * 0.01
         atr_21_raw = features.get("atr_21")

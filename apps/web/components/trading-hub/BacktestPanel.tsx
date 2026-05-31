@@ -1366,6 +1366,7 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   const [regimeBiasDelta,     setRegimeBiasDelta]     = useState('0.08');
   const [regimeBiasSizeFactor,setRegimeBiasSizeFactor]= useState('1.0');
   const [forcedRegime,        setForcedRegime]        = useState<'auto' | 'bull' | 'bear' | 'neutral'>('auto');
+  const [regimeBiasEnhanced,  setRegimeBiasEnhanced]  = useState(false);
   // Funding Rate Bias
   const [fundingGate,          setFundingGate]          = useState(false);
   const [fundingGateLookback,  setFundingGateLookback]  = useState('6');
@@ -1489,6 +1490,7 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     if (p.regime_bias_delta       !== undefined) setRegimeBiasDelta(String(p.regime_bias_delta));
     if (p.regime_bias_size_factor !== undefined) setRegimeBiasSizeFactor(String(p.regime_bias_size_factor));
     if (p.forced_regime           !== undefined) setForcedRegime(p.forced_regime as 'auto' | 'bull' | 'bear' | 'neutral');
+    if (p.regime_bias_enhanced    !== undefined) setRegimeBiasEnhanced(!!p.regime_bias_enhanced);
     if (p.funding_gate_enabled    !== undefined) setFundingGate(!!p.funding_gate_enabled);
     if (p.funding_gate_lookback   !== undefined) setFundingGateLookback(String(p.funding_gate_lookback));
     if (p.funding_high_thr        !== undefined) setFundingHighThr(String(p.funding_high_thr));
@@ -1706,6 +1708,7 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     regime_bias_delta:             parseFloat(regimeBiasDelta),
     regime_bias_size_factor:       parseFloat(regimeBiasSizeFactor),
     forced_regime:                 forcedRegime,
+    regime_bias_enhanced:          regimeBiasEnhanced,
     // Sweep Confluence directional mode
     sweep_gate_directional:        sweepDirectional,
     // CVD Absorption Filter
@@ -1768,7 +1771,7 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
       `ADX gate:               ${advAdxGate} (${advAdxEnabled ? 'ATTIVO' : 'DISATTIVATO'})`,
       `Confluence gate:        ${advConfGate}% (${advSweepEnabled ? 'sweep ON' : 'sweep OFF'} | ${advFvgEnabled ? 'FVG ON' : 'FVG OFF'} | ${advMtfEnabled ? 'MTF ON' : 'MTF OFF'})`,
       `Regime bias:            ${regimeBias ? `ATTIVO — delta ${regimeBiasDelta}, size ×${regimeBiasSizeFactor}` : 'DISATTIVATO'}`,
-      `Regime forzato:         ${forcedRegime.toUpperCase()}`,
+      `Regime forzato:         ${forcedRegime.toUpperCase()}${forcedRegime === 'auto' && regimeBiasEnhanced ? ' [ENHANCED]' : ''}`,
       '',
       '━━━ STRATEGIE DI USCITA ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
       `Trailing SL:            ${trailingSL ? `ATTIVO — attivazione +${trailAct}R` : 'DISATTIVATO'}`,
@@ -2965,6 +2968,26 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                             {forcedRegime === 'bear' && 'Regime BEAR forzato — long penalizzati'}
                             {forcedRegime === 'neutral' && 'Regime NEUTRO — bias attivo ma simmetrico'}
                           </p>
+                        )}
+                        {forcedRegime === 'auto' && (
+                          <label className={`flex items-center gap-2.5 mt-2.5 p-2.5 rounded-xl cursor-pointer transition-colors ${regimeBiasEnhanced ? 'bg-indigo-50 dark:bg-indigo-500/10 border border-indigo-200 dark:border-indigo-500/25' : 'bg-slate-50 dark:bg-white/[0.03] border border-slate-100 dark:border-white/5'}`}>
+                            <div className="relative shrink-0">
+                              <input type="checkbox" className="sr-only" checked={regimeBiasEnhanced} onChange={e => setRegimeBiasEnhanced(e.target.checked)} />
+                              <div className={`w-8 h-4 rounded-full transition-all duration-300 ${regimeBiasEnhanced ? 'bg-indigo-600' : 'bg-slate-200 dark:bg-white/10'}`} />
+                              <div className={`absolute top-0.5 left-0.5 w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${regimeBiasEnhanced ? 'translate-x-4' : ''}`} />
+                            </div>
+                            <div>
+                              <p className={`text-[10px] font-bold ${regimeBiasEnhanced ? 'text-indigo-600 dark:text-indigo-400' : 'text-slate-500 dark:text-slate-400'}`}>
+                                Regime Detection Avanzato
+                                {regimeBiasEnhanced && <span className="ml-1.5 px-1 py-0.5 rounded text-[8px] font-bold bg-indigo-100 dark:bg-indigo-500/20 text-indigo-600 dark:text-indigo-400 uppercase tracking-wider">Attivo</span>}
+                              </p>
+                              <p className="text-[9px] text-slate-400 dark:text-slate-500 mt-0.5">
+                                {regimeBiasEnhanced
+                                  ? 'ADX slope · transition_risk · confidence — delta modulato dinamicamente'
+                                  : 'Semplice: EMA20 + ADX > 20 (più reattivo, meno preciso)'}
+                              </p>
+                            </div>
+                          </label>
                         )}
                       </div>
                       <Tooltip text="Delta aggiunto alla soglia direzionale per il lato contro-trend. Es. 0.08 con threshold 0.62 → 0.70 richiesto per un short in regime bull." pos="top" width="wide">

@@ -22,7 +22,9 @@ interface Config {
   regime_bias_delta: number;
   regime_bias_size_factor: number;
   forced_regime: 'auto' | 'bull' | 'bear' | 'neutral';
+  regime_bias_enhanced: boolean;
   // Walk-forward & retraining
+  auto_retrain_enabled: boolean;
   retrain_every_n_cycles: number;
   wf_n_splits: number;
   wf_purge_gap: number;
@@ -137,7 +139,9 @@ const DEFAULTS: Config = {
   regime_bias_delta: 0.08,
   regime_bias_size_factor: 1.0,
   forced_regime: 'auto',
+  regime_bias_enhanced: false,
   // Walk-forward & retraining
+  auto_retrain_enabled: true,
   retrain_every_n_cycles: 120,
   wf_n_splits: 5,
   wf_purge_gap: 5,
@@ -1259,6 +1263,27 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                   {config.forced_regime === 'neutral' && 'Regime NEUTRO — nessun bias su nessuna direzione'}
                 </p>
               )}
+              {/* Enhanced regime detection toggle — only relevant in Auto mode */}
+              {config.forced_regime === 'auto' && (
+                <label className={`flex items-center gap-3 mt-3 p-3 rounded-xl cursor-pointer transition-colors ${config.regime_bias_enhanced ? 'bg-indigo-50 dark:bg-indigo-500/10 border border-indigo-200 dark:border-indigo-500/25' : 'bg-slate-50 dark:bg-white/[0.03] border border-slate-100 dark:border-white/5'}`}>
+                  <div className="relative shrink-0">
+                    <input type="checkbox" className="sr-only" checked={config.regime_bias_enhanced} onChange={e => setConfig(c => ({ ...c, regime_bias_enhanced: e.target.checked }))} />
+                    <div className={`w-9 h-5 rounded-full transition-all duration-300 ${config.regime_bias_enhanced ? 'bg-indigo-600' : 'bg-slate-200 dark:bg-white/10'}`} />
+                    <div className={`absolute top-1 left-1 w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.regime_bias_enhanced ? 'translate-x-4' : ''}`} />
+                  </div>
+                  <div>
+                    <p className={`text-[11px] font-bold ${config.regime_bias_enhanced ? 'text-indigo-600 dark:text-indigo-400' : 'text-slate-600 dark:text-slate-400'}`}>
+                      Regime Detection Avanzato
+                      {config.regime_bias_enhanced && <span className="ml-1.5 px-1.5 py-0.5 rounded text-[9px] font-bold bg-indigo-100 dark:bg-indigo-500/20 text-indigo-600 dark:text-indigo-400 uppercase tracking-wider">Attivo</span>}
+                    </p>
+                    <p className="text-[10px] text-slate-400 dark:text-slate-500 mt-0.5">
+                      {config.regime_bias_enhanced
+                        ? 'ADX slope · BB compression · transition_risk · confidence — delta modulato dinamicamente'
+                        : 'Semplice: EMA20 + ADX > 20 (più reattivo, meno preciso)'}
+                    </p>
+                  </div>
+                </label>
+              )}
             </div>
 
             <div className="mb-4">
@@ -1961,6 +1986,40 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
         </div>
 
         <div className="my-6 border-t border-slate-100 dark:border-white/5" />
+
+        {/* auto_retrain_enabled */}
+        <div className="flex flex-col gap-3 mb-6 pb-6 border-b border-slate-100 dark:border-white/5">
+          <Tooltip text="Se attivo, il bot esegue automaticamente il retrain ogni N cicli usando le ultime 500 candele. Se disattivato, il retrain automatico non avviene e al raggiungimento del limite cicli compare un avviso in Monitor per ricordarti di eseguire un retrain manuale profondo (5 anni + Optuna)." width="wide" pos="bottom">
+            <label className="flex items-center gap-3 cursor-pointer group w-fit">
+              <div className="relative">
+                <input
+                  type="checkbox"
+                  className="sr-only"
+                  checked={config.auto_retrain_enabled}
+                  onChange={e => setConfig(c => ({ ...c, auto_retrain_enabled: e.target.checked }))}
+                />
+                <div className={`w-10 h-5 rounded-full transition-all duration-300 ${config.auto_retrain_enabled ? 'bg-indigo-600' : 'bg-slate-200 dark:bg-white/10'}`} />
+                <div className={`absolute top-1 left-1 w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.auto_retrain_enabled ? 'translate-x-5' : ''}`} />
+              </div>
+              <div>
+                <p className={`text-sm font-bold transition-colors ${config.auto_retrain_enabled ? 'text-indigo-600 dark:text-indigo-400' : 'text-slate-800 dark:text-slate-200 group-hover:text-indigo-600 dark:group-hover:text-indigo-400'}`}>
+                  Retrain automatico
+                  {!config.auto_retrain_enabled && (
+                    <span className="ml-2 text-[10px] font-bold uppercase tracking-widest px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-500/15 text-amber-700 dark:text-amber-400">
+                      Manuale
+                    </span>
+                  )}
+                </p>
+                <p className="text-[10px] text-slate-400 dark:text-slate-500 leading-relaxed mt-0.5">
+                  {config.auto_retrain_enabled
+                    ? 'Il modello si riaddestra automaticamente ogni N cicli.'
+                    : 'Nessun retrain automatico. Il Monitor mostrerà un avviso quando scade il countdown.'}
+                </p>
+              </div>
+            </label>
+          </Tooltip>
+        </div>
+
         {/* retrain_every_n_cycles */}
         <div className="space-y-2 mb-6">
           <div className="flex items-center justify-between">

@@ -71,9 +71,11 @@ Chiusura candela 4H → segnale long/short scatta dal Decision Engine
     └── SÌ  → modalità PULLBACK attivata
               │
               ▼
-         Definisci "pullback zone":
-           Long: [close - pullback_atr × ATR_14 , close]
-           Short: [close , close + pullback_atr × ATR_14]
+         Definisci "pullback zone" (OB-anchored se disponibile, ATR altrimenti):
+           Long:  OB bull top_px se ob_bull_active e ob_bull_top_px < close
+                  altrimenti close - pullback_atr × ATR_14
+           Short: OB bear bot_px se ob_bear_active e ob_bear_bot_px > close
+                  altrimenti close + pullback_atr × ATR_14
               │
               ├── Prezzo entra nella zona entro pullback_window_h ore →
               │   entra full size al prezzo corrente
@@ -87,15 +89,18 @@ Chiusura candela 4H → segnale long/short scatta dal Decision Engine
                   segnale decade, nessun trade
 ```
 
-### Principio chiave: tutto in ATR, non in percentuale fissa
+### Principio chiave: zona strutturale prima, ATR come fallback
 
-I parametri sono espressi in multipli di `ATR_14` — non in percentuale. Questo li rende adattativi alla volatilità: in periodi di alta volatilità (ATR grande) la zona di attesa è proporzionalmente più ampia, in periodi di bassa volatilità è più stretta. Una percentuale fissa del 2% ha significato diverso quando BTC è a 30k vs 100k, e cambia completamente tra regime calmo e regime esplosivo.
+La zona di attesa usa l'**Order Block attivo nella direzione del trade** come livello primario — il top del bull OB per long, il bottom del bear OB per short. Questo trasforma la zona da generica (distanza arbitraria dal close) a strutturale (livello dove il mercato ha già dimostrato presenza istituzionale). Se non c'è un OB attivo nel range ragionevole, si usa la zona ATR-based come fallback invariato.
+
+I parametri ATR rimangono attivi come fallback e sono espressi in multipli di `ATR_14` — adattativi alla volatilità corrente.
 
 ### Cosa NON fa questa logica
 
 - Non entra a scaglioni (50%+50%) — valutato e scartato per eccessiva complessità con dataset piccolo e problemi di gestione SL su posizioni parziali
 - Non monitora pattern 1H interni alla candela — il segnale rimane interamente derivato dalla 4H
 - Non modifica il SL/TP — rimangono invariati rispetto alla logica attuale
+- Non implementa pullback strutturale multi-candela (fase correttiva nel trend) — quello è un sistema separato da progettare dopo 6+ mesi di dati live
 
 ---
 
@@ -160,6 +165,7 @@ Non un processo separato — gira **dentro il loop principale di execution.py**,
 - Modificare `_cycle()`: se `pullback_entry_enabled` e la candela 4H ha chiuso con impulso > soglia → non aprire subito, impostare `_pending_pullback`
 - Aggiungere `_check_pullback_entry()`: controlla se il pending signal deve essere eseguito o scaduto. Chiamato ogni ciclo 15min.
 - Modificare `kill()`: cancellare `_pending_pullback` oltre alle posizioni aperte
+- **Aggiungere tracciamento in `_execute_pullback_entry()`**: iniettare riga in `result.reasoning` e campo nel payload `trade_opened` (vedi §7 — Tracciamento)
 
 ### `apps/api/services/decision.py`
 - Aggiungere `candle_range_atr_mult` nel `DecisionResult` o come campo separato nella risposta di `evaluate()`
@@ -177,6 +183,7 @@ Non un processo separato — gira **dentro il loop principale di execution.py**,
 
 ### `apps/web/components/trading-hub/Monitor.tsx`
 - Mostrare il pending pullback signal se attivo (direzione, prezzo di ingresso target, scadenza)
+- **Aggiornare `buildTradeNarrative()`**: parsare la riga `PullbackEntry:` in `entry_reasoning` e aggiungere frase narrativa dedicata (vedi §9 — Tracciamento UI)
 
 ---
 
@@ -242,10 +249,24 @@ def _create_pending_pullback(self, result, snap, atr) -> PendingPullback:
     expires = datetime.now(timezone.utc) + timedelta(hours=self.config.pullback_window_h)
 
     if result.signal == "long":
-        pullback_zone = close - pb_dist   # prezzo scende a questo livello → entro long
-        fallback_limit = close + fb_dist  # prezzo sale oltre → decade (si è allontanato)
+        ob_top = snap.get("ob_bull_top_px")
+        ob_active = snap.get("ob_bull_active", False)
+        # OB come zona primaria: usa top dell'OB bull se attivo e sotto la chiusura corrente
+        # (il prezzo deve poter ritracciare fino all'OB — se l'OB è sopra close, non è raggiungibile)
+        if ob_active and ob_top and ob_top < close:
+            pullback_zone = ob_top
+        else:
+            pullback_zone = close - pb_dist
+        fallback_limit = close + fb_dist  # prezzo sale oltre → decade
+
     else:  # short
-        pullback_zone = close + pb_dist   # prezzo sale a questo livello → entro short
+        ob_bot = snap.get("ob_bear_bot_px")
+        ob_active = snap.get("ob_bear_active", False)
+        # OB come zona primaria: usa bottom dell'OB bear se attivo e sopra la chiusura corrente
+        if ob_active and ob_bot and ob_bot > close:
+            pullback_zone = ob_bot
+        else:
+            pullback_zone = close + pb_dist
         fallback_limit = close - fb_dist  # prezzo scende oltre → decade
 
     return PendingPullback(
@@ -304,11 +325,54 @@ async def _check_pullback_entry(self):
             self._pending_pullback = None
 
 async def _execute_pullback_entry(self, pb: PendingPullback):
-    """Esegue l'entrata usando il DecisionResult originale e cancella il pending."""
-    snap = await self._get_current_snap()  # snapshot attuale per prezzo e metriche
+    snap = await self._get_current_snap()
+    actual_entry = snap["mark_price"]
+
+    # Rieancora lo SL all'entry reale mantenendo il multiplo ATR originale (Approccio C).
+    # Il multiplo viene estratto dal DecisionResult calcolato da risk.py al momento del segnale 4H,
+    # così il dollar risk e la position size rimangono identici all'originale.
+    # Il TP rimane invariato: è ancorato a struttura (OB opposto, swing), non all'entry price.
+    sl_atr_mult = abs(pb.decision_result.stop_loss - pb.close_4h) / pb.atr_at_signal
+    if pb.direction == "long":
+        pb.decision_result.stop_loss = actual_entry - sl_atr_mult * pb.atr_at_signal
+    else:
+        pb.decision_result.stop_loss = actual_entry + sl_atr_mult * pb.atr_at_signal
+
     await self._open_position(pb.decision_result, snap, pb.atr_at_signal, pb.decision_result.inference_id)
     self._pending_pullback = None
 ```
+
+### Tracciamento — `_execute_pullback_entry()`
+
+Il sistema usa tre canali per tracciare il motivo di apertura di un trade: `result.reasoning[]` (visualizzato in "Perché Aperto"), l'evento `trade_opened` su Supabase, e i log di sistema. Il pullback entry deve essere tracciato in tutti e tre.
+
+**1. Riga in `result.reasoning`** — iniettare prima di chiamare `_open_position()`:
+
+```python
+entry_mode = "pullback" if price < pb.close_4h else "pullback_fallback"
+price_improvement = abs(pb.close_4h - actual_entry)
+pb.decision_result.reasoning.append(
+    f"PullbackEntry: {entry_mode} | signal_close={pb.close_4h:.2f} "
+    f"actual_entry={actual_entry:.2f} improvement={price_improvement:.2f} "
+    f"impulse_ratio={abs(pb.close_4h - actual_entry) / pb.atr_at_signal:.2f}×ATR"
+)
+```
+
+Questa riga viene salvata automaticamente in `self._position["entry_reasoning"]`, scritta su `inference_logs.reasoning` in Supabase, e letta da `buildTradeNarrative()` nel frontend.
+
+**2. Campo aggiuntivo nel payload `trade_opened`** — aggiungere a `_open_position()` tramite un campo opzionale `entry_meta` nel `DecisionResult`, oppure passando direttamente il dict extra all'evento già esistente:
+
+```python
+# Nel payload dell'evento trade_opened (execution.py, riga ~1470):
+"entry_mode":        "pullback",          # o "pullback_fallback" o "immediate"
+"signal_close_px":   pb.close_4h,
+"actual_entry_px":   actual_entry,
+"entry_improvement": price_improvement,
+```
+
+Questo rende filtrabile in Supabase la distinzione tra trade aperti con pullback vs immediati — utile per l'analisi retrospettiva.
+
+**3. Log di sistema** — già presente nel piano (`log.info("Pullback entry triggered...")`). Nessuna modifica necessaria.
 
 ### Punto di chiamata in `_cycle()`
 
@@ -395,6 +459,35 @@ Nella sezione "Stato Bot" del Monitor, aggiungere un badge visibile quando c'è 
 
 Il bottone "Cancella" chiama `POST /pullback/cancel` (endpoint da aggiungere in main.py).
 
+### Monitor.tsx — tracciamento in "Perché Aperto" e narrativa
+
+**Aggiornare `buildTradeNarrative()`** per parsare la riga `PullbackEntry:` da `entry_reasoning` e aggiungere una frase narrativa dedicata:
+
+```typescript
+// In buildTradeNarrative(), dopo il blocco RSI/ExhaustionGuard:
+const pullbackLine = lines.find(l => l.startsWith('PullbackEntry:'));
+if (pullbackLine) {
+  const mMode        = pullbackLine.match(/entry_mode=(\w+)/);        // non presente nel formato attuale
+  const mSignal      = pullbackLine.match(/signal_close=([\d.]+)/);
+  const mActual      = pullbackLine.match(/actual_entry=([\d.]+)/);
+  const mImprovement = pullbackLine.match(/improvement=([\d.]+)/);
+  const isFallback   = pullbackLine.includes('pullback_fallback');
+
+  if (mSignal && mActual && mImprovement) {
+    const signalPx = parseFloat(mSignal[1]);
+    const actualPx = parseFloat(mActual[1]);
+    const improv   = parseFloat(mImprovement[1]);
+    if (isFallback) {
+      p += `Il segnale era stato generato alla chiusura della candela 4H a **$${signalPx.toLocaleString()}**, ma il prezzo non ha eseguito il pullback atteso. Il bot ha atteso la finestra di ${isLong ? 'ritracciamento' : 'rimbalzo'} e, scaduto il timeout, ha verificato che il prezzo fosse ancora abbastanza vicino al livello di segnale — entrando via **fallback pullback** a **$${actualPx.toLocaleString()}**. `;
+    } else {
+      p += `Il segnale era stato generato alla chiusura della candela 4H a **$${signalPx.toLocaleString()}**, ma il bot ha atteso un ${isLong ? 'ritracciamento' : 'rimbalzo tecnico'} per migliorare il prezzo di entrata. Il prezzo è tornato nella zona attesa e il trade è stato aperto a **$${actualPx.toLocaleString()}** — **$${improv.toLocaleString()} più favorevole** rispetto all'entry immediata, migliorando strutturalmente il rapporto rischio/rendimento. `;
+    }
+  }
+}
+```
+
+**Aggiornare il blocco raw `entry_reasoning`** (lista righe sotto "Perché Aperto") per evidenziare la riga `PullbackEntry:` con uno stile visivo distinto — es. colore indigo invece del grigio standard — così è immediatamente riconoscibile nella card.
+
 ---
 
 ## 10. Checklist pre-implementazione
@@ -462,10 +555,36 @@ I valori di default sono basati su ragionamento teorico, non su ottimizzazione e
 
 **Mitigazione**: non toccare i default per i primi 60 giorni di utilizzo. Solo dopo, confrontare i valori teorici con l'analisi retrospettiva dei trade reali.
 
-### Rischio 4 — Complessità di gestione del SL su entrata ritardata
-Il SL viene calcolato da `risk.py` al momento del segnale 4H originale, non al momento dell'entrata del pullback. Se il prezzo del pullback è significativamente diverso dal prezzo di chiusura 4H, il SL potrebbe risultare troppo stretto (per long: se il prezzo è sceso al pullback, lo stop calcolato sull'ATR originale potrebbe essere sotto il pullback stesso).
+### Rischio 4 — SL disallineato su entrata ritardata
 
-**Soluzione**: in `_execute_pullback_entry()`, ricalcolare il SL usando il prezzo di entrata effettivo del pullback, non quello della chiusura 4H. Usare comunque `pb.atr_at_signal` per le distanze, ma ancorare al nuovo prezzo di entrata.
+**Problema:** `risk.py` calcola lo SL relativo a `close_4h` al momento del segnale. Se l'entrata avviene sul pullback (prezzo diverso da `close_4h`), la distanza entry→SL cambia implicitamente, alterando dollar risk e position size senza che il sistema se ne accorga.
+
+Esempio con `close_4h = $100.000`, `ATR = $500`, `sl_mult = 1.5`:
+- SL originale = `$99.250` (distanza $750 = 1.5×ATR da `close_4h`)
+- Entry sul pullback = `$99.850` (0.3×ATR sotto)
+- Distanza effettiva entry→SL = `$600` = 1.2×ATR → profilo di rischio silenziosamente alterato
+
+Nel caso limite (`pullback_zone_atr ≥ sl_mult`), il prezzo di pullback potrebbe toccare o superare il livello di SL originale — SL già violato al momento dell'entrata.
+
+**Soluzione — Approccio C: rieancoraggio con multiplo ATR invariato**
+
+Esprimi lo SL originale come multiplo di ATR, poi ricalcolalo dall'entry reale con lo stesso multiplo. Implementato in `_execute_pullback_entry()`:
+
+```python
+sl_atr_mult = abs(pb.decision_result.stop_loss - pb.close_4h) / pb.atr_at_signal
+if pb.direction == "long":
+    pb.decision_result.stop_loss = actual_entry - sl_atr_mult * pb.atr_at_signal
+else:
+    pb.decision_result.stop_loss = actual_entry + sl_atr_mult * pb.atr_at_signal
+```
+
+**Proprietà garantite:**
+- Dollar risk invariato: `sl_dist_dollars = sl_atr_mult × atr_at_signal` identico all'originale
+- Position size invariata: `size = dollar_risk / sl_dist_dollars` — nessuna modifica necessaria a risk.py
+- Zero edge cases: SL è sempre a distanza piena dall'entry reale, indipendentemente dalla profondità del pullback
+- TP invariato: ancorato a struttura (OB opposto, swing level), non dipende dall'entry price — il R:R effettivo migliora automaticamente proporzionalmente al miglioramento dell'entry
+
+**Tradeoff accettato:** il livello di SL si sposta di al massimo `pullback_zone_atr × ATR` rispetto all'originale (es. 0.3×ATR = $150 nell'esempio). Per i casi con SL strutturale (OB, FVG), questo può disallineare leggermente il livello dall'ancora originale. Con `pullback_zone_atr ≤ 0.5`, lo shift è trascurabile rispetto alla granularità della struttura di mercato.
 
 ---
 
@@ -491,4 +610,4 @@ pullback_fallback_atr:      float = Field(0.5,  ge=0.2, le=2.0)
 
 ---
 
-*Piano redatto il 2026-05-28 sulla base di analisi approfondita della meccanica di mercato e dell'architettura attuale del sistema. Da revisionare prima dell'implementazione sulla base dei dati live accumulati.*
+*Piano redatto il 2026-05-28. Revisione 2026-05-29 (1): Rischio 4 aggiornato con soluzione definitiva (Approccio C — rieancoraggio SL con multiplo ATR invariato) e implementazione corretta di `_execute_pullback_entry()`. Revisione 2026-05-29 (2): aggiunto §7 Tracciamento e aggiornato §6 e §9 — il pullback entry viene ora tracciato nei tre canali del sistema: `result.reasoning[]` / "Perché Aperto", evento `trade_opened` su Supabase con campi `entry_mode`/`signal_close_px`/`actual_entry_px`/`entry_improvement`, e `buildTradeNarrative()` con frase narrativa dedicata per entrata pullback e fallback. Da revisionare prima dell'implementazione sulla base dei dati live accumulati.*

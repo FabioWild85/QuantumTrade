@@ -54,6 +54,14 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         log.warning("Could not restore config from DB: %s", exc)
 
+    # Reconcile equity_snapshots against trades table on every startup.
+    # Fixes orphaned snapshots from any trades deleted before snapshot cleanup was in place.
+    try:
+        _db = get_supabase()
+        _rebuild_equity_from_trades(_db)
+    except Exception as exc:
+        log.warning("Startup equity reconcile failed: %s", exc)
+
     if _auto_start_mode:
         log.info("Auto-resuming bot (mode=%s) after restart", _auto_start_mode)
         asyncio.create_task(engine.start(_auto_start_mode))
@@ -189,6 +197,7 @@ class BotConfig(BaseModel):
     regime_bias_delta: float = Field(0.08, ge=0.01, le=0.20)
     regime_bias_size_factor: float = Field(1.0, ge=0.30, le=1.0)
     forced_regime: str = Field("auto", pattern="^(auto|bull|bear|neutral)$")
+    regime_bias_enhanced: bool = Field(False)
     # CVD Absorption Filter
     absorption_filter_enabled: bool  = Field(False)
     absorption_z_threshold:    float = Field(2.0, ge=0.5, le=5.0)
@@ -221,6 +230,7 @@ class BotConfig(BaseModel):
     consec_bars_max_long:       int  = Field(8, ge=3, le=20)
     consec_bars_max_short:      int  = Field(8, ge=3, le=20)
     # Walk-forward & retraining parameters
+    auto_retrain_enabled:   bool = Field(True)
     retrain_every_n_cycles: int = Field(120, ge=20,  le=120)
     wf_n_splits:            int = Field(5,   ge=3,   le=12)
     wf_purge_gap:           int = Field(5,   ge=2,   le=20)
@@ -364,6 +374,31 @@ async def macro_events(days: int = 30):
         "pause_active": pause_active,
         "total":        len(events),
     }
+
+
+class ManualTradeRequest(BaseModel):
+    side: str   = Field(..., pattern="^(long|short)$")
+    mode: str   = Field("paper", pattern="^(paper|live)$")
+    sl_pct: float  = Field(1.0, ge=0.1, le=10.0,   description="SL distance as % of entry price")
+    tp_pct: float  = Field(2.0, ge=0.1, le=20.0,   description="TP distance as % of entry price")
+    size_usd: float = Field(100.0, ge=10.0, le=50000.0, description="Position size in USD")
+
+
+@app.post("/bot/trade/manual")
+async def open_manual_trade(req: ManualTradeRequest):
+    """Open a manual test trade without going through the ML pipeline."""
+    if not engine:
+        raise HTTPException(503, "Engine not initialized")
+    result = await engine.open_manual_trade(
+        side=req.side,
+        sl_pct=req.sl_pct,
+        tp_pct=req.tp_pct,
+        size_usd=req.size_usd,
+        mode_override=req.mode,
+    )
+    if not result.get("ok"):
+        raise HTTPException(409, result.get("error", "Manual trade failed"))
+    return result
 
 
 @app.post("/bot/position/close")
@@ -615,6 +650,85 @@ async def get_trades(limit: int = 100):
     db = get_supabase()
     result = db.table("trades").select("*, orders!entry_order_id(*)").order("opened_at", desc=True).limit(limit).execute()
     return result.data
+
+
+def _rebuild_equity_from_trades(db) -> float:
+    """Recompute equity_snapshots from trades table and sync engine._equity.
+
+    Deletes all existing equity_snapshots and re-inserts one per trade in
+    chronological order, building the cumulative equity from INITIAL_EQUITY.
+    Returns the reconciled equity value.
+    """
+    INITIAL_EQUITY = 10_000.0
+    trades_res = db.table("trades").select("pnl_usd,closed_at").order("closed_at", desc=False).execute()
+    trades = trades_res.data or []
+
+    # Wipe all snapshots and rebuild from the ground truth (trades table)
+    db.table("equity_snapshots").delete().gt("time", "2000-01-01").execute()
+
+    equity = INITIAL_EQUITY
+    for t in trades:
+        pnl = float(t.get("pnl_usd") or 0.0)
+        equity += pnl
+        closed_at = t.get("closed_at")
+        if closed_at:
+            try:
+                db.table("equity_snapshots").insert({
+                    "bot_id":         "default",
+                    "time":           closed_at,
+                    "equity_usd":     round(equity, 2),
+                    "unrealized_pnl": 0.0,
+                    "realized_pnl":   round(pnl, 2),
+                    "drawdown_pct":   round(min(0.0, (equity - INITIAL_EQUITY) / INITIAL_EQUITY * 100), 4),
+                }).execute()
+            except Exception as exc:
+                log.warning("_rebuild_equity: insert snapshot failed: %s", exc)
+
+    if engine:
+        engine._equity = equity
+    log.info("Equity reconciled: %d trades → equity=%.2f", len(trades), equity)
+    return equity
+
+
+@app.post("/equity/reconcile", status_code=200)
+async def reconcile_equity():
+    """Rebuild equity_snapshots from trades and sync the engine's in-memory equity."""
+    db = get_supabase()
+    new_equity = _rebuild_equity_from_trades(db)
+    return {"equity": round(new_equity, 2)}
+
+
+@app.delete("/trades/{trade_id}", status_code=200)
+async def delete_trade(trade_id: str):
+    """Delete a single trade, its events, then fully reconcile equity_snapshots."""
+    db = get_supabase()
+    db.table("trade_events").delete().eq("trade_id", trade_id).execute()
+    db.table("trades").delete().eq("id", trade_id).execute()
+    new_equity = _rebuild_equity_from_trades(db)
+    return {"status": "deleted", "equity": round(new_equity, 2)}
+
+
+@app.delete("/trades", status_code=200)
+async def clear_trades():
+    """Delete all trade history (trades, trade_events, equity_snapshots, inference_logs)."""
+    db = get_supabase()
+    counts: dict[str, int] = {}
+    for table, col in [
+        ("trade_events",     "time"),
+        ("trades",           "opened_at"),
+        ("equity_snapshots", "time"),
+        ("inference_logs",   "time"),
+    ]:
+        try:
+            res = db.table(table).delete().gt(col, "2000-01-01").execute()
+            counts[table] = len(res.data) if res.data else 0
+        except Exception as exc:
+            log.warning("clear_trades: failed on %s — %s", table, exc)
+            counts[table] = -1
+    if engine:
+        engine._equity = 10_000.0
+    log.info("Trade history cleared: %s", counts)
+    return {"status": "cleared", "deleted": counts}
 
 
 @app.get("/inference-logs")

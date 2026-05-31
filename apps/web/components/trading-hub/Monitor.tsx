@@ -59,6 +59,7 @@ interface BotStatus {
     updated_at: string;
   } | null;
   macro_pause_active?: string | null;
+  retrain_due?: boolean;
 }
 
 interface InferenceLog {
@@ -196,7 +197,17 @@ export const Monitor: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   const [countdown,     setCountdown]    = useState(secsToNext4h());
   const [initialLoad,   setInitialLoad]  = useState(!readStatusCache()); // false if cache hit
   const [modal,         setModal]        = useState<ModalState | null>(null);
-  const [liveAccount, setLiveAccount] = useState<LiveAccount | null>(null);
+  const [liveAccount,   setLiveAccount]  = useState<LiveAccount | null>(null);
+
+  // ── Manual trade panel ─────────────────────────────────────────────────────
+  const [showManual,    setShowManual]   = useState(false);
+  const [manualSide,    setManualSide]   = useState<'long' | 'short'>('long');
+  const [manualMode,    setManualMode]   = useState<'paper' | 'live'>('paper');
+  const [manualSlPct,   setManualSlPct]  = useState(1.0);
+  const [manualTpPct,   setManualTpPct]  = useState(2.0);
+  const [manualSize,    setManualSize]   = useState(100);
+  const [manualLoading, setManualLoading] = useState(false);
+  const [manualResult,  setManualResult] = useState<{ ok: boolean; entry_price?: number; stop_loss?: number; take_profit?: number; rr?: number; size_usd?: number; mode?: string; error?: string } | null>(null);
   const esRef       = useRef<EventSource | null>(null);
   const statusRef   = useRef<BotStatus | null>(null);
 
@@ -274,10 +285,14 @@ export const Monitor: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     const slowPoll = setInterval(() => {
       if (!statusRef.current?.position) fetchAll();
     }, 15_000);
+    // Sync equity when TradeLog deletes trades (cross-tab event)
+    const onEquityChanged = () => fetchAll();
+    window.addEventListener('qt:equity-changed', onEquityChanged);
     return () => {
       clearInterval(poll);
       clearInterval(slowPoll);
       esRef.current?.close();
+      window.removeEventListener('qt:equity-changed', onEquityChanged);
     };
   }, [apiBase]);
 
@@ -322,6 +337,35 @@ export const Monitor: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     },
   });
 
+  const submitManualTrade = async () => {
+    setManualLoading(true);
+    setManualResult(null);
+    try {
+      const r = await fetch(`${apiBase}/bot/trade/manual`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          side:     manualSide,
+          mode:     manualMode,
+          sl_pct:   manualSlPct,
+          tp_pct:   manualTpPct,
+          size_usd: manualSize,
+        }),
+      });
+      const data = await r.json();
+      if (!r.ok) {
+        setManualResult({ ok: false, error: data.detail ?? 'Errore sconosciuto' });
+      } else {
+        setManualResult(data);
+        setTimeout(fetchAll, 800);
+      }
+    } catch {
+      setManualResult({ ok: false, error: 'API non raggiungibile' });
+    } finally {
+      setManualLoading(false);
+    }
+  };
+
   if (error && !status) {
     return (
       <div className="elegant-card p-8 text-center bg-white dark:bg-[#151E32]">
@@ -349,6 +393,9 @@ export const Monitor: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   let distToSLPct      = 0;
   let distToTPPct      = 0;
   let slProgressPct    = 0; // 0=at SL, 100=at TP
+  let ptpProgressPct   = 0;
+  let distToPTP        = 0;
+  let distToPTPPct     = 0;
   if (pos && markPrice) {
     const dir       = pos.side === 'long' ? 1 : -1;
     unrealizedPnl   = dir * (markPrice - pos.entry_price) * pos.size_contracts;
@@ -362,6 +409,14 @@ export const Monitor: React.FC<{ apiBase: string }> = ({ apiBase }) => {
       ? markPrice - pos.stop_loss
       : pos.stop_loss - markPrice;
     slProgressPct   = range > 0 ? Math.max(0, Math.min(100, (traveled / range) * 100)) : 0;
+    if (pos.partial_tp_price) {
+      const ptpTraveled = pos.side === 'long'
+        ? pos.partial_tp_price - pos.stop_loss
+        : pos.stop_loss - pos.partial_tp_price;
+      ptpProgressPct  = range > 0 ? Math.max(0, Math.min(100, (ptpTraveled / range) * 100)) : 0;
+      distToPTP       = Math.abs(pos.partial_tp_price - markPrice);
+      distToPTPPct    = (distToPTP / markPrice) * 100;
+    }
   }
 
   // ── Performance analytics (from equity snapshots) ─────────────────────────
@@ -407,13 +462,16 @@ export const Monitor: React.FC<{ apiBase: string }> = ({ apiBase }) => {
             color={totalPnl >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}
           />
         </Tooltip>
-        <Tooltip text="Countdown alla prossima chiusura della candela da 4 ore. Il bot analizza il mercato e decide se aprire un trade ad ogni nuova candela. 'Cicli' = analisi completate. 'Retrain' = candele al prossimo riaddestramentodel modello LightGBM." width="wide">
+        <Tooltip text="Countdown alla prossima chiusura della candela da 4 ore. Il bot analizza il mercato e decide se aprire un trade ad ogni nuova candela. 'Cicli' = analisi completate. 'Retrain' = cicli al prossimo promemoria di riaddestramentodel modello LightGBM." width="wide">
           <KpiCard
             label="Prossima Candela"
             value={`${String(Math.floor(countdown / 3600)).padStart(2,'0')}:${String(Math.floor((countdown % 3600) / 60)).padStart(2,'0')}:${String(countdown % 60).padStart(2,'0')}`}
             sub={(() => {
               const n = (status?.config?.retrain_every_n_cycles as number) ?? 120;
-              return `Cicli: ${status?.cycle_count ?? 0} · Retrain: ${n - ((status?.cycle_count ?? 0) % n)}`;
+              const autoEnabled = (status?.config?.auto_retrain_enabled as boolean) ?? true;
+              const remaining = n - ((status?.cycle_count ?? 0) % n);
+              const label = autoEnabled ? 'Retrain' : 'Promemoria';
+              return `Cicli: ${status?.cycle_count ?? 0} · ${label}: ${remaining}`;
             })()}
           />
         </Tooltip>
@@ -426,6 +484,23 @@ export const Monitor: React.FC<{ apiBase: string }> = ({ apiBase }) => {
           />
         </Tooltip>
       </div>
+
+      {/* ── Retrain due banner ────────────────────────────────────────────── */}
+      {status?.retrain_due && (
+        <div className="flex items-start gap-3 px-4 py-3 rounded-xl border border-amber-300 dark:border-amber-500/40 bg-amber-50 dark:bg-amber-500/10">
+          <svg className="w-4 h-4 mt-0.5 shrink-0 text-amber-600 dark:text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
+          </svg>
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-bold text-amber-800 dark:text-amber-300">Retrain manuale necessario</p>
+            <p className="text-xs text-amber-700 dark:text-amber-400/80 mt-0.5 leading-relaxed">
+              Il modello ha completato {(status?.config?.retrain_every_n_cycles as number) ?? 120} cicli senza aggiornarsi.
+              Vai in <span className="font-mono font-bold">Configurazione → LightGBM</span> e avvia un retrain profondo
+              con <span className="font-mono font-bold">from_date 2021-01-01</span> + Optuna per mantenere la calibrazione a 5 anni.
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* ── Controls ──────────────────────────────────────────────────────── */}
       <div className="flex gap-4 flex-wrap items-center">
@@ -530,6 +605,200 @@ export const Monitor: React.FC<{ apiBase: string }> = ({ apiBase }) => {
         </div>
       )}
 
+      {/* ── Manual Trade Panel ───────────────────────────────────────────── */}
+      {(() => {
+        const mp = markPrice;
+        const slPrice  = mp ? Math.round((manualSide === 'long' ? mp * (1 - manualSlPct / 100) : mp * (1 + manualSlPct / 100)) * 10) / 10 : null;
+        const tpPrice  = mp ? Math.round((manualSide === 'long' ? mp * (1 + manualTpPct / 100) : mp * (1 - manualTpPct / 100)) * 10) / 10 : null;
+        const rr       = manualSlPct > 0 ? (manualTpPct / manualSlPct).toFixed(2) : '—';
+        const fmtPx    = (v: number) => v.toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+        return (
+          <div className={`elegant-card bg-white dark:bg-[#151E32] overflow-hidden border-2 border-dashed transition-colors ${showManual ? 'border-violet-300 dark:border-violet-500/40' : 'border-slate-200 dark:border-white/10 hover:border-slate-300 dark:hover:border-white/20'}`}>
+            {/* Header row — always visible */}
+            <button
+              onClick={() => { setShowManual((v: boolean) => !v); setManualResult(null); }}
+              className="w-full flex items-center justify-between px-5 py-4 text-left"
+            >
+              <div className="flex items-center gap-3">
+                <div className={`w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0 transition-colors ${showManual ? 'bg-violet-100 dark:bg-violet-500/20' : 'bg-slate-100 dark:bg-white/5'}`}>
+                  <svg className={`w-3.5 h-3.5 ${showManual ? 'text-violet-600 dark:text-violet-400' : 'text-slate-400 dark:text-slate-500'}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M9 3H5a2 2 0 00-2 2v4m6-6h10a2 2 0 012 2v4M9 3v18m0 0h10a2 2 0 002-2V9M9 21H5a2 2 0 01-2-2V9m0 0h18"/>
+                  </svg>
+                </div>
+                <div>
+                  <p className="text-xs font-bold text-slate-700 dark:text-slate-200 uppercase tracking-wider">Trade Manuale</p>
+                  <p className="text-[10px] text-slate-400 dark:text-slate-500 mt-0.5">Apri una posizione di test senza passare dalla pipeline ML</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                {pos && (
+                  <span className="text-[9px] font-bold uppercase tracking-widest px-2 py-0.5 rounded border bg-amber-50 dark:bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-200 dark:border-amber-500/20">
+                    Posizione aperta
+                  </span>
+                )}
+                <svg className={`w-4 h-4 text-slate-400 transition-transform duration-200 ${showManual ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+                  <path d="M19 9l-7 7-7-7"/>
+                </svg>
+              </div>
+            </button>
+
+            {/* Expanded form */}
+            {showManual && (
+              <div className="px-5 pb-5 space-y-5 border-t border-slate-100 dark:border-white/5 pt-4">
+
+                {pos ? (
+                  /* Position already open — block form */
+                  <div className="flex items-center gap-3 p-4 rounded-xl bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/20">
+                    <svg className="w-4 h-4 text-amber-500 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
+                    </svg>
+                    <p className="text-xs text-amber-700 dark:text-amber-400">
+                      C&apos;è già una posizione aperta. Chiudila prima di aprire un trade manuale.
+                    </p>
+                  </div>
+                ) : (
+                  <>
+                    {/* Side + Mode row */}
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-2">Direzione</p>
+                        <div className="flex gap-2">
+                          {(['long', 'short'] as const).map(s => (
+                            <button
+                              key={s}
+                              onClick={() => setManualSide(s)}
+                              className={`flex-1 py-2.5 rounded-xl text-xs font-bold uppercase tracking-widest border transition-all active:scale-95 ${
+                                manualSide === s
+                                  ? s === 'long'
+                                    ? 'bg-emerald-500 text-white border-emerald-500 shadow-lg shadow-emerald-500/20'
+                                    : 'bg-rose-500 text-white border-rose-500 shadow-lg shadow-rose-500/20'
+                                  : 'text-slate-500 dark:text-slate-400 border-slate-200 dark:border-white/10 hover:border-slate-300 dark:hover:border-white/20 bg-white dark:bg-white/5'
+                              }`}
+                            >
+                              {s === 'long' ? '▲ Long' : '▼ Short'}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                      <div>
+                        <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-2">Modalità</p>
+                        <div className="flex gap-2">
+                          {(['paper', 'live'] as const).map(m => (
+                            <button
+                              key={m}
+                              onClick={() => setManualMode(m)}
+                              className={`flex-1 py-2.5 rounded-xl text-xs font-bold uppercase tracking-widest border transition-all active:scale-95 ${
+                                manualMode === m
+                                  ? m === 'paper'
+                                    ? 'bg-indigo-500 text-white border-indigo-500 shadow-lg shadow-indigo-500/20'
+                                    : 'bg-emerald-600 text-white border-emerald-600 shadow-lg shadow-emerald-500/20'
+                                  : 'text-slate-500 dark:text-slate-400 border-slate-200 dark:border-white/10 hover:border-slate-300 dark:hover:border-white/20 bg-white dark:bg-white/5'
+                              }`}
+                            >
+                              {m === 'paper' ? 'Paper' : 'Live'}
+                            </button>
+                          ))}
+                        </div>
+                        {manualMode === 'live' && (
+                          <p className="text-[9px] text-rose-500 dark:text-rose-400 mt-1.5 font-medium">
+                            Ordine reale su Hyperliquid — usa fondi reali
+                          </p>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* SL / TP / Size inputs */}
+                    <div className="grid grid-cols-3 gap-3">
+                      {[
+                        { label: 'Stop Loss %', val: manualSlPct, set: setManualSlPct, min: 0.1, max: 10, step: 0.1, color: 'text-rose-500' },
+                        { label: 'Take Profit %', val: manualTpPct, set: setManualTpPct, min: 0.1, max: 20, step: 0.1, color: 'text-emerald-500' },
+                        { label: 'Size (USD)', val: manualSize, set: (v: number) => setManualSize(Math.round(v)), min: 10, max: 50000, step: 10, color: 'text-indigo-500' },
+                      ].map(({ label, val, set, min, max, step, color }) => (
+                        <div key={label} className="bg-slate-50 dark:bg-white/[0.03] rounded-xl p-3 border border-slate-100 dark:border-white/5">
+                          <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-2">{label}</p>
+                          <div className="flex items-center gap-1">
+                            <button onClick={() => set(Math.max(min, Math.round((val - step) * 10) / 10))} className="w-6 h-6 rounded-lg bg-slate-200 dark:bg-white/10 text-slate-600 dark:text-slate-300 text-xs font-bold hover:bg-slate-300 dark:hover:bg-white/15 transition-colors flex items-center justify-center flex-shrink-0">−</button>
+                            <input
+                              type="number"
+                              value={val}
+                              min={min} max={max} step={step}
+                              onChange={(e: React.ChangeEvent<HTMLInputElement>) => { const v = parseFloat(e.target.value); if (!isNaN(v) && v >= min && v <= max) set(v); }}
+                              className={`flex-1 min-w-0 text-center text-sm font-bold font-mono ${color} bg-transparent border-none outline-none`}
+                            />
+                            <button onClick={() => set(Math.min(max, Math.round((val + step) * 10) / 10))} className="w-6 h-6 rounded-lg bg-slate-200 dark:bg-white/10 text-slate-600 dark:text-slate-300 text-xs font-bold hover:bg-slate-300 dark:hover:bg-white/15 transition-colors flex items-center justify-center flex-shrink-0">+</button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Live preview strip */}
+                    {mp && (
+                      <div className="grid grid-cols-4 gap-2">
+                        {[
+                          { label: 'Prezzo entrata', val: `$${fmtPx(mp)}`, color: 'text-slate-700 dark:text-slate-200' },
+                          { label: 'Stop Loss', val: slPrice ? `$${fmtPx(slPrice)}` : '—', color: 'text-rose-600 dark:text-rose-400' },
+                          { label: 'Take Profit', val: tpPrice ? `$${fmtPx(tpPrice)}` : '—', color: 'text-emerald-600 dark:text-emerald-400' },
+                          { label: 'R:R ratio', val: `${rr}×`, color: parseFloat(rr) >= 1.5 ? 'text-emerald-600 dark:text-emerald-400' : parseFloat(rr) >= 1 ? 'text-amber-600 dark:text-amber-400' : 'text-rose-600 dark:text-rose-400' },
+                        ].map(({ label, val, color }) => (
+                          <div key={label} className="bg-slate-50 dark:bg-white/[0.03] rounded-xl px-3 py-2.5 border border-slate-100 dark:border-white/5">
+                            <p className="text-[9px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-1">{label}</p>
+                            <p className={`text-xs font-bold font-mono ${color}`}>{val}</p>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Result banner */}
+                    {manualResult && (
+                      <div className={`flex items-start gap-3 p-3.5 rounded-xl border ${manualResult.ok ? 'bg-emerald-50 dark:bg-emerald-500/10 border-emerald-200 dark:border-emerald-500/20' : 'bg-rose-50 dark:bg-rose-500/10 border-rose-200 dark:border-rose-500/20'}`}>
+                        <svg className={`w-4 h-4 flex-shrink-0 mt-0.5 ${manualResult.ok ? 'text-emerald-500' : 'text-rose-500'}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                          {manualResult.ok ? <path d="M20 6L9 17l-5-5"/> : <path d="M18 6L6 18M6 6l12 12"/>}
+                        </svg>
+                        {manualResult.ok ? (
+                          <div className="space-y-0.5">
+                            <p className="text-xs font-bold text-emerald-700 dark:text-emerald-300 uppercase tracking-wide">Trade aperto con successo</p>
+                            <p className="text-[10px] text-emerald-600 dark:text-emerald-400 font-mono">
+                              Entry ${manualResult.entry_price?.toFixed(2)} · SL ${manualResult.stop_loss?.toFixed(2)} · TP ${manualResult.take_profit?.toFixed(2)} · R:R {manualResult.rr}× · {manualResult.mode?.toUpperCase()}
+                            </p>
+                          </div>
+                        ) : (
+                          <p className="text-xs text-rose-600 dark:text-rose-400">{manualResult.error}</p>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Execute button */}
+                    <div className="flex items-center justify-between pt-1">
+                      <p className="text-[9px] text-slate-400 dark:text-slate-500 italic max-w-xs">
+                        Il trade verrà gestito dal bot normalmente (SL/TP via candle close). Non interferisce con la pipeline ML.
+                      </p>
+                      <button
+                        onClick={submitManualTrade}
+                        disabled={manualLoading}
+                        className={`px-5 py-2.5 text-xs font-bold rounded-xl text-white uppercase tracking-widest transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed shadow-lg ${
+                          manualSide === 'long'
+                            ? 'bg-emerald-500 hover:bg-emerald-400 shadow-emerald-500/20'
+                            : 'bg-rose-500 hover:bg-rose-400 shadow-rose-500/20'
+                        }`}
+                      >
+                        {manualLoading ? (
+                          <span className="flex items-center gap-2">
+                            <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"/></svg>
+                            Invio…
+                          </span>
+                        ) : (
+                          `Apri ${manualSide === 'long' ? 'Long' : 'Short'} ${manualMode === 'live' ? '· Live' : '· Paper'}`
+                        )}
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+        );
+      })()}
+
       {/* ── Open position — Live Trade Card ───────────────────────────────── */}
       {pos && (
         <LiveTradeCard
@@ -542,6 +811,9 @@ export const Monitor: React.FC<{ apiBase: string }> = ({ apiBase }) => {
           distToSLPct={distToSLPct}
           distToTPPct={distToTPPct}
           slProgressPct={slProgressPct}
+          ptpProgressPct={ptpProgressPct}
+          distToPTP={distToPTP}
+          distToPTPPct={distToPTPPct}
           positionDurationH={positionDurationH}
           mode={status?.mode ?? 'paper'}
           lgbmConfirmBars={status?.config?.lgbm_exit_confirm_bars ?? 2}
@@ -885,6 +1157,130 @@ export const Monitor: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   );
 };
 
+// ── Trade narrative helpers ───────────────────────────────────────────────────
+
+function parseBold(text: string): React.ReactNode[] {
+  const parts = text.split(/\*\*(.*?)\*\*/g);
+  return parts.map((part, i) =>
+    i % 2 === 1
+      ? <strong key={i} className="font-semibold text-slate-700 dark:text-slate-200">{part}</strong>
+      : part
+  );
+}
+
+function buildTradeNarrative(pos: Position): string {
+  const isLong = pos.side === 'long';
+  const lines  = pos.entry_reasoning ?? [];
+
+  // Extract ensemble P(up)
+  let pUp = isLong ? 0.65 : 0.35;
+  const ensLine = lines.find(l => l.startsWith('Ensemble P(up)'));
+  if (ensLine) {
+    const m = ensLine.match(/P\(up\):\s*([\d.]+)/);
+    if (m) pUp = parseFloat(m[1]);
+  }
+  const confPct = Math.round((isLong ? pUp : 1 - pUp) * 100);
+
+  // Regime
+  let regimeText = '';
+  const regimeLine = lines.find(l => l.includes('MTF:') || l.includes('regime'));
+  if (regimeLine) {
+    const low = regimeLine.toLowerCase();
+    if (low.includes('bear'))    regimeText = 'ribassista sul timeframe giornaliero';
+    else if (low.includes('bull'))   regimeText = 'rialzista sul timeframe giornaliero';
+    else if (low.includes('ranging') || low.includes('sideways')) regimeText = 'laterale (ranging)';
+  }
+
+  // Fear & Greed
+  let fngVal: number | null = null;
+  let fngLabel = '';
+  const fngLine = lines.find(l => l.startsWith('FNG:'));
+  if (fngLine) {
+    const m = fngLine.match(/(\d+)/);
+    if (m) {
+      fngVal = parseInt(m[1]);
+      if (fngVal <= 25)      fngLabel = 'paura estrema';
+      else if (fngVal <= 45) fngLabel = 'paura diffusa';
+      else if (fngVal <= 55) fngLabel = 'sentiment neutro';
+      else if (fngVal <= 75) fngLabel = 'ottimismo';
+      else                   fngLabel = 'euforia';
+    }
+  }
+
+  // Exhaustion guard / RSI
+  let rsiVal: number | null = null;
+  const exhaustLine = lines.find(l => l.includes('ExhaustionGuard'));
+  if (exhaustLine) {
+    const m = exhaustLine.match(/RSI\s*([\d.]+)/);
+    if (m) rsiVal = parseFloat(m[1]);
+  }
+
+  // C2 p50 target
+  let c2Target: number | null = null;
+  const decLine = lines.find(l => l.includes('C2_p50='));
+  if (decLine) {
+    const m = decLine.match(/C2_p50=([\d.]+)/);
+    if (m) c2Target = parseFloat(m[1]);
+  }
+
+  // R:R
+  const toTP = Math.abs(pos.take_profit - pos.entry_price);
+  const toSL = Math.abs(pos.entry_price - pos.stop_loss);
+  const rr   = toSL > 0 ? (toTP / toSL).toFixed(1) : null;
+
+  // ── Build narrative ──────────────────────────────────────────────────────
+  let p = '';
+
+  // Opening: direction + AI confidence
+  p += `Il bot ha aperto una posizione **${isLong ? 'LONG (rialzista)' : 'SHORT (ribassista)'}** su Bitcoin perché i due modelli di intelligenza artificiale (LightGBM e Chronos) concordano con una **probabilità del ${confPct}%** che il prezzo si muova ${isLong ? 'al rialzo' : 'al ribasso'} nelle prossime ore. `;
+
+  // Regime context
+  if (regimeText) {
+    const aligned = (isLong && regimeText.includes('rialzista')) || (!isLong && regimeText.includes('ribassista'));
+    if (aligned) {
+      p += `Il regime di mercato è **${regimeText}**, il che conferma la direzione del trade e abbassa leggermente la soglia di ingresso richiesta. `;
+    } else if (regimeText.includes('laterale')) {
+      p += `Il mercato si trova in una fase **${regimeText}**: in questo contesto il bot richiede una confidenza leggermente più alta prima di entrare. `;
+    } else {
+      p += `Il regime rilevato sul timeframe giornaliero è **${regimeText}**: i segnali AI hanno comunque superato la soglia più alta richiesta in questo contesto. `;
+    }
+  }
+
+  // F&G context
+  if (fngVal !== null) {
+    if (!isLong && fngVal <= 35) {
+      p += `L'indice Fear & Greed segna **${fngVal}/100** (${fngLabel}), segnale che i venditori stanno dominando — ha rafforzato leggermente il segnale short. `;
+    } else if (isLong && fngVal <= 35) {
+      p += `L'indice Fear & Greed segna **${fngVal}/100** (${fngLabel}), che storicamente precede rimbalzi e ha ridotto leggermente la soglia di ingresso long. `;
+    } else if (!isLong && fngVal >= 65) {
+      p += `L'indice Fear & Greed segna **${fngVal}/100** (${fngLabel}), un livello che spesso precede correzioni e ha rafforzato il segnale short. `;
+    } else {
+      p += `L'indice Fear & Greed è a **${fngVal}/100** (${fngLabel}). `;
+    }
+  }
+
+  // Exhaustion guard note
+  if (rsiVal !== null) {
+    if (!isLong && rsiVal < 30) {
+      p += `Attenzione: l'RSI era in zona di **ipervenduto (${rsiVal.toFixed(0)})** all'apertura — il bot ha alzato temporaneamente la soglia richiesta per ridurre il rischio di shortare vicino a un potenziale rimbalzo tecnico, e il segnale l'ha comunque superata. `;
+    } else if (isLong && rsiVal > 70) {
+      p += `Attenzione: l'RSI era in zona di **ipercomprato (${rsiVal.toFixed(0)})** all'apertura — il bot ha richiesto una conferma extra prima di entrare long, che il segnale ha superato. `;
+    }
+  }
+
+  // C2 price target
+  if (c2Target !== null) {
+    p += `Il modello Chronos stima un prezzo mediano di **$${c2Target.toLocaleString('en-US', { maximumFractionDigits: 0 })}** come riferimento per il prossimo ciclo. `;
+  }
+
+  // TP/SL expectation
+  p += `Il take profit è fissato a **$${pos.take_profit.toLocaleString('en-US', { maximumFractionDigits: 0 })}**`;
+  if (rr) p += ` (rapporto rischio/rendimento **${rr}:1**)`;
+  p += `, con stop loss a **$${pos.stop_loss.toLocaleString('en-US', { maximumFractionDigits: 0 })}** per limitare le perdite se il mercato dovesse invalidare il segnale.`;
+
+  return p;
+}
+
 // ── Live Trade Card ───────────────────────────────────────────────────────────
 
 interface LastCycleSignals {
@@ -898,6 +1294,103 @@ interface LastCycleSignals {
   updated_at: string;
 }
 
+function formatSignalTime(iso: string): string {
+  const d = new Date(iso);
+  const now = new Date();
+  const time = d.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' });
+  if (d.toDateString() === now.toDateString()) return `Oggi · ${time}`;
+  const months = ['gen','feb','mar','apr','mag','giu','lug','ago','set','ott','nov','dic'];
+  return `${d.getDate()} ${months[d.getMonth()]} · ${time}`;
+}
+
+function buildSignalNarrative(s: LastCycleSignals): string {
+  const { action, lgbm_pct, c2_dir_pct, reasoning } = s;
+
+  // Parse reasoning lines
+  let regime = '';
+  let threshLong: number | null = null;
+  let fngVal: number | null = null;
+  let fngLabel = '';
+  let pUp: number | null = null;
+  let longThr: number | null = null;
+  let shortThr: number | null = null;
+
+  for (const line of reasoning) {
+    const rm = line.match(/RegimeBias.*regime=(\w+).*threshold_long=([\d.]+).*threshold_short=([\d.]+)/);
+    if (rm) { regime = rm[1].toUpperCase(); threshLong = parseFloat(rm[2]); }
+
+    const fm = line.match(/FNG:.*?(\d+)/);
+    if (fm) {
+      fngVal = parseInt(fm[1]);
+      if (fngVal <= 20)      fngLabel = 'paura estrema';
+      else if (fngVal <= 35) fngLabel = 'paura';
+      else if (fngVal <= 65) fngLabel = 'neutro';
+      else if (fngVal <= 80) fngLabel = 'ottimismo';
+      else                   fngLabel = 'euforia';
+    }
+
+    const ntm = line.match(/NO-TRADE.*P\(up\)=([\d.]+).*long>([\d.]+).*short>([\d.]+)/i);
+    if (ntm) { pUp = parseFloat(ntm[1]); longThr = parseFloat(ntm[2]); shortThr = parseFloat(ntm[3]); }
+
+    const lm = line.match(/(?:LONG|SHORT).*P\(up\)=([\d.]+)/i);
+    if (lm && pUp === null) pUp = parseFloat(lm[1]);
+  }
+
+  let p = '';
+  const isNoTrade = action === 'no_trade';
+  const isLong    = action === 'long';
+
+  // 1. Opening — what the AI sees
+  if (isNoTrade && pUp !== null) {
+    const pUpPct = Math.round(pUp * 100);
+    p += `Il modello LightGBM vede una probabilità rialzista del **${pUpPct}%**`;
+    if (longThr !== null && shortThr !== null) {
+      const lPct = Math.round(longThr * 100);
+      const sPct = Math.round((1 - shortThr) * 100);
+      p += `, che non è sufficiente per aprire un trade: servirebbero **>${lPct}%** per entrare long o **<${sPct}%** per entrare short. `;
+    } else {
+      p += `, insufficiente per superare le soglie di ingresso. `;
+    }
+  } else if (isLong) {
+    p += `LightGBM vede una probabilità rialzista del **${Math.round(lgbm_pct)}%** — segnale attivo **LONG** in questo ciclo. `;
+  } else if (!isNoTrade) {
+    p += `LightGBM vede una probabilità ribassista del **${Math.round(100 - lgbm_pct)}%** — segnale attivo **SHORT** in questo ciclo. `;
+  } else {
+    p += `Nessun segnale direzionale sufficientemente forte in questo ciclo. `;
+  }
+
+  // 2. Regime
+  if (regime) {
+    const rMap: Record<string, string> = { BEAR: 'ribassista', BULL: 'rialzista', RANGING: 'laterale', NEUTRAL: 'neutro' };
+    const rIt = rMap[regime] ?? regime.toLowerCase();
+    if (threshLong !== null) {
+      p += `Il regime è **${rIt}** (${regime}): la soglia long è alzata a **${Math.round(threshLong * 100)}%** per essere più selettivi. `;
+    } else {
+      p += `Il regime attuale è **${rIt}** (${regime}). `;
+    }
+  }
+
+  // 3. F&G
+  if (fngVal !== null) {
+    if (fngVal <= 35) {
+      p += `Fear & Greed è a **${fngVal}/100** (${fngLabel}): sentiment di paura, che abbassa leggermente la soglia short e alza quella long. `;
+    } else if (fngVal >= 65) {
+      p += `Fear & Greed è a **${fngVal}/100** (${fngLabel}): sentiment ottimistico, la soglia short si abbassa leggermente. `;
+    } else {
+      p += `Fear & Greed è a **${fngVal}/100** (${fngLabel}): sentiment neutro, nessuna correzione alle soglie. `;
+    }
+  }
+
+  // 4. Chronos
+  if (c2_dir_pct >= 56) {
+    p += `Chronos-2 conferma una tendenza **rialzista** (${c2_dir_pct.toFixed(0)}%). `;
+  } else if (c2_dir_pct <= 44) {
+    p += `Chronos-2 vede una tendenza **ribassista** (${(100 - c2_dir_pct).toFixed(0)}% al ribasso). `;
+  }
+
+  return p.trim();
+}
+
 interface LiveTradeCardProps {
   pos: Position;
   markPrice: number | null;
@@ -908,6 +1401,9 @@ interface LiveTradeCardProps {
   distToSLPct: number;
   distToTPPct: number;
   slProgressPct: number;
+  ptpProgressPct: number;
+  distToPTP: number;
+  distToPTPPct: number;
   positionDurationH: number;
   mode: string;
   lgbmConfirmBars: number;
@@ -919,7 +1415,8 @@ interface LiveTradeCardProps {
 const LiveTradeCard: React.FC<LiveTradeCardProps> = ({
   pos, markPrice, unrealizedPnl, unrealizedPct,
   distToSL, distToTP, distToSLPct, distToTPPct,
-  slProgressPct, positionDurationH, mode, lgbmConfirmBars, beSlEnabled,
+  slProgressPct, ptpProgressPct, distToPTP, distToPTPPct,
+  positionDurationH, mode, lgbmConfirmBars, beSlEnabled,
   lastCycleSignals, onClose,
 }) => {
   const isLong    = pos.side === 'long';
@@ -929,7 +1426,7 @@ const LiveTradeCard: React.FC<LiveTradeCardProps> = ({
   const fmt       = (n: number) => n.toLocaleString('en-US', { maximumFractionDigits: 0 });
   const hasMark   = markPrice !== null;
   const rr        = distToSL > 0 ? (distToTP / distToSL).toFixed(2) : '—';
-  const slWarning = hasMark && distToSLPct > 0 && distToSLPct < 1.5;
+  const slWarning = hasMark && slProgressPct >= 0 && slProgressPct < 20;
 
   // SL has moved if current SL differs from original
   const slMoved   = pos.sl_original !== undefined && Math.abs(pos.stop_loss - pos.sl_original) > 1;
@@ -1051,10 +1548,28 @@ const LiveTradeCard: React.FC<LiveTradeCardProps> = ({
       {/* Progress bar SL → TP */}
       {hasMark && (
         <div className="px-6 py-4 border-b border-slate-100 dark:border-white/5">
-          <div className="flex items-center justify-between text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-2">
-            <span>SL ${fmt(pos.stop_loss)}</span>
-            <span>Mark ${fmt(markPrice!)}</span>
-            <span>TP ${fmt(pos.take_profit)}</span>
+          {/* Header labels — SL, PTP tick, Mark, TP */}
+          <div className="relative h-4 mb-2">
+            <span className="absolute left-0 text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest leading-4">
+              SL ${fmt(pos.stop_loss)}
+            </span>
+            {pos.partial_tp_price && (
+              <span
+                className={`absolute text-[10px] font-bold uppercase tracking-widest leading-4 -translate-x-1/2 whitespace-nowrap ${pos.partial_done ? 'text-amber-400/50 line-through' : 'text-amber-500'}`}
+                style={{ left: `${ptpProgressPct}%` }}
+              >
+                ⚡ ${fmt(pos.partial_tp_price)}
+              </span>
+            )}
+            <span
+              className="absolute text-[10px] font-bold text-indigo-500 dark:text-indigo-400 uppercase tracking-widest leading-4 -translate-x-1/2 whitespace-nowrap"
+              style={{ left: `${slProgressPct}%` }}
+            >
+              ${fmt(markPrice!)}
+            </span>
+            <span className="absolute right-0 text-[10px] font-bold text-emerald-600 dark:text-emerald-400 uppercase tracking-widest leading-4">
+              TP ${fmt(pos.take_profit)}
+            </span>
           </div>
           <div className="relative h-2 bg-slate-100 dark:bg-white/8 rounded-full overflow-hidden">
             {/* Filled portion */}
@@ -1062,6 +1577,13 @@ const LiveTradeCard: React.FC<LiveTradeCardProps> = ({
               className={`absolute left-0 top-0 h-full rounded-full transition-all duration-700 ${pnlPos ? 'bg-emerald-500' : 'bg-rose-500'}`}
               style={{ width: `${slProgressPct}%` }}
             />
+            {/* Partial TP tick mark */}
+            {pos.partial_tp_price && (
+              <div
+                className={`absolute top-0 w-0.5 h-full transition-all duration-700 ${pos.partial_done ? 'bg-amber-400/40' : 'bg-amber-400'}`}
+                style={{ left: `${ptpProgressPct}%` }}
+              />
+            )}
             {/* Mark price dot */}
             <div
               className="absolute top-1/2 -translate-y-1/2 w-3 h-3 rounded-full bg-white border-2 border-indigo-500 shadow-md transition-all duration-700"
@@ -1079,6 +1601,20 @@ const LiveTradeCard: React.FC<LiveTradeCardProps> = ({
               <span>↔ TP: ${distToTP.toFixed(0)} ({distToTPPct.toFixed(2)}%)</span>
             </Tooltip>
           </div>
+          {/* Partial TP info row */}
+          {pos.partial_tp_price && (
+            <div className="flex justify-center mt-1.5">
+              {pos.partial_done ? (
+                <span className="text-[10px] font-mono text-amber-500/70">
+                  ⚡ Partial TP eseguito · realizzato {(pos.partial_realized_pnl ?? 0) >= 0 ? '+' : ''}${(pos.partial_realized_pnl ?? 0).toFixed(2)}
+                </span>
+              ) : (
+                <span className="text-[10px] font-mono text-amber-500">
+                  ⚡ PTP @ ${fmt(pos.partial_tp_price)} · mancano ${distToPTP.toFixed(0)} ({distToPTPPct.toFixed(2)}%)
+                </span>
+              )}
+            </div>
+          )}
         </div>
       )}
 
@@ -1131,21 +1667,35 @@ const LiveTradeCard: React.FC<LiveTradeCardProps> = ({
       {/* Entry reasoning — why the trade was opened */}
       {pos.entry_reasoning && pos.entry_reasoning.length > 0 && (
         <div className="px-6 py-4 border-b border-slate-100 dark:border-white/5">
-          <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-2">Perché Aperto</p>
-          <div className="space-y-1">
-            {pos.entry_reasoning.map((line, i) => (
-              <p key={i} className="text-[11px] font-mono text-slate-600 dark:text-slate-300 leading-relaxed">
-                <span className="text-indigo-400 mr-1.5">›</span>{line}
-              </p>
-            ))}
-          </div>
+          <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-3">Perché Aperto</p>
+          {/* Natural language narrative */}
+          <p className="text-[12px] text-slate-600 dark:text-slate-300 leading-relaxed mb-4">
+            {parseBold(buildTradeNarrative(pos))}
+          </p>
+          {/* Technical details — collapsible */}
+          <details className="group">
+            <summary className="flex items-center gap-1.5 text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest cursor-pointer select-none hover:text-slate-600 dark:hover:text-slate-300 list-none mb-1">
+              <svg className="w-2.5 h-2.5 transition-transform group-open:rotate-90" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 5l7 7-7 7"/>
+              </svg>
+              Dettagli tecnici
+            </summary>
+            <div className="space-y-1 mt-2">
+              {pos.entry_reasoning.map((line, i) => (
+                <p key={i} className="text-[11px] font-mono text-slate-600 dark:text-slate-300 leading-relaxed">
+                  <span className="text-indigo-400 mr-1.5">›</span>{line}
+                </p>
+              ))}
+            </div>
+          </details>
         </div>
       )}
 
       {/* Current cycle signals — are they still strong? */}
       {lastCycleSignals && (
         <div className="px-6 py-4 border-b border-slate-100 dark:border-white/5">
-          <div className="flex items-center justify-between mb-2">
+          {/* Header: title + timestamp + status badge */}
+          <div className="flex items-center justify-between mb-1">
             <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest">Segnali Attuali</p>
             <span className={`text-[9px] font-bold uppercase tracking-widest px-2 py-0.5 rounded-full ${
               lastCycleSignals.action === pos.side
@@ -1157,7 +1707,13 @@ const LiveTradeCard: React.FC<LiveTradeCardProps> = ({
               {lastCycleSignals.action === pos.side ? '✓ Confermato' : lastCycleSignals.action === 'no_trade' ? 'Neutro' : '⚠ Contrario'}
             </span>
           </div>
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-3">
+          {/* Timestamp */}
+          <p className="text-[10px] text-slate-400 dark:text-slate-500 mb-3">
+            Aggiornato: <span className="font-mono font-semibold text-slate-500 dark:text-slate-400">{formatSignalTime(lastCycleSignals.updated_at)}</span>
+          </p>
+
+          {/* 4-column probability grid */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-4">
             {[
               { label: 'Ensemble', value: `${lastCycleSignals.ensemble_pct.toFixed(1)}%`, highlight: lastCycleSignals.ensemble_pct >= 60 },
               { label: 'LGBM 4H', value: `${lastCycleSignals.lgbm_pct.toFixed(1)}%`, highlight: lastCycleSignals.lgbm_pct >= 55 },
@@ -1170,14 +1726,29 @@ const LiveTradeCard: React.FC<LiveTradeCardProps> = ({
               </div>
             ))}
           </div>
+
+          {/* Natural-language narrative */}
+          <p className="text-[12px] text-slate-600 dark:text-slate-300 leading-relaxed mb-3">
+            {parseBold(buildSignalNarrative(lastCycleSignals))}
+          </p>
+
+          {/* Collapsible technical details */}
           {lastCycleSignals.reasoning.length > 0 && (
-            <div className="space-y-0.5">
-              {lastCycleSignals.reasoning.slice(-3).map((line, i) => (
-                <p key={i} className="text-[10px] font-mono text-slate-500 dark:text-slate-400">
-                  <span className="text-slate-300 dark:text-slate-600 mr-1.5">›</span>{line}
-                </p>
-              ))}
-            </div>
+            <details className="group">
+              <summary className="flex items-center gap-1.5 text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest cursor-pointer select-none hover:text-slate-600 dark:hover:text-slate-300 list-none mb-1">
+                <svg className="w-2.5 h-2.5 transition-transform group-open:rotate-90" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 5l7 7-7 7"/>
+                </svg>
+                Dettagli tecnici
+              </summary>
+              <div className="space-y-0.5 mt-2">
+                {lastCycleSignals.reasoning.map((line, i) => (
+                  <p key={i} className="text-[10px] font-mono text-slate-500 dark:text-slate-400">
+                    <span className="text-indigo-400 mr-1.5">›</span>{line}
+                  </p>
+                ))}
+              </div>
+            </details>
           )}
         </div>
       )}

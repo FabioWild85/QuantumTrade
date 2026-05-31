@@ -54,6 +54,7 @@ class DecisionEngine:
         regime_bias_delta: float = 0.08,
         regime_bias_size_factor: float = 1.0,
         forced_regime: str = "auto",
+        regime_bias_enhanced: bool = False,
         absorption_filter_enabled: bool = False,
         absorption_z_threshold: float = 2.0,
         exhaustion_guard_enabled: bool = True,
@@ -95,6 +96,7 @@ class DecisionEngine:
         self.regime_bias_delta           = regime_bias_delta
         self.regime_bias_size_factor     = regime_bias_size_factor
         self.forced_regime               = forced_regime
+        self.regime_bias_enhanced        = regime_bias_enhanced
         self.absorption_filter_enabled   = absorption_filter_enabled
         self.absorption_z_threshold      = absorption_z_threshold
         self.exhaustion_guard_enabled    = exhaustion_guard_enabled
@@ -156,7 +158,18 @@ class DecisionEngine:
             bias_regime = -1
         elif self.forced_regime == "neutral":
             bias_regime = 0
+        elif self.regime_bias_enhanced:
+            # Enhanced Auto: use RegimeDetector signal injected into features.
+            # transition/flat/sideways → 0 (no directional bias).
+            _rstate = str(features.get("regime_state", "neutral"))
+            if _rstate == "uptrend":
+                bias_regime = 1
+            elif _rstate == "downtrend":
+                bias_regime = -1
+            else:
+                bias_regime = 0
         else:
+            # Simple Auto: daily EMA20 + ADX > 20 proxy.
             bias_regime = int(d_regime)
 
         dir_prob       = c2_output.get("c2_dir_prob", 0.5)
@@ -222,30 +235,76 @@ class DecisionEngine:
                 reasoning.append(f"MTF: Daily bear regime — short threshold relaxed to {effective_threshold:.2f}")
 
         # ── Regime Bias: asymmetric threshold by direction ────────────────────
-        # Uses bias_regime (manual override or auto d_regime).
-        # MTF alignment above always uses the auto d_regime from features.
+        # Uses bias_regime (manual override, enhanced Auto, or simple Auto d_regime).
+        # MTF alignment above always uses the raw auto d_regime from features.
         threshold_long  = effective_threshold
         threshold_short = effective_threshold
         counter_trend_size_factor = 1.0
-        _regime_source = "manuale" if self.forced_regime != "auto" else "auto"
 
-        if self.regime_bias_enabled and self.regime_bias_delta > 0:
+        if self.forced_regime != "auto":
+            _regime_source = "manuale"
+        elif self.regime_bias_enhanced:
+            _regime_source = "enhanced"
+        else:
+            _regime_source = "auto"
+
+        # Enhanced Auto: modulate delta continuously by regime confidence and
+        # transition risk so the bias evaporates gracefully when the regime is
+        # ambiguous or ending — no hard threshold cutoffs.
+        if self.regime_bias_enabled and self.forced_regime == "auto" and self.regime_bias_enhanced:
+            _conf      = float(features.get("regime_confidence", 0.5))
+            _tr_risk   = float(features.get("transition_risk",   0.0))
+            _eff_delta = self.regime_bias_delta * _conf * (1.0 - _tr_risk * 0.8)
+        else:
+            _eff_delta = self.regime_bias_delta
+
+        if self.regime_bias_enabled and _eff_delta > 0.001:
             if bias_regime == 1:
-                threshold_short = effective_threshold + self.regime_bias_delta
+                threshold_short = effective_threshold + _eff_delta
                 counter_trend_size_factor = self.regime_bias_size_factor
-                reasoning.append(
-                    f"RegimeBias: regime=BULL ({_regime_source}) → "
-                    f"threshold_long={threshold_long:.2f}, "
-                    f"threshold_short={threshold_short:.2f} (+{self.regime_bias_delta:.2f})"
-                )
+                if self.regime_bias_enhanced and _regime_source == "enhanced":
+                    _conf_pct  = int(float(features.get("regime_confidence", 0.5)) * 100)
+                    _tr_pct    = int(float(features.get("transition_risk", 0.0)) * 100)
+                    reasoning.append(
+                        f"RegimeBias[Enhanced]: regime=UPTREND conf={_conf_pct}% tr_risk={_tr_pct}% → "
+                        f"threshold_long={threshold_long:.2f}, "
+                        f"threshold_short={threshold_short:.2f} (+{_eff_delta:.3f})"
+                    )
+                else:
+                    reasoning.append(
+                        f"RegimeBias: regime=BULL ({_regime_source}) → "
+                        f"threshold_long={threshold_long:.2f}, "
+                        f"threshold_short={threshold_short:.2f} (+{_eff_delta:.2f})"
+                    )
             elif bias_regime == -1:
-                threshold_long = effective_threshold + self.regime_bias_delta
+                threshold_long = effective_threshold + _eff_delta
                 counter_trend_size_factor = self.regime_bias_size_factor
-                reasoning.append(
-                    f"RegimeBias: regime=BEAR ({_regime_source}) → "
-                    f"threshold_long={threshold_long:.2f} (+{self.regime_bias_delta:.2f}), "
-                    f"threshold_short={threshold_short:.2f}"
-                )
+                if self.regime_bias_enhanced and _regime_source == "enhanced":
+                    _conf_pct  = int(float(features.get("regime_confidence", 0.5)) * 100)
+                    _tr_pct    = int(float(features.get("transition_risk", 0.0)) * 100)
+                    reasoning.append(
+                        f"RegimeBias[Enhanced]: regime=DOWNTREND conf={_conf_pct}% tr_risk={_tr_pct}% → "
+                        f"threshold_long={threshold_long:.2f} (+{_eff_delta:.3f}), "
+                        f"threshold_short={threshold_short:.2f}"
+                    )
+                else:
+                    reasoning.append(
+                        f"RegimeBias: regime=BEAR ({_regime_source}) → "
+                        f"threshold_long={threshold_long:.2f} (+{_eff_delta:.2f}), "
+                        f"threshold_short={threshold_short:.2f}"
+                    )
+            elif bias_regime == 0 and self.regime_bias_enhanced and _regime_source == "enhanced":
+                _rstate  = str(features.get("regime_state", "neutral")).upper()
+                _tr_risk = float(features.get("transition_risk", 0.0))
+                if _tr_risk > 0.5:
+                    reasoning.append(
+                        f"RegimeBias[Enhanced]: regime={_rstate} · transition_risk={_tr_risk:.2f} "
+                        f"— bias neutralizzato"
+                    )
+                else:
+                    reasoning.append(
+                        f"RegimeBias[Enhanced]: regime={_rstate} — nessun bias direzionale"
+                    )
 
         # ── Funding Rate Bias ─────────────────────────────────────────────────
         # High positive funding = market over-long → raise long threshold.

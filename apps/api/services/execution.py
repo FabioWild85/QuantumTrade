@@ -104,6 +104,7 @@ class BotConfig:
         self.regime_bias_delta       = kw.get("regime_bias_delta",       0.08)
         self.regime_bias_size_factor = kw.get("regime_bias_size_factor", 1.0)
         self.forced_regime           = kw.get("forced_regime",           "auto")
+        self.regime_bias_enhanced    = kw.get("regime_bias_enhanced",    False)
         # CVD Absorption Filter
         self.absorption_filter_enabled = kw.get("absorption_filter_enabled", False)
         self.absorption_z_threshold    = kw.get("absorption_z_threshold",    2.0)
@@ -214,6 +215,7 @@ class ExecutionEngine:
         self._macro_pause_active:   Optional[str]      = None
         self._last_drift_retrain:   Optional[datetime] = None
         self._last_drift_result:    Optional[dict]     = None
+        self._retrain_due:          bool               = False
 
         # Economic calendar (loaded once at startup)
         from services.economic_calendar import get_calendar
@@ -290,6 +292,131 @@ class ExecutionEngine:
         price = snap.get("mark_price", fallback_price)
         await self._close_position(price, "manual")  # _close_position guards None internally
         return {"closed": True, "exit_price": price}
+
+    async def open_manual_trade(
+        self,
+        side: str,
+        sl_pct: float,
+        tp_pct: float,
+        size_usd: float,
+        mode_override: Optional[str] = None,
+    ) -> dict:
+        """Open a manual test trade without going through the ML pipeline."""
+        if self._position:
+            return {"ok": False, "error": "Position già aperta — chiudila prima di aprire un trade manuale"}
+
+        snap  = await self._hl.get_market_snapshot(SYMBOL)
+        price = snap.get("mark_price")
+        if not price:
+            return {"ok": False, "error": "Impossibile ottenere il prezzo di mercato"}
+
+        # Temporarily switch mode if an override was requested
+        _original_mode = self.mode
+        if mode_override and mode_override in ("paper", "live"):
+            self.mode = mode_override
+
+        try:
+            is_long  = (side == "long")
+            sl_price = round(price * (1 - sl_pct / 100) if is_long else price * (1 + sl_pct / 100), 1)
+            tp_price = round(price * (1 + tp_pct / 100) if is_long else price * (1 - tp_pct / 100), 1)
+            rr       = round(tp_pct / sl_pct, 2)
+
+            size_contracts = max(round(size_usd / price, 3), 0.001)
+            eff_size_usd   = round(size_contracts * price, 2)
+            inference_id   = str(uuid.uuid4())
+            hl_order_id    = None
+
+            if self.mode == "live":
+                hl_order_id = await self._submit_open_order(side, size_contracts, price, sl_price, inference_id)
+                if hl_order_id is None:
+                    return {"ok": False, "error": "Invio ordine live fallito — controlla HL_AGENT_PRIVATE_KEY"}
+
+            _atr = price * 0.01  # 1% ATR estimate — not ML-derived
+
+            self._position = {
+                "side":                         side,
+                "entry_price":                  price,
+                "stop_loss":                    sl_price,
+                "take_profit":                  tp_price,
+                "sl_original":                  sl_price,
+                "size_usd":                     eff_size_usd,
+                "original_size_usd":            eff_size_usd,
+                "size_contracts":               size_contracts,
+                "entry_atr":                    _atr,
+                "inference_id":                 inference_id,
+                "hl_order_id":                  hl_order_id,
+                "opened_at":                    datetime.now(timezone.utc).isoformat(),
+                "bars_held":                    0,
+                "lgbm_strikes":                 0,
+                "be_sl_applied":                False,
+                "sl_trailing_active":           False,
+                "high_water":                   price,
+                "partial_done":                 False,
+                "partial_realized_pnl":         0.0,
+                "entry_reasoning":              [
+                    f"[MANUAL] {side.upper()} @ {price:.2f}",
+                    f"SL={sl_price:.2f} (−{sl_pct:.1f}%)  TP={tp_price:.2f} (+{tp_pct:.1f}%)  R:R={rr:.2f}",
+                    f"Size={eff_size_usd:.2f} USD  Mode={self.mode.upper()}",
+                ],
+                "partial_tp_price":             None,
+                "trailing_sl_activation_price": None,
+                "trailing_sl_dist":             None,
+                "manual_trade":                 True,
+            }
+
+            if self.mode == "paper":
+                self._save_paper_position()
+
+            try:
+                db = get_supabase()
+                order_res = db.table("orders").insert({
+                    "bot_id":       "default",
+                    "hl_order_id":  hl_order_id,
+                    "symbol":       SYMBOL,
+                    "side":         side,
+                    "size":         size_contracts,
+                    "price":        round(price, 2),
+                    "status":       "filled" if self.mode == "paper" else "pending",
+                    "inference_id": inference_id,
+                }).execute()
+                if order_res.data:
+                    self._position["trade_id"] = order_res.data[0].get("id")
+                    if self.mode == "paper":
+                        self._save_paper_position()
+                db.table("events").insert({
+                    "severity": "info",
+                    "kind":     "trade_opened",
+                    "message":  f"[MANUAL {self.mode.upper()}] {side.upper()} {size_contracts} BTC @ {price:.2f} | SL={sl_price:.2f} TP={tp_price:.2f} R:R={rr:.2f}",
+                    "payload":  {
+                        "side": side, "symbol": SYMBOL, "size": size_contracts,
+                        "price": round(price, 2), "sl": sl_price, "tp": tp_price,
+                        "rr": rr, "size_usd": eff_size_usd, "mode": self.mode, "manual": True,
+                    },
+                }).execute()
+            except Exception as exc:
+                log.warning("Manual trade DB insert failed: %s", exc)
+
+            log.info("Manual trade opened: %s %s @ %.2f | SL=%.2f TP=%.2f mode=%s",
+                     side.upper(), SYMBOL, price, sl_price, tp_price, self.mode)
+
+            return {
+                "ok":             True,
+                "side":           side,
+                "mode":           self.mode,
+                "entry_price":    round(price, 2),
+                "stop_loss":      sl_price,
+                "take_profit":    tp_price,
+                "rr":             rr,
+                "size_contracts": size_contracts,
+                "size_usd":       eff_size_usd,
+            }
+
+        except Exception as exc:
+            # Restore mode on unexpected error and clear any partial state
+            self.mode      = _original_mode
+            self._position = None
+            log.error("open_manual_trade failed: %s", exc, exc_info=True)
+            return {"ok": False, "error": str(exc)}
 
     async def kill(self) -> dict:
         """Emergency: cancel open orders, close positions immediately."""
@@ -557,6 +684,7 @@ class ExecutionEngine:
             "model_loaded":             self._lgbm_model is not None,
             "lgbm_1h_loaded":           self._lgbm_1h is not None,
             "retrain_in_progress":      _retrain_lock.locked(),
+            "retrain_due":              self._retrain_due,
             "last_retrain":             self._last_retrain_metrics,
             "last_cycle_signals":       self._last_cycle_signals,
             "macro_pause_active":       self._macro_pause_active,
@@ -791,6 +919,15 @@ class ExecutionEngine:
             except Exception as _re:
                 log.warning("Regime detection failed: %s", _re)
 
+        # Inject cached RegimeDetector signal into feature dict for enhanced Auto mode.
+        # Always injected when available — decision.py only uses them when
+        # regime_bias_enhanced=True, so this is harmless in the default case.
+        if self._regime_signal is not None:
+            latest["regime_state"]      = self._regime_signal.regime
+            latest["regime_confidence"] = self._regime_signal.confidence
+            latest["transition_risk"]   = self._regime_signal.transition_risk
+            latest["bars_in_regime"]    = float(self._regime_signal.bars_in_regime)
+
         cfg = self.config
 
         # Dual ATR: ATR_21 for SL when enabled (smoother, less affected by single-candle spikes).
@@ -839,6 +976,7 @@ class ExecutionEngine:
             regime_bias_delta           = cfg.regime_bias_delta,
             regime_bias_size_factor     = cfg.regime_bias_size_factor,
             forced_regime               = cfg.forced_regime,
+            regime_bias_enhanced        = cfg.regime_bias_enhanced,
             absorption_filter_enabled   = cfg.absorption_filter_enabled,
             absorption_z_threshold      = cfg.absorption_z_threshold,
             exhaustion_guard_enabled    = cfg.exhaustion_guard_enabled,
@@ -1054,7 +1192,10 @@ class ExecutionEngine:
         # 11. Auto-retrain (background — never blocks the loop)
         self._cycle_count += 1
         if self._cycle_count % self.config.retrain_every_n_cycles == 0:
-            asyncio.create_task(self._retrain_background())
+            if self.config.auto_retrain_enabled:
+                asyncio.create_task(self._retrain_background())
+            else:
+                self._retrain_due = True
 
         # 12. Concept drift check (background — every DRIFT_CHECK_INTERVAL cycles)
         if self._cycle_count % DRIFT_CHECK_INTERVAL == 0:
@@ -1140,6 +1281,7 @@ class ExecutionEngine:
         if (metrics.get("lgbm_1h") or {}).get("status") == "ok":
             self._load_1h_model()
         self._last_retrain_metrics = metrics
+        self._retrain_due = False
         log.info(
             "LightGBM model reloaded (%s): OOS acc=%.2f%%, ll=%.4f",
             trigger, metrics["oos_accuracy"] * 100, metrics["oos_log_loss"],
