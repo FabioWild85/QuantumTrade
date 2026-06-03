@@ -108,6 +108,8 @@ class BotConfig:
         # CVD Absorption Filter
         self.absorption_filter_enabled = kw.get("absorption_filter_enabled", False)
         self.absorption_z_threshold    = kw.get("absorption_z_threshold",    2.0)
+        # Binance Cross-Exchange CVD
+        self.binance_cvd_enabled       = kw.get("binance_cvd_enabled",       False)
         # Signal quality filters
         self.exhaustion_guard_enabled  = kw.get("exhaustion_guard_enabled",  True)
         self.structural_sl_enabled     = kw.get("structural_sl_enabled",     True)
@@ -1048,8 +1050,21 @@ class ExecutionEngine:
         except Exception:
             df_oi = pd.DataFrame()
 
+        # Binance cross-exchange CVD data (non-blocking: skip on failure)
+        df_binance = None
+        if self.config.binance_cvd_enabled:
+            try:
+                from services.binance_data import get_ohlcv_binance
+                df_binance = await get_ohlcv_binance("BTC", "4h", limit=200)
+            except Exception as _bnc_err:
+                log.warning("Binance CVD fetch failed (non-blocking): %s", _bnc_err)
+
         # 3. Build full 64-feature matrix
-        df_feat = build_all_features(df_4h, df_fund, df_oi, df_liq)
+        df_feat = build_all_features(
+            df_4h, df_fund, df_oi, df_liq,
+            df_binance=df_binance,
+            binance_cvd_enabled=self.config.binance_cvd_enabled,
+        )
         latest  = df_feat.iloc[-1].to_dict()
         atr     = latest.get("atr_14")
 
@@ -1425,7 +1440,7 @@ class ExecutionEngine:
             return 0.5  # neutral prior before first model is trained
 
         features = self._lgbm_features or [f for f in ALL_FEATURES if f in df_feat.columns]
-        row = df_feat.iloc[[-1]][features].fillna(0)
+        row = df_feat.reindex(columns=features, fill_value=0).iloc[[-1]].fillna(0)
         try:
             return float(self._lgbm_model.predict_proba(row)[0, 1])
         except Exception as exc:
@@ -1488,6 +1503,7 @@ class ExecutionEngine:
                 feature_pruning_min_importance=self.config.feature_pruning_min_importance,
                 use_chronos_calibration=self.config.use_chronos_calibration,
                 use_1h_lgbm_gate=self.config.use_1h_lgbm_gate,
+                binance_cvd_enabled=self.config.binance_cvd_enabled,
             )
             if metrics.get("status") == "ok":
                 await self._reload_model_after_retrain(metrics, trigger="auto")
@@ -1555,6 +1571,7 @@ class ExecutionEngine:
                 feature_pruning_min_importance=self.config.feature_pruning_min_importance,
                 use_chronos_calibration=self.config.use_chronos_calibration,
                 use_1h_lgbm_gate=self.config.use_1h_lgbm_gate,
+                binance_cvd_enabled=self.config.binance_cvd_enabled,
             )
             if metrics.get("status") == "ok":
                 await self._reload_model_after_retrain(metrics, trigger="drift")
@@ -1593,6 +1610,7 @@ class ExecutionEngine:
             use_1h_lgbm_gate=self.config.use_1h_lgbm_gate,
             use_optuna=use_optuna,
             optuna_n_trials=optuna_n_trials,
+            binance_cvd_enabled=self.config.binance_cvd_enabled,
         )
         if metrics.get("status") == "ok":
             await self._reload_model_after_retrain(metrics, trigger="manual" if not from_date else "deep")

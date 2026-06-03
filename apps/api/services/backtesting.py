@@ -84,6 +84,8 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
     # CVD Absorption Filter
     absorption_filter_enabled = getattr(cfg, "absorption_filter_enabled", False)
     absorption_z_threshold    = getattr(cfg, "absorption_z_threshold",    2.0)
+    # Binance Cross-Exchange CVD
+    binance_cvd_enabled       = getattr(cfg, "binance_cvd_enabled",       False)
     # Signal quality filters
     exhaustion_guard_enabled  = getattr(cfg, "exhaustion_guard_enabled",  True)
     structural_sl_enabled     = getattr(cfg, "structural_sl_enabled",     True)
@@ -174,8 +176,29 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
             log.warning("Historical F&G fetch failed — F&G gate disabled for this backtest: %s", _fng_e)
             fng_gate_enabled = False
 
+    # ── 1c. Binance cross-exchange CVD data ──────────────────────────────────
+    # When use_binance=True, df_ohlcv already comes from Binance and has taker_buy_vol.
+    # When use_binance=False (HL data), fetch Binance separately for the same period.
+    df_binance = None
+    if binance_cvd_enabled:
+        if use_binance and "taker_buy_vol" in df_ohlcv.columns:
+            df_binance = df_ohlcv   # already the Binance df with taker_buy_vol
+        else:
+            try:
+                from services.binance_data import get_ohlcv_binance
+                df_binance = await get_ohlcv_binance(
+                    symbol, "4h", start_date=req.from_date, end_date=req.to_date
+                )
+                log.info("Binance CVD data for backtest: %d candles", len(df_binance))
+            except Exception as _bnc_err:
+                log.warning("Binance CVD fetch for backtest failed (non-blocking): %s", _bnc_err)
+
     # ── 2. Build features ────────────────────────────────────────────────────
-    df_feat = build_all_features(df_ohlcv, df_fund, df_oi, df_liq)
+    df_feat = build_all_features(
+        df_ohlcv, df_fund, df_oi, df_liq,
+        df_binance=df_binance,
+        binance_cvd_enabled=binance_cvd_enabled,
+    )
 
     # ── 2b. Validate F&G date format against the actual feature index ────────
     if fng_gate_enabled and fng_history:
@@ -199,8 +222,9 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
     lgbm_model, lgbm_features = model_result
 
     # ── 4. Build feature matrix for all candles ──────────────────────────────
-    available = [f for f in lgbm_features if f in df_feat.columns]
-    X_all     = df_feat[available].fillna(0)
+    # reindex garantisce esattamente le feature su cui il modello è stato trainato.
+    # Feature mancanti (es. CVD Binance quando toggle è off) vengono riempite con 0.
+    X_all = df_feat.reindex(columns=lgbm_features, fill_value=0).fillna(0)
 
     # ── 5. Run decision loop ─────────────────────────────────────────────────
     decision_engine = DecisionEngine(

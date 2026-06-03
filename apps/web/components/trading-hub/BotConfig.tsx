@@ -75,6 +75,8 @@ interface Config {
   // CVD Absorption Filter
   absorption_filter_enabled: boolean;
   absorption_z_threshold: number;
+  // Binance Cross-Exchange CVD
+  binance_cvd_enabled: boolean;
   // Dual ATR
   dual_atr_enabled: boolean;
   // Signal quality filters (formerly hardcoded)
@@ -192,6 +194,8 @@ const DEFAULTS: Config = {
   // CVD Absorption Filter
   absorption_filter_enabled: false,
   absorption_z_threshold: 2.0,
+  // Binance Cross-Exchange CVD
+  binance_cvd_enabled: false,
   // Dual ATR
   dual_atr_enabled: false,
   // Signal quality filters
@@ -1198,6 +1202,38 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                 />
                 <p className="text-[9px] text-slate-400 dark:text-slate-500 mt-1">
                   Boost +0.03 quando absorption_z supera questa soglia (volume anomalo rispetto alla norma recente)
+                </p>
+              </div>
+            )}
+          </div>
+
+          {/* ── Binance Cross-Exchange CVD ────────────────────────────────── */}
+          <div className={`mt-4 p-3 rounded-xl border transition-colors duration-200 ${config.binance_cvd_enabled ? 'border-blue-200 dark:border-blue-500/30 bg-blue-50/50 dark:bg-blue-500/5' : 'border-slate-100 dark:border-white/5'}`}>
+            <Tooltip text="Fetcha i klines Binance 4H ogni ciclo (dato pubblico, nessuna API key). Estrae taker_buy_base_asset_volume (col. 9) per calcolare CVD reale su ~60% del volume BTC perp mondiale. Aggiunge 3 feature: binance_cvd_slope, binance_absorption_z, cross_cvd_div (divergenza HL vs Binance). Le feature influenzano LightGBM solo dopo un retrain con questo toggle attivo." width="wide" pos="bottom">
+              <label className="flex items-center gap-3 cursor-pointer group w-fit">
+                <div className="relative">
+                  <input type="checkbox" className="sr-only" checked={config.binance_cvd_enabled} onChange={e => setConfig(c => ({ ...c, binance_cvd_enabled: e.target.checked }))} />
+                  <div className={`w-9 h-[18px] rounded-full transition-all duration-300 ${config.binance_cvd_enabled ? 'bg-blue-600' : 'bg-slate-200 dark:bg-white/10'}`} />
+                  <div className={`absolute top-[3px] left-[3px] w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.binance_cvd_enabled ? 'translate-x-[18px]' : ''}`} />
+                </div>
+                <div>
+                  <p className={`text-xs font-bold leading-tight transition-colors ${config.binance_cvd_enabled ? 'text-blue-600 dark:text-blue-400' : 'text-slate-700 dark:text-slate-300'}`}>
+                    Binance Cross-Exchange CVD
+                    {config.binance_cvd_enabled && <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-blue-100 dark:bg-blue-500/20 text-blue-600 dark:text-blue-400 uppercase tracking-wider">Attivo</span>}
+                  </p>
+                  <p className="text-[10px] text-slate-400 dark:text-slate-500 mt-0.5">
+                    CVD reale su volume Binance + divergenza cross-exchange HL vs Binance
+                  </p>
+                </div>
+              </label>
+            </Tooltip>
+            {config.binance_cvd_enabled && (
+              <div className="mt-3 pt-3 border-t border-blue-100 dark:border-blue-500/15">
+                <p className="text-[10px] text-blue-600 dark:text-blue-400 font-medium">
+                  3 feature aggiuntive: <code className="font-mono">binance_cvd_slope</code> · <code className="font-mono">binance_absorption_z</code> · <code className="font-mono">cross_cvd_div</code>
+                </p>
+                <p className="text-[9px] text-slate-400 dark:text-slate-500 mt-1">
+                  Richiede retrain per essere incorporato nel modello LightGBM. Ogni ciclo esegue 1 chiamata REST a Binance (~200 candle 4H, nessun limite pratico).
                 </p>
               </div>
             )}

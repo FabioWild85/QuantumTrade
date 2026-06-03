@@ -1380,6 +1380,8 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   const [fngGreedThr,          setFngGreedThr]          = useState('65.0');
   const [fngExtremeGreedThr,   setFngExtremeGreedThr]   = useState('80.0');
   const [fngBiasDelta,         setFngBiasDelta]         = useState('0.03');
+  // Binance Cross-Exchange CVD
+  const [binanceCvd, setBinanceCvd] = useState(false);
   const [compareMode,         setCompareMode]         = useState(false);
 
   // ── Regime quick-selector ────────────────────────────────────────────────────
@@ -1741,6 +1743,8 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     fng_greed_thr:                 parseFloat(fngGreedThr),
     fng_extreme_greed_thr:         parseFloat(fngExtremeGreedThr),
     fng_bias_delta:                parseFloat(fngBiasDelta),
+    // Binance Cross-Exchange CVD
+    binance_cvd_enabled:           binanceCvd,
   });
 
   const downloadConfig = () => {
@@ -2921,6 +2925,12 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                       </div>
                     )}
                   </div>
+                  <Toggle
+                    label="Binance Cross-Exchange CVD"
+                    desc="Fetcha taker_buy_vol da Binance 4H per calcolare CVD reale (~60% del volume BTC perp). Aggiunge 3 feature: binance_cvd_slope, binance_absorption_z, cross_cvd_div. Utile solo dopo un retrain con questo toggle attivo."
+                    checked={binanceCvd}
+                    onChange={setBinanceCvd}
+                  />
                 </div>
               </section>
 

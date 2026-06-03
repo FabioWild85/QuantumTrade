@@ -257,6 +257,7 @@ class LGBMTrainer:
         use_1h_lgbm_gate:              bool  = False,
         use_optuna:                    bool  = False,
         optuna_n_trials:               int   = OPTUNA_N_TRIALS_DEFAULT,
+        binance_cvd_enabled:           bool  = False,
     ) -> dict:
         """
         Full retraining pipeline. Returns metrics dict.
@@ -276,6 +277,7 @@ class LGBMTrainer:
                 use_feature_pruning, feature_pruning_min_importance,
                 use_chronos_calibration, use_1h_lgbm_gate,
                 use_optuna, optuna_n_trials,
+                binance_cvd_enabled=binance_cvd_enabled,
             )
 
     async def _run(
@@ -291,6 +293,7 @@ class LGBMTrainer:
         use_1h_lgbm_gate:              bool  = False,
         use_optuna:                    bool  = False,
         optuna_n_trials:               int   = OPTUNA_N_TRIALS_DEFAULT,
+        binance_cvd_enabled:           bool  = False,
     ) -> dict:
         t0 = datetime.now(timezone.utc)
 
@@ -313,9 +316,23 @@ class LGBMTrainer:
         df_fund    = await self._hl.get_funding_history(symbol, hours=fund_hours)
 
         # ── 2. Build features ────────────────────────────────────────────────
+        df_binance_train = None
+        if binance_cvd_enabled:
+            try:
+                from services.binance_data import get_ohlcv_binance
+                if from_date:
+                    df_binance_train = await get_ohlcv_binance(symbol, "4h", start_date=from_date)
+                else:
+                    df_binance_train = await get_ohlcv_binance(symbol, "4h", limit=lookback_candles + 200)
+                log.info("Binance CVD data for training: %d candles", len(df_binance_train))
+            except Exception as _bnc_err:
+                log.warning("Binance CVD fetch for training failed (non-blocking): %s", _bnc_err)
+
         df_feat = build_all_features(
             df_ohlcv, df_fund,
-            pd.DataFrame(), pd.DataFrame()  # OI/liq placeholders (fetched live in prod)
+            pd.DataFrame(), pd.DataFrame(),  # OI/liq placeholders (fetched live in prod)
+            df_binance=df_binance_train,
+            binance_cvd_enabled=binance_cvd_enabled,
         )
 
         # ── 3. Target: ATR-threshold direction ──────────────────────────────
@@ -718,15 +735,13 @@ class LGBMTrainer:
             np.where(_fut_ret < -_k * _atr_pct, 0, np.nan),
         )
 
-        available = [f for f in feat_cols if f in df_feat.columns]
-        df_feat[available] = df_feat[available].fillna(0)
         df_clean = df_feat.iloc[64:].dropna(subset=["_target"]).copy()
 
         if len(df_clean) < 30:
             log.warning("Drift check: only %d labeled bars (need 30) — skipping", len(df_clean))
             return {"drift": False, "reason": "insufficient_data", "n_samples": len(df_clean)}
 
-        X_recent = df_clean[available]
+        X_recent = df_clean.reindex(columns=feat_cols, fill_value=0).fillna(0)
         y_recent  = df_clean["_target"]
 
         y_prob     = model.predict_proba(X_recent)[:, 1]

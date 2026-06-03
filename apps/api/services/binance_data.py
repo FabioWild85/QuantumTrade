@@ -58,12 +58,16 @@ async def get_ohlcv_binance(
 
             for c in data:
                 all_rows.append({
-                    "open_time": pd.Timestamp(int(c[0]), unit="ms", tz="UTC"),
-                    "open":   float(c[1]),
-                    "high":   float(c[2]),
-                    "low":    float(c[3]),
-                    "close":  float(c[4]),
-                    "volume": float(c[5]),
+                    "open_time":     pd.Timestamp(int(c[0]), unit="ms", tz="UTC"),
+                    "open":          float(c[1]),
+                    "high":          float(c[2]),
+                    "low":           float(c[3]),
+                    "close":         float(c[4]),
+                    "volume":        float(c[5]),
+                    # c[9] = taker_buy_base_asset_volume (volume bought by market takers).
+                    # Net delta per candle = 2 * taker_buy - total_volume.
+                    # Used by build_binance_cvd_features() for cross-exchange CVD.
+                    "taker_buy_vol": float(c[9]),
                 })
 
             last_ts = int(data[-1][0])

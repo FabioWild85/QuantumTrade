@@ -71,27 +71,50 @@ Chiusura candela 4H → segnale long/short scatta dal Decision Engine
     └── SÌ  → modalità PULLBACK attivata
               │
               ▼
-         Definisci "pullback zone" (OB-anchored se disponibile, ATR altrimenti):
-           Long:  OB bull top_px se ob_bull_active e ob_bull_top_px < close
-                  altrimenti close - pullback_atr × ATR_14
-           Short: OB bear bot_px se ob_bear_active e ob_bear_bot_px > close
-                  altrimenti close + pullback_atr × ATR_14
+         OB attivo nella direzione del trade?
+         (ob_bull_active=True per long / ob_bear_active=True per short)
               │
-              ├── Prezzo entra nella zona entro pullback_window_h ore →
-              │   entra full size al prezzo corrente
+              ├── SÌ  → modalità OB LIMIT ORDER
+              │         Piazza immediatamente un ordine GTC limit su HL:
+              │           Long:  limit a ob_bull_top_px   | SL a ob_bull_bot_px - buffer
+              │           Short: limit a ob_bear_bot_px   | SL a ob_bear_top_px + buffer
+              │         │
+              │         ├── Ordine fillato entro pullback_window_h → trade aperto (fill esatto)
+              │         │
+              │         ├── Timeout scaduto, ordine non fillato:
+              │         │   Cancella ordine HL →
+              │         │   price ≤ fallback_atr×ATR da close_4H? →
+              │         │     SÌ: fallback market order
+              │         │     NO: segnale decade
+              │         │
+              │         └── Prezzo si allontana > fallback_atr×ATR (break opposto):
+              │             Cancella ordine HL → segnale decade
               │
-              ├── Prezzo NON entra nella zona MA
-              │   |close_attuale - close_4H| ≤ fallback_atr × ATR_14
-              │   dopo pullback_window_h ore →
-              │   entra full size (fallback — prezzo ancora vicino)
-              │
-              └── Prezzo si è allontanato > fallback_atr × ATR_14 →
-                  segnale decade, nessun trade
+              └── NO  → modalità PASSIVE MONITORING (ATR-based)
+                        Zona: close ± pullback_zone_atr × ATR_14
+                        │
+                        ├── Prezzo entra nella zona entro pullback_window_h ore →
+                        │   market order al prezzo corrente | SL ATR-based riancorato
+                        │
+                        ├── Timeout scaduto, price ≤ fallback_atr×ATR da close_4H →
+                        │   market order fallback
+                        │
+                        └── Prezzo si allontana > fallback_atr×ATR →
+                            segnale decade
 ```
 
-### Principio chiave: zona strutturale prima, ATR come fallback
+### Due modalità operative: OB Limit Order vs Passive Monitoring
 
-La zona di attesa usa l'**Order Block attivo nella direzione del trade** come livello primario — il top del bull OB per long, il bottom del bear OB per short. Questo trasforma la zona da generica (distanza arbitraria dal close) a strutturale (livello dove il mercato ha già dimostrato presenza istituzionale). Se non c'è un OB attivo nel range ragionevole, si usa la zona ATR-based come fallback invariato.
+Quando è disponibile un **Order Block attivo nella direzione del trade**, il sistema non si limita a monitorare il prezzo passivamente — piazza direttamente un **ordine GTC limit su Hyperliquid** al livello esatto dell'OB. Questo è l'approccio pragmatico: più preciso, fill garantito al livello voluto (invece di inseguire il mercato con un market order quando il prezzo ci arriva), SL strutturale stretto (appena sotto/sopra l'OB invece di ATR-based).
+
+La differenza rispetto al piano originale: il piano usava l'OB come zona di riferimento e poi entrava a mercato quando il prezzo ci arrivava. Questo piazza invece un limit order reale su HL al prezzo esatto — il broker gestisce il fill, il bot monitora lo stato dell'ordine e lo cancella se scade.
+
+**SL in modalità OB Limit Order:**
+- Long: `SL = ob_bull_bot_px - (atr_at_signal × 0.05)` — appena sotto il bottom dell'OB (piccolo buffer per evitare stop-hunt sul livello esatto)
+- Short: `SL = ob_bear_top_px + (atr_at_signal × 0.05)` — appena sopra il top dell'OB
+- Questo SL è strutturalmente più stretto rispetto all'approccio ATR-based: l'OB invalida il trade solo se il prezzo chiude oltre il suo estremo opposto, non a una distanza arbitraria dall'entry
+
+**Quando non c'è un OB attivo** (o l'OB è fuori range ragionevole), il sistema ricade nella **modalità Passive Monitoring** originale: aspetta passivamente che il prezzo entri nella zona ATR-based e poi esegue un market order. Questa modalità rimane invariata rispetto al piano precedente.
 
 I parametri ATR rimangono attivi come fallback e sono espressi in multipli di `ATR_14` — adattativi alla volatilità corrente.
 
@@ -143,17 +166,22 @@ IDLE
   │ segnale 4H + impulso > soglia
   ▼
 WAITING_PULLBACK
+  ├── [ob_order_id presente] → ordine GTC HL attivo
+  │     ├── ordine fillato → ENTERING → IDLE
+  │     ├── timeout + price vicino → cancella ordine → fallback market → IDLE
+  │     └── timeout + price lontano / break opposto → cancella ordine → IDLE (decay)
   │
-  ├── prezzo entra in zona pullback → ENTERING → IDLE
-  │
-  ├── timeout scaduto + prezzo nel fallback → ENTERING → IDLE
-  │
-  └── timeout scaduto + prezzo fuori fallback → IDLE (decay)
+  └── [ob_order_id assente] → monitoring passivo ATR-based
+        ├── prezzo entra in zona → market order → IDLE
+        ├── timeout + price nel fallback → market order → IDLE
+        └── timeout + price fuori fallback → IDLE (decay)
 ```
 
 ### Dove gira il monitor
 
 Non un processo separato — gira **dentro il loop principale di execution.py**, controllato dal `_cycle_count`. Il bot ha già un ciclo che si esegue ogni ~15 minuti (ogni 4 cicli da 4 ore, ma il timing interno è più granulare per il kill switch). Il PullbackMonitor si aggancia a questo ciclo esistente.
+
+In modalità OB Limit Order, il ciclo 15min controlla lo stato dell'ordine HL tramite API (order status) invece di confrontare il prezzo corrente con una zona — il fill avviene direttamente sul broker, non richiede polling del mark price.
 
 ---
 
@@ -198,13 +226,16 @@ from typing import Optional
 
 @dataclass
 class PendingPullback:
-    direction:        str      # "long" | "short"
-    close_4h:         float    # prezzo chiusura candela 4H che ha generato il segnale
-    atr_at_signal:    float    # ATR_14 al momento del segnale (usato per tutte le zone)
-    pullback_zone:    float    # close ± pullback_zone_atr × ATR (prezzo target entrata)
-    fallback_limit:   float    # close ± fallback_atr × ATR (limite oltre cui decade)
-    expires_at:       datetime # timestamp di scadenza (ora segnale + pullback_window_h)
-    decision_result:  object   # il DecisionResult originale — contiene size, SL, TP già calcolati
+    direction:        str            # "long" | "short"
+    close_4h:         float          # prezzo chiusura candela 4H che ha generato il segnale
+    atr_at_signal:    float          # ATR_14 al momento del segnale (usato per tutte le zone)
+    pullback_zone:    float          # close ± pullback_zone_atr × ATR (prezzo target entrata)
+    fallback_limit:   float          # close ± fallback_atr × ATR (limite oltre cui decade)
+    expires_at:       datetime       # timestamp di scadenza (ora segnale + pullback_window_h)
+    decision_result:  object         # il DecisionResult originale — contiene size, SL, TP già calcolati
+    # Campi OB Limit Order mode (None = modalità passive monitoring ATR-based)
+    ob_order_id:      Optional[str]  = None   # oid dell'ordine GTC HL se piazzato
+    ob_sl_price:      Optional[float] = None  # SL strutturale (appena fuori OB) per questa modalità
     created_at:       datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 ```
 
@@ -225,7 +256,8 @@ if result.signal in ("long", "short") and not self._position:
             and impulse_ratio >= self.config.pullback_impulse_atr_mult
             and self._pending_pullback is None):
         # Modalità pullback: non entrare subito, imposta il pending signal
-        self._pending_pullback = self._create_pending_pullback(result, snap, atr)
+        # Nota: await perché _create_pending_pullback può piazzare un ordine HL (async)
+        self._pending_pullback = await self._create_pending_pullback(result, snap, atr)
         log.info(
             "Pullback mode: signal=%s impulse_ratio=%.2f (≥%.2f) — waiting for retracement "
             "to %.2f | fallback limit %.2f | expires %s",
@@ -239,35 +271,60 @@ if result.signal in ("long", "short") and not self._position:
         await self._open_position(result, snap, atr, inference_id)
 ```
 
-### `_create_pending_pullback()`
+### `_create_pending_pullback()` — con piazzamento ordine HL
 
 ```python
-def _create_pending_pullback(self, result, snap, atr) -> PendingPullback:
+async def _create_pending_pullback(self, result, snap, atr) -> PendingPullback:
     close = snap["close"]
     pb_dist = self.config.pullback_zone_atr * atr
     fb_dist = self.config.pullback_fallback_atr * atr
     expires = datetime.now(timezone.utc) + timedelta(hours=self.config.pullback_window_h)
+    ob_order_id = None
+    ob_sl_price = None
+    sl_buffer = atr * 0.05  # piccolo buffer ATR per evitare stop-hunt sul livello esatto dell'OB
 
     if result.signal == "long":
         ob_top = snap.get("ob_bull_top_px")
+        ob_bot = snap.get("ob_bull_bot_px")
         ob_active = snap.get("ob_bull_active", False)
-        # OB come zona primaria: usa top dell'OB bull se attivo e sotto la chiusura corrente
-        # (il prezzo deve poter ritracciare fino all'OB — se l'OB è sopra close, non è raggiungibile)
         if ob_active and ob_top and ob_top < close:
             pullback_zone = ob_top
+            # Modalità OB Limit Order: piazza GTC limit immediatamente
+            try:
+                ob_order_id = await self._place_ob_limit_order(
+                    direction="long",
+                    limit_px=ob_top,
+                    size=result.size,
+                )
+                ob_sl_price = (ob_bot - sl_buffer) if ob_bot else (ob_top - sl_buffer * 4)
+                log.info("OB limit order placed (long): oid=%s limit=%.2f sl=%.2f", ob_order_id, ob_top, ob_sl_price)
+            except Exception as e:
+                log.warning("OB limit order placement failed (non-blocking, falling back to passive): %s", e)
+                ob_order_id = None
         else:
             pullback_zone = close - pb_dist
-        fallback_limit = close + fb_dist  # prezzo sale oltre → decade
+        fallback_limit = close + fb_dist  # prezzo sale troppo → decade
 
     else:  # short
         ob_bot = snap.get("ob_bear_bot_px")
+        ob_top = snap.get("ob_bear_top_px")
         ob_active = snap.get("ob_bear_active", False)
-        # OB come zona primaria: usa bottom dell'OB bear se attivo e sopra la chiusura corrente
         if ob_active and ob_bot and ob_bot > close:
             pullback_zone = ob_bot
+            try:
+                ob_order_id = await self._place_ob_limit_order(
+                    direction="short",
+                    limit_px=ob_bot,
+                    size=result.size,
+                )
+                ob_sl_price = (ob_top + sl_buffer) if ob_top else (ob_bot + sl_buffer * 4)
+                log.info("OB limit order placed (short): oid=%s limit=%.2f sl=%.2f", ob_order_id, ob_bot, ob_sl_price)
+            except Exception as e:
+                log.warning("OB limit order placement failed (non-blocking, falling back to passive): %s", e)
+                ob_order_id = None
         else:
             pullback_zone = close + pb_dist
-        fallback_limit = close - fb_dist  # prezzo scende oltre → decade
+        fallback_limit = close - fb_dist  # prezzo scende troppo → decade
 
     return PendingPullback(
         direction=result.signal,
@@ -277,8 +334,31 @@ def _create_pending_pullback(self, result, snap, atr) -> PendingPullback:
         fallback_limit=fallback_limit,
         expires_at=expires,
         decision_result=result,
+        ob_order_id=ob_order_id,
+        ob_sl_price=ob_sl_price,
     )
 ```
+
+### `_place_ob_limit_order()` — wrapper HL GTC
+
+```python
+async def _place_ob_limit_order(self, direction: str, limit_px: float, size: float) -> str:
+    """Piazza un ordine GTC limit su HL. Ritorna l'order ID (oid). Lancia eccezione in caso di errore."""
+    side = "buy" if direction == "long" else "sell"
+    resp = await self._hl_client.order(
+        coin=self.config.symbol,
+        is_buy=(side == "buy"),
+        sz=size,
+        limit_px=limit_px,
+        order_type={"limit": {"tif": "Gtc"}},
+        reduce_only=False,
+    )
+    # L'API HL restituisce {"status": "ok", "response": {"data": {"statuses": [{"resting": {"oid": N}}]}}}
+    oid = resp["response"]["data"]["statuses"][0]["resting"]["oid"]
+    return str(oid)
+```
+
+**Nota:** `_hl_client` è l'istanza `hyperliquid.exchange.Exchange` già presente in execution.py. Il metodo `order()` è l'API standard HL per piazzare ordini limite GTC. Verificare che il client usato nel codebase esponga questa interfaccia — se usa `asyncio`-wrapped calls adattare di conseguenza.
 
 ### `_check_pullback_entry()` — chiamato ogni ciclo
 
@@ -287,16 +367,46 @@ async def _check_pullback_entry(self):
     """
     Controlla se il pending pullback signal deve essere eseguito o cancellato.
     Chiamato ogni ciclo dal loop principale.
+    Gestisce due modalità: OB Limit Order (ob_order_id presente) e Passive Monitoring (ATR-based).
     """
     if self._pending_pullback is None or self._position:
         return
 
     pb = self._pending_pullback
     now = datetime.now(timezone.utc)
-    current_price = await self._get_mark_price()  # già esiste nel codebase
+    price = await self._get_mark_price()
 
+    # ── Modalità OB Limit Order ─────────────────────────────────────────
+    if pb.ob_order_id is not None:
+        # Controlla se l'ordine è stato fillato
+        order_status = await self._get_order_status(pb.ob_order_id)
+
+        if order_status == "filled":
+            # L'ordine è stato eseguito da HL — registra il trade nel sistema interno
+            log.info("OB limit order filled: oid=%s direction=%s", pb.ob_order_id, pb.direction)
+            await self._register_ob_limit_fill(pb)
+            return
+
+        # Controlla se il prezzo ha violato il fallback limit (break opposto → decade subito)
+        decay = (pb.direction == "long" and price > pb.fallback_limit) or \
+                (pb.direction == "short" and price < pb.fallback_limit)
+        if decay or now >= pb.expires_at:
+            await self._cancel_ob_limit_order(pb.ob_order_id)
+            if not decay:
+                # Timeout: valuta fallback market order
+                near_close = (pb.direction == "long" and price <= pb.fallback_limit) or \
+                             (pb.direction == "short" and price >= pb.fallback_limit)
+                if near_close:
+                    log.info("OB limit order timeout — fallback market entry: price=%.2f", price)
+                    await self._execute_pullback_entry(pb, use_atr_sl=True)
+                    return
+            log.info("OB limit order CANCELLED: oid=%s reason=%s", pb.ob_order_id,
+                     "decay" if decay else "timeout+far")
+            self._pending_pullback = None
+        return
+
+    # ── Modalità Passive Monitoring (ATR-based) ──────────────────────────
     direction = pb.direction
-    price = current_price
 
     # Condizione 1: il prezzo è tornato nella zona di pullback → entra
     if direction == "long" and price <= pb.pullback_zone:
@@ -323,21 +433,72 @@ async def _check_pullback_entry(self):
                 direction, pb.close_4h, price
             )
             self._pending_pullback = None
+```
 
-async def _execute_pullback_entry(self, pb: PendingPullback):
+### `_cancel_ob_limit_order()` — cancellazione sicura
+
+```python
+async def _cancel_ob_limit_order(self, oid: str):
+    """Cancella l'ordine GTC HL. Non lancia eccezione se già fillato o inesistente."""
+    try:
+        await self._hl_client.cancel(coin=self.config.symbol, oid=int(oid))
+        log.info("OB limit order cancelled: oid=%s", oid)
+    except Exception as e:
+        # Ordine già fillato o inesistente — non è un errore critico
+        log.warning("Cancel OB limit order oid=%s failed (may already be filled): %s", oid, e)
+```
+
+### `_register_ob_limit_fill()` — registra il fill dell'ordine limit
+
+```python
+async def _register_ob_limit_fill(self, pb: PendingPullback):
+    """
+    Quando l'ordine GTC viene fillato da HL, registra il trade nel sistema interno.
+    Lo SL è quello strutturale (ob_sl_price) calcolato al momento del piazzamento.
+    Il TP rimane invariato dal DecisionResult originale.
+    """
+    snap = await self._get_current_snap()
+    # Override SL con quello strutturale OB (pre-calcolato, più stretto)
+    if pb.ob_sl_price is not None:
+        pb.decision_result.stop_loss = pb.ob_sl_price
+
+    # Inietta nota in reasoning per tracciamento
+    pb.decision_result.reasoning.append(
+        f"PullbackEntry: ob_limit_filled | signal_close={pb.close_4h:.2f} "
+        f"limit_px={pb.pullback_zone:.2f} ob_sl={pb.ob_sl_price:.2f} oid={pb.ob_order_id}"
+    )
+    await self._open_position(pb.decision_result, snap, pb.atr_at_signal, pb.decision_result.inference_id)
+    self._pending_pullback = None
+```
+
+### `_execute_pullback_entry()` — market order (passive monitoring + fallback)
+
+```python
+async def _execute_pullback_entry(self, pb: PendingPullback, use_atr_sl: bool = False):
     snap = await self._get_current_snap()
     actual_entry = snap["mark_price"]
 
-    # Rieancora lo SL all'entry reale mantenendo il multiplo ATR originale (Approccio C).
-    # Il multiplo viene estratto dal DecisionResult calcolato da risk.py al momento del segnale 4H,
-    # così il dollar risk e la position size rimangono identici all'originale.
-    # Il TP rimane invariato: è ancorato a struttura (OB opposto, swing), non all'entry price.
-    sl_atr_mult = abs(pb.decision_result.stop_loss - pb.close_4h) / pb.atr_at_signal
-    if pb.direction == "long":
-        pb.decision_result.stop_loss = actual_entry - sl_atr_mult * pb.atr_at_signal
+    if use_atr_sl or pb.ob_sl_price is None:
+        # Modalità ATR-based: rieancora lo SL all'entry reale mantenendo il multiplo ATR originale.
+        # Così il dollar risk e la position size rimangono identici all'originale.
+        # Il TP rimane invariato: è ancorato a struttura (OB opposto, swing), non all'entry price.
+        sl_atr_mult = abs(pb.decision_result.stop_loss - pb.close_4h) / pb.atr_at_signal
+        if pb.direction == "long":
+            pb.decision_result.stop_loss = actual_entry - sl_atr_mult * pb.atr_at_signal
+        else:
+            pb.decision_result.stop_loss = actual_entry + sl_atr_mult * pb.atr_at_signal
+        entry_mode = "pullback_market" if not use_atr_sl else "pullback_fallback_market"
     else:
-        pb.decision_result.stop_loss = actual_entry + sl_atr_mult * pb.atr_at_signal
+        # Modalità OB fallback: usa lo SL strutturale OB pre-calcolato
+        pb.decision_result.stop_loss = pb.ob_sl_price
+        entry_mode = "ob_fallback_market"
 
+    price_improvement = abs(pb.close_4h - actual_entry)
+    pb.decision_result.reasoning.append(
+        f"PullbackEntry: {entry_mode} | signal_close={pb.close_4h:.2f} "
+        f"actual_entry={actual_entry:.2f} improvement={price_improvement:.2f} "
+        f"impulse_ratio={abs(pb.close_4h - actual_entry) / pb.atr_at_signal:.2f}×ATR"
+    )
     await self._open_position(pb.decision_result, snap, pb.atr_at_signal, pb.decision_result.inference_id)
     self._pending_pullback = None
 ```
@@ -555,6 +716,18 @@ I valori di default sono basati su ragionamento teorico, non su ottimizzazione e
 
 **Mitigazione**: non toccare i default per i primi 60 giorni di utilizzo. Solo dopo, confrontare i valori teorici con l'analisi retrospettiva dei trade reali.
 
+### Rischio 4a — Ordine limit non cancellato correttamente (OB Limit Order mode)
+
+**Problema:** la cancellazione dell'ordine HL può fallire (timeout API, ordine già fillato durante il cancel). Se l'ordine viene fillato mentre il bot sta cercando di cancellarlo (race condition), il bot non sa che ha una posizione aperta su HL senza averla registrata internamente.
+
+**Mitigazione strutturale:** `_cancel_ob_limit_order()` cattura le eccezioni senza far crashare il bot, ma in caso di errore il bot deve riconciliare lo stato interno con HL al ciclo successivo. Il sistema ha già un meccanismo di riconciliazione posizioni (`_sync_position()` chiamato ogni ciclo) — verificare che gestisca correttamente il caso "posizione aperta su HL non presente in `_position`". Se non lo fa, questo è il punto da estendere prima di implementare la modalità OB Limit Order.
+
+### Rischio 4b — Fill parziale sull'ordine limit
+
+**Problema:** se la liquidità a `ob_bull_top_px` è insufficiente, l'ordine può essere fillato parzialmente. Il sistema interno non sa gestire position size parziali se `_open_position()` non è progettato per entrate scaglionate.
+
+**Mitigazione:** usare TIF `Alo` (post-only) invece di `Gtc` se il mercato è thin, oppure accettare il fill parziale come full fill (la differenza in USD è marginale per size tipiche del bot). In alternativa, cancellare l'ordine parzialmente fillato e aprire la parte rimanente con market order — logica aggiuntiva da valutare solo se i fill parziali diventano frequenti.
+
 ### Rischio 4 — SL disallineato su entrata ritardata
 
 **Problema:** `risk.py` calcola lo SL relativo a `close_4h` al momento del segnale. Se l'entrata avviene sul pullback (prezzo diverso da `close_4h`), la distanza entry→SL cambia implicitamente, alterando dollar risk e position size senza che il sistema se ne accorga.
@@ -610,4 +783,4 @@ pullback_fallback_atr:      float = Field(0.5,  ge=0.2, le=2.0)
 
 ---
 
-*Piano redatto il 2026-05-28. Revisione 2026-05-29 (1): Rischio 4 aggiornato con soluzione definitiva (Approccio C — rieancoraggio SL con multiplo ATR invariato) e implementazione corretta di `_execute_pullback_entry()`. Revisione 2026-05-29 (2): aggiunto §7 Tracciamento e aggiornato §6 e §9 — il pullback entry viene ora tracciato nei tre canali del sistema: `result.reasoning[]` / "Perché Aperto", evento `trade_opened` su Supabase con campi `entry_mode`/`signal_close_px`/`actual_entry_px`/`entry_improvement`, e `buildTradeNarrative()` con frase narrativa dedicata per entrata pullback e fallback. Da revisionare prima dell'implementazione sulla base dei dati live accumulati.*
+*Piano redatto il 2026-05-28. Revisione 2026-05-29 (1): Rischio 4 aggiornato con soluzione definitiva (Approccio C — rieancoraggio SL con multiplo ATR invariato) e implementazione corretta di `_execute_pullback_entry()`. Revisione 2026-05-29 (2): aggiunto §7 Tracciamento e aggiornato §6 e §9 — il pullback entry viene ora tracciato nei tre canali del sistema: `result.reasoning[]` / "Perché Aperto", evento `trade_opened` su Supabase con campi `entry_mode`/`signal_close_px`/`actual_entry_px`/`entry_improvement`, e `buildTradeNarrative()` con frase narrativa dedicata per entrata pullback e fallback. Revisione 2026-06-03: integrata modalità **OB Limit Order** — quando un Order Block è attivo nella direzione del trade, il bot piazza immediatamente un ordine GTC limit su HL al livello esatto dell'OB invece di monitorare passivamente il prezzo. SL strutturale (appena sotto/sopra il bordo dell'OB) invece di ATR-based. Nuovi metodi: `_place_ob_limit_order()`, `_cancel_ob_limit_order()`, `_register_ob_limit_fill()`. `_create_pending_pullback()` diventa async. `PendingPullback` esteso con `ob_order_id` e `ob_sl_price`. Aggiunti Rischi 4a (race condition cancel/fill) e 4b (fill parziale). La modalità passive monitoring ATR-based rimane come fallback quando non c'è OB attivo.*

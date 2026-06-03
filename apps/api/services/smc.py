@@ -5,6 +5,8 @@ Includes: FVG, Liquidity Sweep, Market Structure, CVD, Order Blocks, MTF.
 """
 
 import logging
+from typing import Optional
+
 import numpy as np
 import pandas as pd
 import ta
@@ -122,6 +124,47 @@ def build_cvd_features(df: pd.DataFrame) -> pd.DataFrame:
     roll_mean       = raw_absorption.rolling(24, min_periods=6).mean()
     roll_std        = raw_absorption.rolling(24, min_periods=6).std().replace(0, np.nan)
     d["absorption_z"] = (raw_absorption - roll_mean) / roll_std
+    return d
+
+
+# ─── Binance Cross-Exchange CVD ──────────────────────────────────────────────
+
+def build_binance_cvd_features(df_4h: pd.DataFrame, df_binance: pd.DataFrame) -> pd.DataFrame:
+    """
+    Compute cross-exchange CVD features using Binance taker_buy_vol from klines (column c[9]).
+    Produces 3 features:
+      - binance_cvd_slope:     momentum of net taker pressure on Binance (60%+ of BTC perp volume)
+      - binance_absorption_z:  institutional absorption z-score on Binance volume
+      - cross_cvd_div:         rolling divergence between Binance and HL CVD slopes.
+                               Positive = Binance buying > HL buying (HL catching up → bullish lead).
+                               Negative = Binance selling > HL selling (HL catching up → bearish lead).
+
+    Requires df_binance to have 'taker_buy_vol' and 'volume' columns (from get_ohlcv_binance).
+    Both Binance and HL use round UTC 4H boundaries — alignment via reindex+ffill is safe.
+    """
+    d = df_4h.copy()
+
+    bn = df_binance[["volume", "taker_buy_vol"]].reindex(d.index, method="ffill")
+    bn_vol = bn["volume"].replace(0, np.nan)
+    bn_delta = 2.0 * bn["taker_buy_vol"] - bn_vol
+
+    bn_cvd = bn_delta.cumsum()
+    atr = d["atr_14"].replace(0, np.nan)
+    vol_ma6 = bn_vol.rolling(6).mean().replace(0, np.nan)
+    d["binance_cvd_slope"] = bn_cvd.diff(6) / (atr * vol_ma6 + 1e-9)
+
+    # Absorption: anomalous volume relative to price body (same logic as HL absorption_z)
+    body_size = (d["close"] - d["open"]).abs()
+    atr_floor = atr * 0.01
+    bn_abs_raw = bn_vol / (body_size + atr_floor)
+    bn_roll_mean = bn_abs_raw.rolling(24, min_periods=6).mean()
+    bn_roll_std = bn_abs_raw.rolling(24, min_periods=6).std().replace(0, np.nan)
+    d["binance_absorption_z"] = (bn_abs_raw - bn_roll_mean) / bn_roll_std
+
+    # Cross-exchange divergence: Binance slope vs HL slope, 4-bar smoothed
+    hl_slope = d.get("cvd_slope", pd.Series(0.0, index=d.index))
+    d["cross_cvd_div"] = (d["binance_cvd_slope"] - hl_slope).rolling(4).mean()
+
     return d
 
 
@@ -249,10 +292,14 @@ def build_all_features(
     df_funding: pd.DataFrame,
     df_oi: pd.DataFrame,
     df_liq: pd.DataFrame,
+    df_binance: Optional[pd.DataFrame] = None,
+    binance_cvd_enabled: bool = False,
 ) -> pd.DataFrame:
     """
-    Builds the complete 64-feature matrix used by LightGBM.
+    Builds the complete feature matrix used by LightGBM.
     Input: aligned DataFrames indexed by UTC timestamp.
+    df_binance: optional Binance klines DataFrame with 'taker_buy_vol' column.
+                When provided and binance_cvd_enabled=True, adds 3 cross-exchange CVD features.
     """
     d = df_4h.copy()
     close, high, low, vol = d["close"], d["high"], d["low"], d["volume"]
@@ -341,7 +388,14 @@ def build_all_features(
             _consec[_ci] = min(_consec[_ci - 1], 0.0) - 1.0
     d["consec_bars"] = _consec
 
-    log.debug(f"Feature matrix: {d.shape[1]} columns, {len(d)} rows")
+    # ── Binance cross-exchange CVD (optional, requires binance_cvd_enabled + df_binance) ──
+    if binance_cvd_enabled and df_binance is not None and not df_binance.empty:
+        if "taker_buy_vol" in df_binance.columns:
+            d = build_binance_cvd_features(d, df_binance)
+        else:
+            log.warning("binance_cvd_enabled=True but df_binance has no 'taker_buy_vol' column — skipping")
+
+    log.debug("Feature matrix: %d columns, %d rows", d.shape[1], len(d))
     return d
 
 
@@ -354,6 +408,9 @@ FEATURE_GROUPS = {
         "rv_24", "rv_72", "vol_ma", "vol_ratio", "hl_range",
     ],
     "cvd": ["delta_raw", "delta_ma8", "delta_ma24", "cvd_slope", "vol_imbalance", "delta_price_div", "absorption_z"],
+    # Cross-exchange CVD (Binance taker flow). Only populated when binance_cvd_enabled=True.
+    # Ignored by LightGBM until a retrain with these features is run.
+    "cvd_x": ["binance_cvd_slope", "binance_absorption_z", "cross_cvd_div"],
     "ob":  ["ob_bull_dist", "ob_bear_dist", "ob_bull_age", "ob_bear_age",
              "ob_bull_inside", "ob_bear_inside", "ob_bull_active", "ob_bear_active"],
     "mtf": ["d_ema20_dist", "d_adx", "d_rsi", "d_regime", "mtf_aligned"],

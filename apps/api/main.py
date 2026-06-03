@@ -201,6 +201,10 @@ class BotConfig(BaseModel):
     # CVD Absorption Filter
     absorption_filter_enabled: bool  = Field(False)
     absorption_z_threshold:    float = Field(2.0, ge=0.5, le=5.0)
+    # Binance Cross-Exchange CVD (fetches Binance 4H klines for taker_buy_vol each cycle)
+    # Adds 3 features: binance_cvd_slope, binance_absorption_z, cross_cvd_div.
+    # Affects LightGBM only after a retrain with these features enabled.
+    binance_cvd_enabled: bool = Field(False)
     # Signal quality filters
     exhaustion_guard_enabled:  bool  = Field(True)
     structural_sl_enabled:     bool  = Field(True)
