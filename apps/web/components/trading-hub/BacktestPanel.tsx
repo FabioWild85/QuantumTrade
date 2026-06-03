@@ -1872,11 +1872,12 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
         config: cfg,
       };
       if (compareMode && (trailingSL || partialTP)) {
-        const bodyBase = { ...body, config: buildConfig(false) };
-        const [r1, r2] = await Promise.all([
-          runJob(apiBase, body, ctrl.signal),
-          runJob(apiBase, bodyBase, ctrl.signal),
-        ]);
+        // Sequential: the backend is single-slot — parallel POST requests would
+        // cause the second to cancel the first with "Annullato — nuovo backtest avviato".
+        const bodyOpt  = { ...body,    name: 'A/B — Ottimizzato' };
+        const bodyBase = { ...body, config: buildConfig(false), name: 'A/B — Baseline' };
+        const r1 = await runJob(apiBase, bodyOpt, ctrl.signal);
+        const r2 = await runJob(apiBase, bodyBase, ctrl.signal);
         setResult(r1);
         setBaseline(r2);
       } else {

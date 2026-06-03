@@ -326,12 +326,28 @@ class ExecutionEngine:
             inference_id   = str(uuid.uuid4())
             hl_order_id    = None
 
+            _atr = price * 0.01  # 1% ATR estimate — not ML-derived
+            _is_long = (side == "long")
+            _partial_tp_price = (
+                (price + self.config.partial_tp_atr_mult * _atr) if _is_long
+                else (price - self.config.partial_tp_atr_mult * _atr)
+            ) if self.config.partial_tp_enabled else None
+
             if self.mode == "live":
-                hl_order_id = await self._submit_open_order(side, size_contracts, price, sl_price, inference_id)
+                hl_order_id = await self._submit_open_order(
+                    side, size_contracts, price, sl_price, inference_id,
+                    take_profit=tp_price,
+                    partial_tp_price=_partial_tp_price,
+                    partial_tp_pct=self.config.partial_tp_pct,
+                )
                 if hl_order_id is None:
                     return {"ok": False, "error": "Invio ordine live fallito — controlla HL_AGENT_PRIVATE_KEY"}
 
-            _atr = price * 0.01  # 1% ATR estimate — not ML-derived
+            import hashlib as _mh
+            _sl_cloid = (
+                "0x" + _mh.md5((inference_id or "").encode() + b"_sl").hexdigest()
+                if self.mode == "live" else None
+            )
 
             self._position = {
                 "side":                         side,
@@ -358,9 +374,10 @@ class ExecutionEngine:
                     f"SL={sl_price:.2f} (−{sl_pct:.1f}%)  TP={tp_price:.2f} (+{tp_pct:.1f}%)  R:R={rr:.2f}",
                     f"Size={eff_size_usd:.2f} USD  Mode={self.mode.upper()}",
                 ],
-                "partial_tp_price":             None,
+                "partial_tp_price":             _partial_tp_price,
                 "trailing_sl_activation_price": None,
                 "trailing_sl_dist":             None,
+                "current_sl_cloid":             _sl_cloid,
                 "manual_trade":                 True,
             }
 
@@ -503,6 +520,7 @@ class ExecutionEngine:
                     "trailing_sl_activation_price": saved_state.get("trailing_sl_activation_price"),
                     "trailing_sl_dist":        saved_state.get("trailing_sl_dist"),
                     "trade_id":                saved_state.get("trade_id"),
+                    "current_sl_cloid":        saved_state.get("current_sl_cloid"),
                     # Use HL-authoritative values for size (partial TP may have updated on exchange)
                     "size_usd":                saved_state.get("size_usd") or self._position["size_usd"],
                     "size_contracts":          saved_state.get("size_contracts") or self._position["size_contracts"],
@@ -577,6 +595,16 @@ class ExecutionEngine:
                         "Paper position restored: %s %.4f BTC @ %.2f",
                         saved_pos["side"].upper(), saved_pos["size_contracts"], saved_pos["entry_price"],
                     )
+                    # Re-add partial TP PnL realized during this trade to the restored equity.
+                    # equity_snapshots is only written on trade close, so any partial PnL
+                    # realized after the last snapshot is not included in the restored equity.
+                    _partial_pnl = float(saved_pos.get("partial_realized_pnl") or 0.0)
+                    if _partial_pnl != 0.0:
+                        self._equity += _partial_pnl
+                        log.info(
+                            "Equity adjusted for restored partial TP PnL: +$%.2f → $%.2f",
+                            _partial_pnl, self._equity,
+                        )
                     # Backfill UI-display fields added after this position was saved.
                     # _manage_position() recomputes these independently; these copies
                     # exist only so the Monitor card can show them immediately.
@@ -652,6 +680,7 @@ class ExecutionEngine:
                     "trailing_sl_activation_price": self._position.get("trailing_sl_activation_price"),
                     "trailing_sl_dist":        self._position.get("trailing_sl_dist"),
                     "trade_id":                self._position.get("trade_id"),
+                    "current_sl_cloid":        self._position.get("current_sl_cloid"),
                 }
             db.table("bot_configs").update({"params": existing}).eq("name", "default").execute()
         except Exception as exc:
@@ -769,36 +798,120 @@ class ExecutionEngine:
 
     async def _paper_watchdog(self):
         """
-        Real-time SL/TP monitor for paper mode. Runs every 30s between candle closes.
+        Real-time SL/TP monitor for paper mode. Runs every 5s between candle closes.
         Live mode does not need this — the exchange enforces SL/TP via trigger orders.
-        Uses the latest WebSocket mark price so positions are closed without waiting
-        for the next 4H candle close.
+
+        Uses period_low/period_high from the WebSocket (updated on every markPx event
+        and every individual trade tick) so brief wicks between polls are not missed.
+        Also checks partial_tp_price intracandle — previously only checked on 4H close.
         """
-        POLL_S = 30
+        POLL_S = 5
         log.info("Paper watchdog started (poll every %ds)", POLL_S)
         while self.running:
             await asyncio.sleep(POLL_S)
             if not self.running or not self._position:
+                self._ws.consume_period_extremes()  # drain so extremes don't accumulate
                 continue
+
+            # Consume the lowest/highest price seen since the last poll.
+            # These are updated by every markPx (activeAssetCtx) and every trade tick,
+            # catching wicks that the instantaneous mark snapshot would miss.
+            period_low, period_high = self._ws.consume_period_extremes()
             mark = self._ws.latest_mark
             if not mark or mark <= 0:
                 continue
+
             sl   = self._position.get("stop_loss",  0.0)
             tp   = self._position.get("take_profit", 0.0)
             side = self._position.get("side")
             if not side:
                 continue
-            reason = None
-            if sl > 0.0 and self._risk.should_stop_loss(side, mark, sl):
-                reason = "stop_loss"
-            elif tp > 0.0 and self._risk.should_take_profit(side, mark, tp):
-                reason = "take_profit"
+
+            # Use the worst-case price for each direction:
+            # SL for shorts is above (use period_high), TP for shorts is below (use period_low).
+            check_high = period_high if period_high else mark
+            check_low  = period_low  if period_low  else mark
+
+            # ── Partial TP (intracandle, mirrors live bracket order behavior) ──
+            if (self.config.partial_tp_enabled
+                    and not self._position.get("partial_done", False)):
+                partial_tp_price = self._position.get("partial_tp_price")
+                if partial_tp_price and partial_tp_price > 0:
+                    hit_partial = (
+                        (side == "long"  and check_high >= partial_tp_price) or
+                        (side == "short" and check_low  <= partial_tp_price)
+                    )
+                    if hit_partial:
+                        frac             = self.config.partial_tp_pct / 100.0
+                        partial_size_usd = self._position["size_usd"] * frac
+                        partial_contracts = round(self._position["size_contracts"] * frac, 4)
+                        entry            = self._position["entry_price"]
+                        pnl_pct_p = ((partial_tp_price - entry) / entry * 100 if side == "long"
+                                     else (entry - partial_tp_price) / entry * 100)
+                        fee_p     = partial_size_usd * HL_TAKER_FEE
+                        pnl_usd_p = partial_size_usd * pnl_pct_p / 100 - fee_p
+
+                        self._equity                         += pnl_usd_p
+                        self._position["size_usd"]           *= (1.0 - frac)
+                        self._position["size_contracts"]      = round(
+                            self._position["size_contracts"] * (1.0 - frac), 4)
+                        self._position["partial_done"]        = True
+                        self._position["partial_realized_pnl"] = (
+                            self._position.get("partial_realized_pnl", 0.0) + pnl_usd_p)
+                        if not self._position.get("be_sl_applied", False):
+                            if side == "long":
+                                self._position["stop_loss"] = max(self._position["stop_loss"], entry)
+                            else:
+                                self._position["stop_loss"] = min(self._position["stop_loss"], entry)
+                            self._position["be_sl_applied"] = True
+                            sl = self._position["stop_loss"]  # refresh for SL check below
+
+                        self._save_paper_position()
+                        log.info(
+                            "[PAPER watchdog] Partial TP %.0f%% @ %.2f | pnl=+%.2f%% ($%.2f)",
+                            self.config.partial_tp_pct, partial_tp_price, pnl_pct_p, pnl_usd_p,
+                        )
+                        asyncio.create_task(self._emit_trade_event("partial_tp", {
+                            "price":                partial_tp_price,
+                            "pct_closed":           self.config.partial_tp_pct,
+                            "pnl_usd":              round(pnl_usd_p, 2),
+                            "pnl_pct":              round(pnl_pct_p, 4),
+                            "remaining_usd":        self._position["size_usd"],
+                            "remaining_contracts":  self._position["size_contracts"],
+                            "new_sl":               self._position["stop_loss"],
+                        }))
+                        asyncio.create_task(self._notifier.send_partial_tp(
+                            side=side, symbol=SYMBOL,
+                            pct=self.config.partial_tp_pct,
+                            price=partial_tp_price,
+                            pnl_usd=pnl_usd_p,
+                            pnl_pct=pnl_pct_p,
+                            remaining_usd=self._position["size_usd"],
+                            new_sl=self._position["stop_loss"],
+                        ))
+
+            # ── SL / full TP ──────────────────────────────────────────────────
+            reason     = None
+            exit_price = mark
+            if side == "short":
+                if sl > 0.0 and check_high >= sl:
+                    reason, exit_price = "stop_loss", sl
+                elif tp > 0.0 and check_low <= tp:
+                    reason, exit_price = "take_profit", tp
+            else:  # long
+                if sl > 0.0 and check_low <= sl:
+                    reason, exit_price = "stop_loss", sl
+                elif tp > 0.0 and check_high >= tp:
+                    reason, exit_price = "take_profit", tp
+
             if reason:
                 log.info(
-                    "Paper watchdog: %s triggered | side=%s mark=%.2f sl=%.2f tp=%.2f",
-                    reason, side, mark, sl, tp,
+                    "Paper watchdog: %s triggered | side=%s exit=%.2f "
+                    "sl=%.2f tp=%.2f (period low=%.2f high=%.2f)",
+                    reason, side, exit_price, sl, tp,
+                    check_low, check_high,
                 )
-                await self._close_position(mark, reason)
+                await self._close_position(exit_price, reason)
 
     async def _cycle(self):
         """One full inference cycle: fetch → features → C2 → LGBM → decide → execute → log."""
@@ -850,9 +963,75 @@ class ExecutionEngine:
                             "near %.2f (mark=%.2f). Closing internally.",
                             reason, exit_px, mark,
                         )
-                        await self._close_position(exit_px, reason)
+                        await self._close_position(exit_px, reason, exchange_already_closed=True)
                         self._cycle_count += 1
                         return   # skip inference for this cycle; nothing to manage
+
+                    elif (hl_pos is not None
+                          and not self._position.get("partial_done", False)
+                          and self.config.partial_tp_enabled):
+                        # Check if partial TP trigger fired between cycles:
+                        # HL position size should be ~50% of our expected size.
+                        hl_sz       = hl_pos.get("size_contracts", 0.0)
+                        expected_sz = self._position.get("size_contracts", 0.0)
+                        if expected_sz > 0 and hl_sz < expected_sz * 0.75:
+                            # Partial TP fired on exchange — sync internal state
+                            frac             = 1.0 - (hl_sz / expected_sz)
+                            partial_size_usd = self._position["size_usd"] * frac
+                            entry            = self._position["entry_price"]
+                            side             = self._position["side"]
+                            ptp_price        = self._position.get("partial_tp_price") or snap["mark_price"]
+                            pnl_pct_p = ((ptp_price - entry) / entry * 100 if side == "long"
+                                         else (entry - ptp_price) / entry * 100)
+                            fee_p     = partial_size_usd * HL_TAKER_FEE
+                            pnl_usd_p = partial_size_usd * pnl_pct_p / 100 - fee_p
+
+                            self._equity                           += pnl_usd_p
+                            self._position["size_usd"]             *= (hl_sz / expected_sz)
+                            self._position["size_contracts"]        = hl_sz
+                            self._position["partial_done"]          = True
+                            self._position["partial_realized_pnl"]  = (
+                                self._position.get("partial_realized_pnl", 0.0) + pnl_usd_p)
+                            if not self._position.get("be_sl_applied", False):
+                                if side == "long":
+                                    self._position["stop_loss"] = max(self._position["stop_loss"], entry)
+                                else:
+                                    self._position["stop_loss"] = min(self._position["stop_loss"], entry)
+                                self._position["be_sl_applied"] = True
+                                # Move the exchange SL trigger to break-even
+                                _old_sl_cloid = self._position.get("current_sl_cloid")
+                                # Clear optimistically — task will store the new cloid via callback
+                                async def _do_be_sl_update(_oc=_old_sl_cloid, _sd=side, _sz=hl_sz, _sl=self._position["stop_loss"]):
+                                    new_cloid = await self._update_sl_trigger(
+                                        None, _sd, _sz, _sl, old_cloid=_oc,
+                                    )
+                                    if new_cloid and self._position:
+                                        self._position["current_sl_cloid"] = new_cloid
+                                        self._persist_position_state()
+                                asyncio.create_task(_do_be_sl_update())
+
+                            log.info(
+                                "Live sync: partial TP detected (HL=%.4f < expected=%.4f) | pnl=$%.2f",
+                                hl_sz, expected_sz, pnl_usd_p,
+                            )
+                            asyncio.create_task(self._emit_trade_event("partial_tp", {
+                                "price":               ptp_price,
+                                "pct_closed":          round(frac * 100, 1),
+                                "pnl_usd":             round(pnl_usd_p, 2),
+                                "pnl_pct":             round(pnl_pct_p, 4),
+                                "remaining_usd":       self._position["size_usd"],
+                                "remaining_contracts": self._position["size_contracts"],
+                                "new_sl":              self._position["stop_loss"],
+                            }))
+                            asyncio.create_task(self._notifier.send_partial_tp(
+                                side=side, symbol=SYMBOL,
+                                pct=round(frac * 100, 1),
+                                price=ptp_price,
+                                pnl_usd=pnl_usd_p,
+                                pnl_pct=pnl_pct_p,
+                                remaining_usd=self._position["size_usd"],
+                                new_sl=self._position["stop_loss"],
+                            ))
                 except Exception as _exc:
                     log.warning("Live position sync check failed: %s", _exc)
 
@@ -1520,6 +1699,18 @@ class ExecutionEngine:
         # Round to 4 decimal places (HL BTC min size = 0.001)
         size = max(round(eff_size_contracts, 4), 0.001)
 
+        # Pre-calculate level prices (needed before order submission for bracket orders)
+        _atr = atr or price * 0.01
+        _is_long = result.action == "long"
+        _partial_tp_price = (
+            (price + cfg.partial_tp_atr_mult * _atr) if _is_long
+            else (price - cfg.partial_tp_atr_mult * _atr)
+        ) if cfg.partial_tp_enabled else None
+        _trailing_activation_price = (
+            (price + cfg.trailing_sl_activation * _atr) if _is_long
+            else (price - cfg.trailing_sl_activation * _atr)
+        ) if cfg.trailing_sl_enabled else None
+
         if self.mode == "live":
             # Idempotency guard: abort if a position already exists on HL
             wallet = os.getenv("HL_WALLET_ADDRESS", "")
@@ -1533,7 +1724,12 @@ class ExecutionEngine:
                     # Reconcile in-memory state instead of opening a duplicate
                     await self._reconcile_position()
                     return
-            hl_order_id = await self._submit_open_order(result.action, size, price, params.stop_loss, inference_id)
+            hl_order_id = await self._submit_open_order(
+                result.action, size, price, params.stop_loss, inference_id,
+                take_profit=params.take_profit,
+                partial_tp_price=_partial_tp_price if cfg.partial_tp_enabled else None,
+                partial_tp_pct=cfg.partial_tp_pct,
+            )
         else:
             hl_order_id = None
             _regime_tag = f" [regime={self._regime_signal.regime}]" if self._regime_signal else ""
@@ -1543,17 +1739,12 @@ class ExecutionEngine:
                 params.stop_loss, params.take_profit, params.rr_ratio, _regime_tag,
             )
 
-        # Pre-calculate level prices so the UI can show them immediately
-        _atr = atr or price * 0.01
-        _is_long = result.action == "long"
-        _partial_tp_price = (
-            (price + cfg.partial_tp_atr_mult * _atr) if _is_long
-            else (price - cfg.partial_tp_atr_mult * _atr)
-        ) if cfg.partial_tp_enabled else None
-        _trailing_activation_price = (
-            (price + cfg.trailing_sl_activation * _atr) if _is_long
-            else (price - cfg.trailing_sl_activation * _atr)
-        ) if cfg.trailing_sl_enabled else None
+        # Derive initial SL cloid for live mode (used to cancel/replace SL trigger on trailing move)
+        import hashlib as _hl_hash
+        _sl_cloid = (
+            "0x" + _hl_hash.md5((inference_id or "").encode() + b"_sl").hexdigest()
+            if self.mode == "live" else None
+        )
 
         self._position = {
             "side":              result.action,
@@ -1580,6 +1771,8 @@ class ExecutionEngine:
             "partial_tp_price":              _partial_tp_price,
             "trailing_sl_activation_price":  _trailing_activation_price,
             "trailing_sl_dist":              (self.config.trailing_sl_activation * _atr) if self.config.trailing_sl_enabled else None,
+            # Live: tracks the active SL trigger cloid so we can cancel it when trailing moves the SL
+            "current_sl_cloid":              _sl_cloid,
         }
 
         # Persist paper position immediately so it survives a restart
@@ -1675,6 +1868,15 @@ class ExecutionEngine:
                         old_sl = self._position["stop_loss"]
                         log.info("Trailing SL updated: %.2f → %.2f", old_sl, new_sl)
                         self._position["stop_loss"] = new_sl
+                        if self.mode == "live":
+                            _oc = self._position.get("current_sl_cloid")
+                            _sz = self._position.get("size_contracts", 0)
+                            async def _trail_sl_long(_oc=_oc, _sz=_sz, _ns=new_sl):
+                                nc = await self._update_sl_trigger(None, side, _sz, _ns, old_cloid=_oc)
+                                if nc and self._position:
+                                    self._position["current_sl_cloid"] = nc
+                                    self._persist_position_state()
+                            asyncio.create_task(_trail_sl_long())
                         asyncio.create_task(self._emit_trade_event("sl_moved", {
                             "sl_old": old_sl, "sl_new": new_sl,
                             "high_water": self._position["high_water"],
@@ -1691,6 +1893,15 @@ class ExecutionEngine:
                         old_sl = self._position["stop_loss"]
                         log.info("Trailing SL updated: %.2f → %.2f", old_sl, new_sl)
                         self._position["stop_loss"] = new_sl
+                        if self.mode == "live":
+                            _oc = self._position.get("current_sl_cloid")
+                            _sz = self._position.get("size_contracts", 0)
+                            async def _trail_sl_short(_oc=_oc, _sz=_sz, _ns=new_sl):
+                                nc = await self._update_sl_trigger(None, side, _sz, _ns, old_cloid=_oc)
+                                if nc and self._position:
+                                    self._position["current_sl_cloid"] = nc
+                                    self._persist_position_state()
+                            asyncio.create_task(_trail_sl_short())
                         asyncio.create_task(self._emit_trade_event("sl_moved", {
                             "sl_old": old_sl, "sl_new": new_sl,
                             "high_water": self._position["high_water"],
@@ -1754,7 +1965,36 @@ class ExecutionEngine:
                     self._position["be_sl_applied"] = True
 
                 if self.mode == "live":
+                    # Fallback path: bracket trigger didn't fire intracandle, firing at 4H close.
+                    # Cancel the now-stale partial TP bracket trigger, send market partial close,
+                    # and move the exchange SL to break-even.
+                    import hashlib as _ph
+                    _seed     = (self._position.get("inference_id") or "").encode()
+                    _ptp_cloid = "0x" + _ph.md5(_seed + b"_ptp").hexdigest()
+                    try:
+                        from hyperliquid.exchange import Exchange
+                        from hyperliquid.utils import constants
+                        import eth_account
+                        _w  = eth_account.Account.from_key(HL_AGENT_PRIVKEY)
+                        _ep = constants.TESTNET_API_URL if HL_TESTNET else constants.MAINNET_API_URL
+                        _ex = Exchange(_w, _ep, account_address=os.getenv("HL_WALLET_ADDRESS"))
+                        await asyncio.to_thread(_ex.cancel_by_cloid, SYMBOL, _ptp_cloid)
+                        log.info("Stale partial-TP bracket trigger canceled (fallback close path)")
+                    except Exception as _pce:
+                        log.debug("Cancel stale partial-TP trigger skipped: %s", _pce)
+
                     await self._submit_partial_close(partial_contracts, current_price, side)
+
+                    # Also update exchange SL to break-even
+                    _oc = self._position.get("current_sl_cloid")
+                    _rem_sz = self._position.get("size_contracts", 0)
+                    _new_sl = self._position["stop_loss"]
+                    async def _be_sl_after_ptp(_oc=_oc, _rem_sz=_rem_sz, _ns=_new_sl):
+                        nc = await self._update_sl_trigger(None, side, _rem_sz, _ns, old_cloid=_oc)
+                        if nc and self._position:
+                            self._position["current_sl_cloid"] = nc
+                            self._persist_position_state()
+                    asyncio.create_task(_be_sl_after_ptp())
 
                 log.info(
                     "[%s] Partial TP %.0f%% @ %.2f | pnl=+%.2f%% ($%.2f)",
@@ -1841,7 +2081,7 @@ class ExecutionEngine:
             # partial_done, be_sl_applied, lgbm_strikes, bars_held, high_water, etc.)
             self._persist_position_state()
 
-    async def _close_position(self, exit_price: float, reason: str):
+    async def _close_position(self, exit_price: float, reason: str, exchange_already_closed: bool = False):
         if not self._position:
             return
 
@@ -1868,7 +2108,9 @@ class ExecutionEngine:
         # pnl_pct as % of original position size (consistent with pnl_usd being total)
         total_pnl_pct = total_pnl_usd / original_size_usd * 100 if original_size_usd else price_pct
 
-        if self.mode == "live":
+        if self.mode == "live" and not exchange_already_closed:
+            # exchange_already_closed=True when called from _cycle's trigger-detection path:
+            # the position was already closed by a native SL/TP order, no market close needed.
             try:
                 await self._submit_close_order()
             except Exception as exc:
@@ -1961,9 +2203,14 @@ class ExecutionEngine:
     async def _submit_open_order(
         self, side: str, size: float, mark_price: float, stop_loss: float,
         inference_id: Optional[str] = None,
+        take_profit: Optional[float] = None,
+        partial_tp_price: Optional[float] = None,
+        partial_tp_pct: float = 50.0,
     ) -> Optional[str]:
         """
-        Submit a market-like IOC entry + native SL trigger order via HL SDK.
+        Submit a market-like IOC entry + native SL + native TP trigger orders via HL SDK.
+        If partial_tp_price is provided, also places a partial TP trigger for partial_tp_pct%
+        of the position, and sizes the main TP to the remaining contracts.
         Uses HL_AGENT_PRIVATE_KEY env var.
         Returns the HL order ID string, or None on failure.
         """
@@ -2016,18 +2263,53 @@ class ExecutionEngine:
                 log.warning("Live entry IOC partial fill: requested %.4f, filled %.4f — SL sized to fill", size, filled_sz)
                 size = filled_sz
 
-            # Native SL trigger order — sized to actual fill
-            sl_is_buy = not is_buy
+            close_is_buy = not is_buy  # closing direction (opposite of entry)
+
+            # ── Native SL trigger order ───────────────────────────────────────
             _sl_seed = (_seed + b"_sl")
             sl_cloid = "0x" + hashlib.md5(_sl_seed).hexdigest()
             sl_result = await asyncio.to_thread(
                 exchange.order,
-                SYMBOL, sl_is_buy, size, stop_loss,
+                SYMBOL, close_is_buy, size, stop_loss,
                 {"trigger": {"triggerPx": round(stop_loss, 1), "isMarket": True, "tpsl": "sl"}},
                 True,    # reduce_only
                 sl_cloid,
             )
             log.info("Native SL order submitted: %s", sl_result)
+
+            # ── Native TP trigger orders ──────────────────────────────────────
+            if take_profit and take_profit > 0:
+                frac         = partial_tp_pct / 100.0
+                partial_sz   = round(size * frac, 4)        if partial_tp_price else 0.0
+                main_tp_sz   = round(size * (1.0 - frac), 4) if partial_tp_price else size
+
+                # Partial TP trigger (fires first — closes partial_tp_pct% of position)
+                if partial_tp_price and partial_sz >= 0.001:
+                    _ptp_seed = (_seed + b"_ptp")
+                    ptp_cloid = "0x" + hashlib.md5(_ptp_seed).hexdigest()
+                    ptp_result = await asyncio.to_thread(
+                        exchange.order,
+                        SYMBOL, close_is_buy, partial_sz, partial_tp_price,
+                        {"trigger": {"triggerPx": round(partial_tp_price, 1), "isMarket": True, "tpsl": "tp"}},
+                        True,   # reduce_only
+                        ptp_cloid,
+                    )
+                    log.info("Native partial-TP order (%.0f%% @ %.2f) submitted: %s",
+                             partial_tp_pct, partial_tp_price, ptp_result)
+
+                # Main TP trigger (remaining size after partial TP, or full size)
+                if main_tp_sz >= 0.001:
+                    _tp_seed = (_seed + b"_tp")
+                    tp_cloid = "0x" + hashlib.md5(_tp_seed).hexdigest()
+                    tp_result = await asyncio.to_thread(
+                        exchange.order,
+                        SYMBOL, close_is_buy, main_tp_sz, take_profit,
+                        {"trigger": {"triggerPx": round(take_profit, 1), "isMarket": True, "tpsl": "tp"}},
+                        True,   # reduce_only
+                        tp_cloid,
+                    )
+                    log.info("Native TP order (%.4f BTC @ %.2f) submitted: %s",
+                             main_tp_sz, take_profit, tp_result)
 
             oid = str(result.get("response", {}).get("data", {}).get("statuses", [{}])[0].get("resting", {}).get("oid", ""))
             return oid or None
@@ -2061,6 +2343,57 @@ class ExecutionEngine:
             log.info("Partial TP close order submitted: %s", result)
         except Exception as exc:
             log.error("Partial TP close order failed: %s", exc, exc_info=True)
+
+    async def _update_sl_trigger(
+        self, inference_id: Optional[str], side: str, remaining_sz: float, new_sl: float,
+        old_cloid: Optional[str] = None,
+    ) -> Optional[str]:
+        """
+        Cancel the current SL trigger and place a new one at new_sl.
+        Returns the new cloid, or None on failure.
+        Used when: partial TP fires (move SL to BE) and trailing SL moves the stop.
+        old_cloid: the cloid to cancel; if None, derives it from inference_id + "_sl".
+        """
+        if not HL_AGENT_PRIVKEY:
+            return None
+        try:
+            import hashlib
+            from hyperliquid.exchange import Exchange
+            from hyperliquid.utils import constants
+            import eth_account
+
+            wallet   = eth_account.Account.from_key(HL_AGENT_PRIVKEY)
+            endpoint = constants.TESTNET_API_URL if HL_TESTNET else constants.MAINNET_API_URL
+            exchange = Exchange(wallet, endpoint, account_address=os.getenv("HL_WALLET_ADDRESS"))
+
+            # Cancel old SL (ignore errors — it may already be filled/canceled)
+            if old_cloid:
+                try:
+                    cancel_res = await asyncio.to_thread(
+                        exchange.cancel_by_cloid, SYMBOL, old_cloid,
+                    )
+                    log.info("Old SL trigger canceled: %s", cancel_res)
+                except Exception as _ce:
+                    log.warning("Cancel old SL failed (may be already gone): %s", _ce)
+
+            # Place new SL trigger for remaining size
+            close_is_buy = (side == "short")
+            new_cloid = "0x" + hashlib.md5(
+                (old_cloid or "").encode() + str(new_sl).encode()
+            ).hexdigest()
+            sl_result = await asyncio.to_thread(
+                exchange.order,
+                SYMBOL, close_is_buy, remaining_sz, new_sl,
+                {"trigger": {"triggerPx": round(new_sl, 1), "isMarket": True, "tpsl": "sl"}},
+                True,   # reduce_only
+                new_cloid,
+            )
+            log.info("New SL trigger placed @ %.2f for %.4f BTC: %s", new_sl, remaining_sz, sl_result)
+            return new_cloid
+
+        except Exception as exc:
+            log.error("_update_sl_trigger failed: %s", exc, exc_info=True)
+            return None
 
     async def _submit_close_order(self):
         """Submit a market close order for the current position."""
@@ -2122,7 +2455,7 @@ class ExecutionEngine:
             db = get_supabase()
             db.table("inference_logs").insert({
                 "id":              inference_id,
-                "bot_id":          "default",
+                "bot_id":          None,
                 "model":           "chronos2_lgbm_ensemble_v2",
                 # Top-level probability columns — used by IsotonicCalibrator join
                 "c2_dir_prob":     self._safe_float(c2.get("c2_dir_prob")),

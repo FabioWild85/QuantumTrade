@@ -683,8 +683,7 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
             "final_equity":    round(equity, 2),
             "use_chronos":     getattr(req, "use_chronos", False),
         }
-        db = get_supabase()
-        db.table("backtest_results").insert({
+        record = {
             "symbol":          symbol,
             "from_date":       req.from_date,
             "to_date":         req.to_date,
@@ -693,7 +692,12 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
             "config":          cfg_snapshot,
             "summary":         summary,
             "results":         clean,
-        }).execute()
+        }
+        _name = getattr(req, "name", None)
+        if _name:
+            record["name"] = _name
+        db = get_supabase()
+        db.table("backtest_results").insert(record).execute()
     except Exception as exc:
         log.warning("Backtest save to DB failed: %s", exc)
 

@@ -984,6 +984,7 @@ class BacktestRequest(BaseModel):
     config: Optional[BotConfig] = None
     use_binance: bool = Field(True, description="Use Binance OHLCV for periods older than ~11 months")
     use_chronos: bool = Field(False, description="Enable Chronos-2 inference per candle (~3s/candle, slow)")
+    name: Optional[str] = Field(None, description="Optional label stored in backtest_results.name")
 
 
 backtest_jobs: dict = {}

@@ -4,6 +4,7 @@ All templates match the roadmap spec: bot started, trade opened/closed, error, k
 """
 
 import asyncio
+import html as _html
 import logging
 import os
 from datetime import datetime, timezone
@@ -91,7 +92,7 @@ class TelegramNotifier:
             sig_lines = [r for r in reasoning if r] [-3:]
             lines.append(f"\n<b>Segnali:</b>")
             for r in sig_lines:
-                lines.append(f"• <i>{r}</i>")
+                lines.append(f"• <i>{_html.escape(r)}</i>")
         await self._send("\n".join(lines))
 
     async def send_trade_closed(
@@ -105,7 +106,10 @@ class TelegramNotifier:
         equity_usd: float = 0.0,
         partial_pnl_usd: float = 0.0,
     ):
-        total_pnl = pnl_usd + partial_pnl_usd
+        # pnl_usd received here is already the total (close leg + partial TP).
+        # partial_pnl_usd is the partial-only portion, used to show the breakdown.
+        total_pnl  = pnl_usd
+        close_only = pnl_usd - partial_pnl_usd
         emoji = "✅" if total_pnl >= 0 else "❌"
         sign  = "+" if total_pnl >= 0 else ""
         reason_labels = {
@@ -121,15 +125,15 @@ class TelegramNotifier:
         reason_label = reason_labels.get(reason, reason)
         lines = [
             f"{emoji} <b>TRADE CHIUSO — {side.upper()} {symbol}</b>",
-            f"PnL close:  <code>{sign}${pnl_usd:,.2f} ({sign}{pnl_pct:.2f}%)</code>",
+            f"PnL totale: <code>{sign}${total_pnl:,.2f} ({sign}{pnl_pct:.2f}%)</code>",
         ]
         if partial_pnl_usd != 0.0:
             sp = "+" if partial_pnl_usd >= 0 else ""
-            st = "+" if total_pnl >= 0 else ""
-            lines.append(f"PnL parziale: <code>{sp}${partial_pnl_usd:,.2f}</code>")
-            lines.append(f"PnL totale:   <code>{st}${total_pnl:,.2f}</code>")
+            sc = "+" if close_only >= 0 else ""
+            lines.append(f"  ⚡ Partial TP:  <code>{sp}${partial_pnl_usd:,.2f}</code>")
+            lines.append(f"  Chiusura:      <code>{sc}${close_only:,.2f}</code>")
         lines += [
-            f"Motivo:     <code>{reason_label}</code>",
+            f"Motivo:     <code>{_html.escape(str(reason_label))}</code>",
             f"Durata:     <code>{holding_hours:.1f}h</code>",
         ]
         if equity_usd > 0:
@@ -139,8 +143,8 @@ class TelegramNotifier:
     async def send_error(self, error: str, context: str = ""):
         await self._send(
             f"⚠️ <b>AI Trading Hub — ERRORE</b>\n"
-            f"Contesto: <code>{context}</code>\n"
-            f"Errore:   <code>{error[:400]}</code>"
+            f"Contesto: <code>{_html.escape(context)}</code>\n"
+            f"Errore:   <code>{_html.escape(error[:400])}</code>"
         )
 
     async def send_kill_alert(self, details: dict):
@@ -229,14 +233,14 @@ class TelegramNotifier:
             f"R:R (ip.):    <code>{hyp_rr:.2f}</code>\n"
             f"Ensemble:     <code>{ensemble_pct:.1f}%</code>\n"
             f"P(dir):       <code>{dir_prob:.1%}</code>\n"
-            f"Motivo:       <code>{last_reason}</code>\n"
+            f"Motivo:       <code>{_html.escape(last_reason)}</code>\n"
             f"<i>Segnale ignorato — posizione {open_side.upper()} in corso</i>"
         )
 
     async def send_macro_pause_start(self, event_name: str, window_min: int):
         await self._send(
             f"⏸ <b>PAUSA MACRO ATTIVATA</b>\n"
-            f"Evento:   <code>{event_name}</code>\n"
+            f"Evento:   <code>{_html.escape(event_name)}</code>\n"
             f"Finestra: <code>±{window_min} min</code>\n"
             f"<i>Nuove aperture bloccate durante la finestra evento</i>"
         )
@@ -244,7 +248,7 @@ class TelegramNotifier:
     async def send_macro_pause_end(self, event_name: str):
         await self._send(
             f"▶️ <b>PAUSA MACRO TERMINATA</b>\n"
-            f"Evento: <code>{event_name}</code>\n"
+            f"Evento: <code>{_html.escape(event_name)}</code>\n"
             f"<i>Bot ripreso — aperture normali al prossimo ciclo</i>"
         )
 
@@ -259,7 +263,7 @@ class TelegramNotifier:
         emoji = "📈" if signal_side == "long" else "📉"
         await self._send(
             f"🚫 <b>SEGNALE BLOCCATO — PAUSA MACRO</b>\n"
-            f"Evento:   <code>{event_name}</code>\n"
+            f"Evento:   <code>{_html.escape(event_name)}</code>\n"
             f"Segnale:  {emoji} <code>{signal_side.upper()}</code>\n"
             f"Prezzo:   <code>${mark_price:,.2f}</code>\n"
             f"Ensemble: <code>{ensemble_pct:.1f}%</code>\n"

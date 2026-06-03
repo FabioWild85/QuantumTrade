@@ -462,6 +462,11 @@ export const TradeLog: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                               <span className="text-[10px] ml-1.5 opacity-60">
                                 ({pnlPct >= 0 ? '+' : ''}{pnlPct.toFixed(2)}%)
                               </span>
+                              {(t.partial_pnl_usd ?? 0) !== 0 && (
+                                <span className="block text-[9px] font-normal text-amber-500 dark:text-amber-400 mt-0.5">
+                                  incl. ⚡+${(t.partial_pnl_usd ?? 0).toFixed(2)}
+                                </span>
+                              )}
                             </>
                           )}
                         </td>
@@ -514,30 +519,54 @@ export const TradeLog: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                                 const ptpEvent = events?.find(e => e.kind === 'partial_tp');
                                 const ptpPrice = ptpEvent?.payload?.price != null ? Number(ptpEvent.payload.price) : null;
                                 const ptpPct   = ptpEvent?.payload?.pct_closed != null ? Number(ptpEvent.payload.pct_closed) : null;
-                                const pnl      = t.partial_pnl_usd ?? 0;
+                                const partialPnl = t.partial_pnl_usd ?? 0;
                                 return (
                                   <div className="bg-amber-50 dark:bg-amber-500/10 border border-amber-100 dark:border-amber-500/20 rounded-xl px-4 py-3">
                                     <p className="text-[10px] font-bold text-amber-500 dark:text-amber-400 uppercase tracking-widest mb-1">⚡ Partial TP</p>
                                     {ptpPrice != null && (
-                                      <p className="text-sm font-bold font-mono text-slate-700 dark:text-slate-200 mb-0.5">
-                                        ${ptpPrice.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                      <p className="text-xs font-mono text-slate-500 dark:text-slate-400 mb-0.5">
+                                        @ ${ptpPrice.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                        {ptpPct != null && <span className="ml-1.5">· {ptpPct.toFixed(0)}% pos.</span>}
                                       </p>
                                     )}
-                                    <p className={`text-xs font-bold font-mono ${pnl >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>
-                                      {pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}
-                                      {ptpPct != null && <span className="font-normal text-slate-400 dark:text-slate-500 ml-1.5">({ptpPct.toFixed(0)}% pos.)</span>}
+                                    <p className={`text-sm font-bold font-mono ${partialPnl >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>
+                                      {partialPnl >= 0 ? '+' : ''}${partialPnl.toFixed(2)}
                                     </p>
                                   </div>
                                 );
                               })()}
-                              {(t.partial_pnl_usd ?? 0) !== 0 && t.pnl_usd != null && (
-                                <div className="bg-white dark:bg-white/5 border border-slate-100 dark:border-white/5 rounded-xl px-4 py-3">
-                                  <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-1">PnL Totale Trade</p>
-                                  <p className={`text-sm font-bold font-mono ${t.pnl_usd >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>
-                                    {t.pnl_usd >= 0 ? '+' : ''}${t.pnl_usd.toFixed(2)}
-                                  </p>
-                                </div>
-                              )}
+                              {t.pnl_usd != null && (() => {
+                                const totalPnl   = t.pnl_usd;
+                                const partialPnl = t.partial_pnl_usd ?? 0;
+                                const closePnl   = totalPnl - partialPnl;
+                                const hasPartial = partialPnl !== 0;
+                                const tColor = totalPnl >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400';
+                                const cColor = closePnl  >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400';
+                                return (
+                                  <div className="bg-white dark:bg-white/5 border border-slate-100 dark:border-white/5 rounded-xl px-4 py-3">
+                                    <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-1.5">PnL Totale Trade</p>
+                                    <p className={`text-sm font-bold font-mono ${tColor}`}>
+                                      {totalPnl >= 0 ? '+' : ''}${totalPnl.toFixed(2)}
+                                    </p>
+                                    {hasPartial && (
+                                      <div className="mt-1.5 pt-1.5 border-t border-slate-100 dark:border-white/5 space-y-0.5">
+                                        <div className="flex justify-between text-[10px]">
+                                          <span className="text-slate-400 dark:text-slate-500">⚡ Partial TP</span>
+                                          <span className={`font-mono font-bold ${partialPnl >= 0 ? 'text-amber-500' : 'text-rose-500'}`}>
+                                            {partialPnl >= 0 ? '+' : ''}${partialPnl.toFixed(2)}
+                                          </span>
+                                        </div>
+                                        <div className="flex justify-between text-[10px]">
+                                          <span className="text-slate-400 dark:text-slate-500">Chiusura finale</span>
+                                          <span className={`font-mono font-bold ${cColor}`}>
+                                            {closePnl >= 0 ? '+' : ''}${closePnl.toFixed(2)}
+                                          </span>
+                                        </div>
+                                      </div>
+                                    )}
+                                  </div>
+                                );
+                              })()}
                             </div>
                             {/* Event timeline */}
                             {loadingEvents === t.id ? (

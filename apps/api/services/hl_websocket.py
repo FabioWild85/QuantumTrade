@@ -46,6 +46,13 @@ class HLWebSocket:
         self._liq_short_usd: float = 0.0    # USD value of short liquidations
         self._latest_oi: float = 0.0
         self._latest_mark: float = 0.0
+
+        # Period extremes — track the lowest and highest mark/trade price seen
+        # since the last watchdog poll. Used to catch TP/SL wicks that occur
+        # between polling intervals. Reset via consume_period_extremes().
+        self._period_low: float  = float("inf")
+        self._period_high: float = 0.0
+
         self._lock = asyncio.Lock()
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
@@ -68,6 +75,18 @@ class HLWebSocket:
     @property
     def latest_mark(self) -> Optional[float]:
         return self._latest_mark if self._latest_mark > 0 else None
+
+    def consume_period_extremes(self) -> tuple[Optional[float], Optional[float]]:
+        """Return (period_low, period_high) since last call and reset the accumulators.
+
+        Used by the paper watchdog to check whether SL/TP was touched during the
+        polling interval — catches brief wicks that the instantaneous mark misses.
+        """
+        low  = self._period_low  if self._period_low  < float("inf") else None
+        high = self._period_high if self._period_high > 0            else None
+        self._period_low  = float("inf")
+        self._period_high = 0.0
+        return low, high
 
     # ── Public interface ──────────────────────────────────────────────────────
 
@@ -206,6 +225,10 @@ class HLWebSocket:
                             self._liq_short_usd += usd
                         elif side == "A":  # long liquidation dumped downward
                             self._liq_long_usd += usd
+
+                    # NOTE: trade (last/index) prices are intentionally NOT used to
+                    # update period extremes. HL trigger orders fire on mark price only,
+                    # and using trade prices would make paper more sensitive than live.
                 except (ValueError, TypeError):
                     continue
 
@@ -215,6 +238,11 @@ class HLWebSocket:
             if "openInterest" in ctx:
                 self._latest_oi = float(ctx["openInterest"])
             if "markPx" in ctx:
-                self._latest_mark = float(ctx["markPx"])
+                px = float(ctx["markPx"])
+                self._latest_mark = px
+                if px < self._period_low:
+                    self._period_low = px
+                if px > self._period_high:
+                    self._period_high = px
         except (ValueError, TypeError):
             pass
