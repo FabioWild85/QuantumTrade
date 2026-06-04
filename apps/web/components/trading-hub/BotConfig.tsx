@@ -77,6 +77,11 @@ interface Config {
   absorption_z_threshold: number;
   // Binance Cross-Exchange CVD
   binance_cvd_enabled: boolean;
+  // Options IV Bias (Phase 1)
+  options_bias_enabled: boolean;
+  iv_high_percentile: number;
+  iv_low_percentile: number;
+  iv_size_factor: number;
   // Dual ATR
   dual_atr_enabled: boolean;
   // Signal quality filters (formerly hardcoded)
@@ -196,6 +201,11 @@ const DEFAULTS: Config = {
   absorption_z_threshold: 2.0,
   // Binance Cross-Exchange CVD
   binance_cvd_enabled: false,
+  // Options IV Bias (Phase 1)
+  options_bias_enabled: false,
+  iv_high_percentile: 80,
+  iv_low_percentile: 20,
+  iv_size_factor: 0.7,
   // Dual ATR
   dual_atr_enabled: false,
   // Signal quality filters
@@ -1238,6 +1248,65 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
               </div>
             )}
           </div>
+        </div>
+      </Section>
+
+      {/* Options IV Bias */}
+      <Section title="Options IV Bias — Sizing Adattivo" description="Riduce la size delle trade quando la Implied Volatility di Deribit è in zona estrema (alta incertezza del mercato). Dati gratuiti, nessuna API key richiesta. Non modifica i segnali — agisce solo sul rischio per trade.">
+        <div className={`flex flex-col gap-3 mb-6 pb-6 border-b transition-colors duration-200 ${config.options_bias_enabled ? 'border-violet-200 dark:border-violet-500/25' : 'border-slate-100 dark:border-white/5'}`}>
+          <Tooltip text="Fetcha la IV ATM 7-day da Deribit ogni ciclo. Quando il percentile rolling 90gg supera la soglia alta (default 80°), la size viene moltiplicata per iv_size_factor (default 0.70). In regime a bassa IV (< soglia bassa) la size rimane piena. Non richiede retrain per funzionare — agisce direttamente su size_factor nel DecisionResult." width="wide" pos="bottom">
+            <label className="flex items-center gap-3 cursor-pointer group">
+              <div className="relative">
+                <input type="checkbox" className="sr-only" checked={config.options_bias_enabled} onChange={e => setConfig(c => ({ ...c, options_bias_enabled: e.target.checked }))} />
+                <div className={`w-9 h-[18px] rounded-full transition-all duration-300 ${config.options_bias_enabled ? 'bg-violet-600' : 'bg-slate-200 dark:bg-white/10'}`} />
+                <div className={`absolute top-[3px] left-[3px] w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.options_bias_enabled ? 'translate-x-[18px]' : ''}`} />
+              </div>
+              <div className="flex-1">
+                <p className={`text-xs font-bold leading-tight transition-colors ${config.options_bias_enabled ? 'text-violet-600 dark:text-violet-400' : 'text-slate-700 dark:text-slate-300'}`}>
+                  Options IV Bias {config.options_bias_enabled && <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-violet-100 dark:bg-violet-500/20 text-violet-600 dark:text-violet-400 uppercase tracking-wider">Attivo</span>}
+                </p>
+                <p className="text-[10px] text-slate-400 dark:text-slate-500 mt-0.5">Deribit ATM IV 7d · percentile rolling 90gg · size ridotta in alta-IV</p>
+              </div>
+            </label>
+          </Tooltip>
+          {config.options_bias_enabled && (
+            <div className="mt-3 pt-3 border-t border-violet-100 dark:border-violet-500/15 flex flex-col gap-4">
+              <div className="flex flex-col gap-1">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">Soglia IV alta (size ridotta)</span>
+                  <span className="text-[10px] font-bold text-violet-600 dark:text-violet-400">{config.iv_high_percentile.toFixed(0)}°</span>
+                </div>
+                <input type="range" min={50} max={99} step={1} value={config.iv_high_percentile}
+                  onChange={e => setConfig(c => ({ ...c, iv_high_percentile: parseFloat(e.target.value) }))}
+                  className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-violet-500" />
+                <p className="text-[9px] text-slate-400 dark:text-slate-500">Percentile rolling 90gg oltre cui scatta la riduzione. Default: 80°</p>
+              </div>
+              <div className="flex flex-col gap-1">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">Soglia IV bassa (log only)</span>
+                  <span className="text-[10px] font-bold text-violet-600 dark:text-violet-400">{config.iv_low_percentile.toFixed(0)}°</span>
+                </div>
+                <input type="range" min={1} max={49} step={1} value={config.iv_low_percentile}
+                  onChange={e => setConfig(c => ({ ...c, iv_low_percentile: parseFloat(e.target.value) }))}
+                  className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-violet-500" />
+                <p className="text-[9px] text-slate-400 dark:text-slate-500">Al di sotto di questa soglia viene loggato "low-IV regime" ma size rimane piena. Default: 20°</p>
+              </div>
+              <div className="flex flex-col gap-1">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">IV Size Factor</span>
+                  <span className="text-[10px] font-bold text-violet-600 dark:text-violet-400">{(config.iv_size_factor * 100).toFixed(0)}%</span>
+                </div>
+                <input type="range" min={0.2} max={1.0} step={0.05} value={config.iv_size_factor}
+                  onChange={e => setConfig(c => ({ ...c, iv_size_factor: parseFloat(e.target.value) }))}
+                  className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-violet-500" />
+                <p className="text-[9px] text-slate-400 dark:text-slate-500">Moltiplicatore size in alta-IV. 0.70 = 70% della size normale. Default: 0.70</p>
+              </div>
+              <div className="p-2 rounded-lg bg-violet-50 dark:bg-violet-500/5 border border-violet-100 dark:border-violet-500/15">
+                <p className="text-[9px] text-violet-600 dark:text-violet-400 font-medium">2 feature aggiuntive per LGBM (al prossimo retrain): <code className="font-mono">iv_7d</code> · <code className="font-mono">iv_7d_percentile</code></p>
+                <p className="text-[9px] text-slate-400 dark:text-slate-500 mt-1">Il sizing IV è immediato (nessun retrain necessario). Le feature diventano input LGBM solo dopo un retrain esplicito con questo toggle attivo.</p>
+              </div>
+            </div>
+          )}
         </div>
       </Section>
 

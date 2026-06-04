@@ -205,6 +205,11 @@ class BotConfig(BaseModel):
     # Adds 3 features: binance_cvd_slope, binance_absorption_z, cross_cvd_div.
     # Affects LightGBM only after a retrain with these features enabled.
     binance_cvd_enabled: bool = Field(False)
+    # Options IV Bias (Phase 1 — Deribit ATM IV)
+    options_bias_enabled: bool  = Field(False)
+    iv_high_percentile:   float = Field(80.0, ge=50.0, le=99.0)
+    iv_low_percentile:    float = Field(20.0, ge=1.0,  le=49.0)
+    iv_size_factor:       float = Field(0.7,  ge=0.2,  le=1.0)
     # Signal quality filters
     exhaustion_guard_enabled:  bool  = Field(True)
     structural_sl_enabled:     bool  = Field(True)

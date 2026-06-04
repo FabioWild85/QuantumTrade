@@ -110,6 +110,11 @@ class BotConfig:
         self.absorption_z_threshold    = kw.get("absorption_z_threshold",    2.0)
         # Binance Cross-Exchange CVD
         self.binance_cvd_enabled       = kw.get("binance_cvd_enabled",       False)
+        # Options IV Bias (Phase 1)
+        self.options_bias_enabled      = kw.get("options_bias_enabled",      False)
+        self.iv_high_percentile        = kw.get("iv_high_percentile",        80.0)
+        self.iv_low_percentile         = kw.get("iv_low_percentile",         20.0)
+        self.iv_size_factor            = kw.get("iv_size_factor",            0.7)
         # Signal quality filters
         self.exhaustion_guard_enabled  = kw.get("exhaustion_guard_enabled",  True)
         self.structural_sl_enabled     = kw.get("structural_sl_enabled",     True)
@@ -1059,11 +1064,25 @@ class ExecutionEngine:
             except Exception as _bnc_err:
                 log.warning("Binance CVD fetch failed (non-blocking): %s", _bnc_err)
 
-        # 3. Build full 64-feature matrix
+        # Options IV data — fetch from Deribit when options_bias_enabled OR reversal_mode_enabled.
+        # Returns last cached value on failure so the cycle is never blocked.
+        _iv_7d_value = None
+        _need_iv = self.config.options_bias_enabled or getattr(self.config, "reversal_mode_enabled", False)
+        if _need_iv:
+            try:
+                from services.deribit_data import get_deribit_atm_iv
+                _iv_7d_value = await get_deribit_atm_iv("BTC")
+            except Exception as _iv_err:
+                log.warning("Deribit IV fetch failed (non-blocking): %s", _iv_err)
+
+        # 3. Build full feature matrix
         df_feat = build_all_features(
             df_4h, df_fund, df_oi, df_liq,
             df_binance=df_binance,
             binance_cvd_enabled=self.config.binance_cvd_enabled,
+            options_bias_enabled=self.config.options_bias_enabled,
+            reversal_mode_enabled=getattr(self.config, "reversal_mode_enabled", False),
+            iv_7d_value=_iv_7d_value,
         )
         latest  = df_feat.iloc[-1].to_dict()
         atr     = latest.get("atr_14")
@@ -1192,6 +1211,11 @@ class ExecutionEngine:
             fng_greed_thr               = getattr(cfg, "fng_greed_thr",         65.0),
             fng_extreme_greed_thr       = getattr(cfg, "fng_extreme_greed_thr", 80.0),
             fng_bias_delta              = getattr(cfg, "fng_bias_delta",        0.03),
+            # Options IV Bias
+            options_bias_enabled        = getattr(cfg, "options_bias_enabled",  False),
+            iv_high_percentile          = getattr(cfg, "iv_high_percentile",    80.0),
+            iv_low_percentile           = getattr(cfg, "iv_low_percentile",     20.0),
+            iv_size_factor              = getattr(cfg, "iv_size_factor",        0.7),
         )
         result = decision_engine.decide(
             features=latest,

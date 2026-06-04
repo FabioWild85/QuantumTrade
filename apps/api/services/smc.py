@@ -287,6 +287,38 @@ def build_mtf_features(df: pd.DataFrame) -> pd.DataFrame:
 
 # ─── Full Feature Pipeline ────────────────────────────────────────────────────
 
+def build_options_features(
+    df: pd.DataFrame,
+    iv_7d_value: Optional[float],
+    lookback_bars: int = 540,  # 90 days × 6 bars/day
+) -> pd.DataFrame:
+    """
+    Adds options-derived features to df using a single scalar IV value (current bar).
+    iv_7d_value: ATM 7-day IV in decimal (e.g. 0.62 = 62% annualised). None = skip.
+    The rolling percentile is computed from the iv_7d column itself once enough history
+    accumulates in the live process; for early bars it defaults to 50 (neutral).
+    """
+    d = df.copy()
+    if iv_7d_value is None:
+        d["iv_7d"]            = np.nan
+        d["iv_7d_percentile"] = 50.0
+        return d
+
+    # Stamp the current value on the last bar; earlier bars remain NaN (forward-filled downstream).
+    # In live/paper use, the column accumulates across cycles via the persistent df_feat window.
+    if "iv_7d" not in d.columns:
+        d["iv_7d"] = np.nan
+    d.iloc[-1, d.columns.get_loc("iv_7d")] = iv_7d_value
+
+    # Rolling percentile rank over lookback_bars (90-day window at 4H resolution).
+    # min_periods=30 so it starts producing values after 5 days of data.
+    iv_series = d["iv_7d"].ffill()
+    rank = iv_series.rolling(lookback_bars, min_periods=30).rank(pct=True) * 100.0
+    d["iv_7d_percentile"] = rank.fillna(50.0)  # neutral default until enough history
+
+    return d
+
+
 def build_all_features(
     df_4h: pd.DataFrame,
     df_funding: pd.DataFrame,
@@ -294,12 +326,17 @@ def build_all_features(
     df_liq: pd.DataFrame,
     df_binance: Optional[pd.DataFrame] = None,
     binance_cvd_enabled: bool = False,
+    options_bias_enabled: bool = False,
+    reversal_mode_enabled: bool = False,
+    iv_7d_value: Optional[float] = None,
 ) -> pd.DataFrame:
     """
     Builds the complete feature matrix used by LightGBM.
     Input: aligned DataFrames indexed by UTC timestamp.
     df_binance: optional Binance klines DataFrame with 'taker_buy_vol' column.
                 When provided and binance_cvd_enabled=True, adds 3 cross-exchange CVD features.
+    iv_7d_value: current ATM 7-day IV from Deribit (decimal). Added when options_bias_enabled
+                 OR reversal_mode_enabled, so both modules can use iv_7d_percentile independently.
     """
     d = df_4h.copy()
     close, high, low, vol = d["close"], d["high"], d["low"], d["volume"]
@@ -395,6 +432,10 @@ def build_all_features(
         else:
             log.warning("binance_cvd_enabled=True but df_binance has no 'taker_buy_vol' column — skipping")
 
+    # ── Options IV features (optional — active when options_bias_enabled OR reversal_mode_enabled) ──
+    if options_bias_enabled or reversal_mode_enabled:
+        d = build_options_features(d, iv_7d_value)
+
     log.debug("Feature matrix: %d columns, %d rows", d.shape[1], len(d))
     return d
 
@@ -420,6 +461,9 @@ FEATURE_GROUPS = {
     "liq": ["liq_total", "liq_sum_24h", "liq_z", "liq_ratio", "liq_long_z", "liq_short_z"],
     "c2":  ["c2_dir_prob", "c2_vol_prob", "c2_p10", "c2_p50", "c2_p90",
              "c2_uncertainty", "c2_cont_prob", "c2_p50_vs_atr"],
+    # Options IV features (Phase 1). Only populated when options_bias_enabled OR reversal_mode_enabled.
+    # Included in LGBM training automatically on next retrain when those flags are active.
+    "options_phase1": ["iv_7d", "iv_7d_percentile"],
 }
 
 ALL_FEATURES = [f for group in FEATURE_GROUPS.values() for f in group]

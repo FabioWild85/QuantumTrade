@@ -369,10 +369,22 @@ async def _check_pullback_entry(self):
     Chiamato ogni ciclo dal loop principale.
     Gestisce due modalità: OB Limit Order (ob_order_id presente) e Passive Monitoring (ATR-based).
     """
-    if self._pending_pullback is None or self._position:
+    if self._pending_pullback is None:
         return
 
     pb = self._pending_pullback
+
+    # Posizione già aperta (es. reversal trade aperto nel ciclo corrente o precedente).
+    # In questo caso BISOGNA cancellare l'eventuale ordine GTC su HL prima di uscire —
+    # senza questa cancellazione l'ordine rimane attivo sull'exchange come ordine orfano
+    # che potrebbe fillare in futuro aprendo una posizione non monitorata.
+    if self._position:
+        if pb.ob_order_id is not None:
+            await self._cancel_ob_limit_order(pb.ob_order_id)
+            log.info("Pullback OB order cancelled: position already open (oid=%s)", pb.ob_order_id)
+        self._pending_pullback = None
+        return
+
     now = datetime.now(timezone.utc)
     price = await self._get_mark_price()
 

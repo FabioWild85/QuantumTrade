@@ -78,6 +78,11 @@ class DecisionEngine:
         fng_greed_thr: float = 65.0,
         fng_extreme_greed_thr: float = 80.0,
         fng_bias_delta: float = 0.03,
+        # Options IV Bias (Phase 1)
+        options_bias_enabled: bool = False,
+        iv_high_percentile: float = 80.0,
+        iv_low_percentile: float = 20.0,
+        iv_size_factor: float = 0.7,
     ):
         self.directional_threshold       = directional_threshold
         self.adx_gate                    = adx_gate
@@ -120,6 +125,11 @@ class DecisionEngine:
         self.fng_greed_thr         = fng_greed_thr
         self.fng_extreme_greed_thr = fng_extreme_greed_thr
         self.fng_bias_delta        = fng_bias_delta
+        # Options IV Bias
+        self.options_bias_enabled  = options_bias_enabled
+        self.iv_high_percentile    = iv_high_percentile
+        self.iv_low_percentile     = iv_low_percentile
+        self.iv_size_factor        = iv_size_factor
 
     def decide(
         self,
@@ -367,6 +377,26 @@ class DecisionEngine:
                     f"→ long +{half:.2f}, short −{half:.2f}"
                 )
 
+        # ── Options IV Bias ───────────────────────────────────────────────────
+        # High IV percentile = market expects explosive moves → reduce size.
+        # iv_7d_percentile is 50.0 (neutral) when options are disabled or fetch failed.
+        # Does NOT modify thresholds — only affects position size via iv_sf multiplier
+        # applied to the DecisionResult.size_factor at the long/short return points.
+        iv_sf = 1.0
+        if self.options_bias_enabled:
+            _iv_pct = float(features.get("iv_7d_percentile", 50.0))
+            if _iv_pct > self.iv_high_percentile:
+                iv_sf = self.iv_size_factor
+                reasoning.append(
+                    f"IVBias: iv_7d_pct={_iv_pct:.0f}% > {self.iv_high_percentile:.0f}% "
+                    f"→ size×{iv_sf:.2f} (high-IV regime, volatility compression)"
+                )
+            elif _iv_pct < self.iv_low_percentile:
+                reasoning.append(
+                    f"IVBias: iv_7d_pct={_iv_pct:.0f}% < {self.iv_low_percentile:.0f}% "
+                    f"→ size×1.00 (low-IV regime, full size)"
+                )
+
         # ── Exhaustion Guard: RSI extreme + extended ret_48 ──────────────────
         if self.exhaustion_guard_enabled:
             _exh_short_conds: list[str] = []
@@ -496,11 +526,11 @@ class DecisionEngine:
                 reasoning.append(f"NOTE: C2 median ({p50:.1f}) below entry — minor bearish bias in forecast")
 
             is_counter_trend = (bias_regime == -1)
-            sf = counter_trend_size_factor if is_counter_trend else 1.0
+            sf = (counter_trend_size_factor if is_counter_trend else 1.0) * iv_sf
             thr_used = threshold_long
             reasoning.append(
                 f"LONG: P(up)={ensemble_prob:.3f} > {thr_used:.2f}, C2_p50={p50:.1f}"
-                + (f" [counter-trend size×{sf:.2f}]" if sf < 1.0 else "")
+                + (f" [size×{sf:.2f}]" if sf < 1.0 else "")
             )
             return DecisionResult(
                 action="long",
@@ -564,11 +594,11 @@ class DecisionEngine:
                 reasoning.append(f"NOTE: C2 median ({p50:.1f}) above entry — minor bullish bias in forecast")
 
             is_counter_trend = (bias_regime == 1)
-            sf = counter_trend_size_factor if is_counter_trend else 1.0
+            sf = (counter_trend_size_factor if is_counter_trend else 1.0) * iv_sf
             thr_used = threshold_short
             reasoning.append(
                 f"SHORT: P(down)={short_prob:.3f} > {thr_used:.2f}, C2_p50={p50:.1f}"
-                + (f" [counter-trend size×{sf:.2f}]" if sf < 1.0 else "")
+                + (f" [size×{sf:.2f}]" if sf < 1.0 else "")
             )
             return DecisionResult(
                 action="short",

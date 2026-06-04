@@ -85,6 +85,78 @@ Questi due amplificatori **non aggiungono feature al LGBM** e non richiedono cal
 - `reversal_daily_rsi_extreme_high`: float = 75.0, range 70–85 — RSI Daily overbought
 - `reversal_daily_rsi_extreme_low`: float = 25.0, range 15–30 — RSI Daily oversold
 
+### Fase 1b — Amplificatore IV (indipendente dal toggle `options_bias_enabled`)
+
+Il reversal detector usa `iv_7d_percentile` come amplificatore del componente `exhaustion`. Questo dato deve essere disponibile in `df_feat` **indipendentemente** dal toggle `options_bias_enabled` del piano Options: i due toggle controllano cose distinte e un utente potrebbe voler tenere attivo il boost IV sul reversal senza abilitare il sizing IV sulle trade trend-following (o viceversa).
+
+#### Modifica a `build_all_features()` — condizione di fetch IV
+
+Il fetch di `iv_7d_percentile` da Deribit deve essere condizionato all'unione dei due flag, non al solo `options_bias_enabled`:
+
+```python
+# In build_all_features() — attuale (da modificare quando si implementa Options Phase 1):
+# if options_bias_enabled:
+#     d = build_options_features(d, iv_cache)
+
+# Corretto — fetch attivo se uno qualsiasi dei due moduli che usa iv_7d_percentile è abilitato:
+_need_iv = options_bias_enabled or reversal_mode_enabled
+if _need_iv:
+    d = build_options_features(d, iv_cache)
+```
+
+Questa modifica va applicata in tutti e tre i punti in cui `build_all_features()` viene chiamato con dati live o backtest:
+- `execution.py` → `_cycle()`: passa `reversal_mode_enabled=self.config.reversal_mode_enabled`
+- `backtesting.py` → loop per-barra: `reversal_mode_enabled = getattr(cfg, "reversal_mode_enabled", False)`
+- `trainer.py` → `_run()`: il trainer non usa il reversal detector, quindi qui il flag rimane solo `binance_cvd_enabled` e `options_bias_enabled` — nessuna modifica necessaria
+
+La firma di `build_all_features()` in `smc.py` va aggiornata con il nuovo parametro:
+
+```python
+def build_all_features(
+    df_4h, df_funding, df_oi, df_liq,
+    df_binance=None,
+    binance_cvd_enabled: bool = False,
+    options_bias_enabled: bool = False,   # ← già presente nel piano Options Phase 1
+    reversal_mode_enabled: bool = False,  # ← NUOVO: trigger fetch IV anche senza options toggle
+    iv_cache=None,                        # ← cache del valore IV precedente per forward-fill
+) -> pd.DataFrame:
+    ...
+    _need_iv = options_bias_enabled or reversal_mode_enabled
+    if _need_iv:
+        d = build_options_features(d, iv_cache)
+```
+
+#### Logica nel componente `exhaustion` del detector
+
+```python
+# Nel ReversalZoneDetector, componente exhaustion:
+# iv_7d_percentile è 50.0 (default neutro) se né options né reversal toggle sono attivi,
+# oppure se il fetch Deribit ha fallito (forward-fill non disponibile).
+# In entrambi i casi il boost non scatta — zero side effects.
+_iv_extreme = float(features.get("iv_7d_percentile", 50.0) > cfg.reversal_iv_exhaustion_high)
+# boost: +0.15 sul componente exhaustion se IV in zona estrema
+exhaustion_score = min(1.0, exhaustion_score_base + _iv_extreme * 0.15)
+```
+
+**Tabella comportamento per combinazione di toggle:**
+
+| `options_bias_enabled` | `reversal_mode_enabled` | IV fetchata? | Options sizing attivo? | Reversal IV boost attivo? |
+|---|---|---|---|---|
+| `False` | `False` | No | No | No |
+| `True` | `False` | Sì | Sì | No (reversal disabilitato) |
+| `False` | `True` | Sì | No | Sì (se IV > soglia) |
+| `True` | `True` | Sì | Sì | Sì (se IV > soglia) |
+
+Il fetch Deribit avviene **una sola volta** per ciclo indipendentemente da quanti moduli lo usano — nessun overhead aggiuntivo quando entrambi sono attivi.
+
+**Perché `iv_7d_percentile` è l'amplificatore giusto:**
+- Alta IV durante un estremo di prezzo segnala che il mercato si aspetta movimento bidirezionale (non trend continuo): segnale cross-asset di esaurimento del momentum direzionale
+- Il percentile rolling a 90 giorni normalizza per regime: un'IV del 60% in un periodo normalmente basso conta più dello stesso 60% in un periodo normalmente alto
+- Sinergia: il reversal detector già usa `transition_risk` del RegimeDetector (componente 5). L'IV aggiunge una dimensione ortogonale (mercato delle opzioni vs struttura del price action)
+
+**Nuovo parametro:**
+- `reversal_iv_exhaustion_high`: float = 80.0, range 60.0–95.0 — percentile IV oltre cui scatta il boost exhaustion
+
 ### Fase 2 — Futura: 1H entry trigger (post-validazione)
 
 Da implementare **solo dopo aver validato il detector 4H in backtest**. La logica: il detector 4H identifica il setup, poi il sistema aspetta un trigger sul 1H (Break of Structure bearish/bullish, FVG fill, OB touch) prima di aprire. Vantaggi: SL più corto, entry più preciso. Richiede che il loop sia event-driven su 1H per i soli trade reversal — refactor non banale, da pianificare separatamente.
@@ -667,6 +739,10 @@ self.reversal_rsi_div_threshold  = kw.get("reversal_rsi_div_threshold",  0.03)  
 self.reversal_daily_rsi_extreme_high = kw.get("reversal_daily_rsi_extreme_high", 75.0)  # RSI Daily overbought [70–85]
 self.reversal_daily_rsi_extreme_low  = kw.get("reversal_daily_rsi_extreme_low",  25.0)  # RSI Daily oversold [15–30]
 self.reversal_daily_ema_dist_extreme = kw.get("reversal_daily_ema_dist_extreme",  4.0)  # distanza EMA20 Daily in ATR [2.0–8.0]
+# Amplificatore IV (usa iv_7d_percentile già presente quando options o reversal sono abilitati)
+self.reversal_iv_exhaustion_high     = kw.get("reversal_iv_exhaustion_high",     80.0)  # percentile IV min per boost exhaustion [60–95]
+# Amplificatore IV da Options Phase 1 (opzionale — usa iv_7d_percentile se disponibile)
+self.reversal_iv_exhaustion_high     = kw.get("reversal_iv_exhaustion_high",     80.0)  # percentile IV oltre cui boost exhaustion [60–95]
 # Pending reversal / limit retest
 self.reversal_entry_mode         = kw.get("reversal_entry_mode",         "limit_retest")  # "close" | "limit_retest"
 self.reversal_retest_wick_pct    = kw.get("reversal_retest_wick_pct",    0.50)            # zona entry nel wick [0.0–1.0]
@@ -705,6 +781,10 @@ reversal_rsi_div_threshold:        float = Field(0.03,  ge=0.01, le=0.08)
 reversal_daily_rsi_extreme_high:   float = Field(75.0, ge=70.0, le=85.0)
 reversal_daily_rsi_extreme_low:    float = Field(25.0, ge=15.0, le=30.0)
 reversal_daily_ema_dist_extreme:   float = Field(4.0,  ge=2.00, le=8.00)
+# Amplificatore IV (iv_7d_percentile già presente quando options_bias o reversal sono abilitati)
+reversal_iv_exhaustion_high:       float = Field(80.0, ge=60.0, le=95.0)
+# Amplificatore IV (opzionale — attivo solo se Options Phase 1 è implementata)
+reversal_iv_exhaustion_high:       float = Field(80.0, ge=60.0, le=95.0)
 # Pending reversal / limit retest
 reversal_entry_mode:               Literal["close", "limit_retest"] = Field("limit_retest")
 reversal_retest_wick_pct:          float = Field(0.50, ge=0.0,  le=1.0)
@@ -727,7 +807,13 @@ if self.config.reversal_mode_enabled and not self._position:
     reversal_result = ReversalZoneDetector().score(
         df_feat, self._regime_signal, self.config
     )
-    # Inietta il score nelle features per LGBM (feature aggiuntiva)
+    # Inietta il score nel snap dict per UI/logging — NON è una feature LGBM.
+    # reversal_score è calcolato a runtime dal detector: non esiste nei dati di training
+    # (trainer.py chiama build_all_features() ma non istanzia ReversalZoneDetector).
+    # Il modello LGBM apprende dalle 13 feature base in FEATURE_GROUPS["reversal"]
+    # (rsi_div_*, macd_div_*, vol_climax_*, wick_reject_*, stoch_*) — non dall'aggregato.
+    # Aggiungere reversal_score a FEATURE_GROUPS causerebbe tutti-zero nel training
+    # e rumore puro nel modello. Non farlo.
     latest["reversal_score"]     = reversal_result.score
     latest["reversal_dir_long"]  = 1.0 if reversal_result.direction == "long"  else 0.0
     latest["reversal_dir_short"] = 1.0 if reversal_result.direction == "short" else 0.0
@@ -818,6 +904,23 @@ if self._position and self._reversal_pending:
 
 Il trigger intracandle (paper) è gestito nel `_paper_watchdog` (sezione 4.4).
 Il trigger al ciclo (live) è il secondo blocco in sezione 4.4.
+
+#### Modifica `kill()`
+
+Il kill switch deve cancellare `_reversal_pending` (e persistere la cancellazione su Supabase) esattamente come fa con `_position`. Aggiungere all'inizio di `kill()`, prima di cancellare `self._position`:
+
+```python
+# In kill(), prima della sezione che chiude la posizione:
+if self._reversal_pending is not None:
+    log.info("Kill switch: cancelling pending reversal signal (%s)",
+             self._reversal_pending["direction"])
+    self._reversal_pending = None
+    self._persist_reversal_pending(None)
+```
+
+Questo garantisce che un pending reversal con `reversal_entry_mode = "limit_retest"` venga annullato correttamente — nessun trade aperto su uno snapshot di segnale ormai invalido al riavvio del bot.
+
+**Nota:** il pullback entry plan ha una logica analoga — `_pending_pullback = None` in `kill()`. Quando entrambi i piani sono implementati, `kill()` deve cancellare entrambi.
 
 #### Cancellazione pending su macro pause
 
@@ -1495,3 +1598,6 @@ reversal_conflict_block     = False
 - **`reversal_entry_mode = "close"` è 100% backward-compatible:** disabilita la pending state machine completamente. Utile per confrontare in backtest le due strategie di entry su periodi identici senza altre variabili.
 - **Pending state persistito su Supabase:** `_persist_reversal_pending()` salva il pending dict su `bot_configs.params["_reversal_pending"]` ad ogni cambio di stato (set/triggered/expired/cancelled). Al riavvio, il pending viene ripristinato in `__init__`/`_reconcile_position`. `_persist_position_state()` non può essere usato direttamente perché ha un early-return su `not self._position`.
 - **`consume_period_extremes()` chiamato una sola volta per polling interval:** il trigger pending (paper) vive dentro `_paper_watchdog` e usa i valori già consumati dal watchdog stesso — nessun secondo consume, nessun conflitto con il check SL/TP. In live il check avviene a ciclo 4H con `latest_mark` (meno preciso, accettabile per Fase 1).
+- **`reversal_score` NON è una feature LGBM:** è un aggregato runtime calcolato dal detector su feature già note al modello. Aggiungere `reversal_score` a `FEATURE_GROUPS` produrrebbe tutti-zero nel training (il trainer non istanzia il detector) e rumore nel modello. Le 13 feature in `FEATURE_GROUPS["reversal"]` sono gli input LGBM corretti — il modello impara i propri pesi senza il pre-aggregato manuale.
+- **Interazione con Pullback Entry plan — ordine di chiamata in `_cycle()`:** `_check_pullback_entry()` va chiamato PRIMA del routing reversal. Se il reversal apre una posizione (o crea un pending che poi si triggera nel watchdog prima di `_check_pullback_entry()`), il pullback pending viene cancellato correttamente perché `_check_pullback_entry()` controlla `self._position` all'inizio — e in quel caso cancella anche l'eventuale ordine GTC attivo su HL prima di uscire (fix documentato nel pullback plan). I due pending non possono essere creati nello stesso ciclo (pullback richiede trend=long/short con impulso, reversal Case 1 richiede trend=hold), ma possono coesistere cross-ciclo: il meccanismo di guardia `self._position` è sufficiente a prevenire doppi trade.
+- **Persistenza inconsistente tra i due pending:** il reversal pending è persistito su Supabase, il pullback pending (per design del relativo piano) non lo è. Sul restart del bot: `_reversal_pending` viene ripristinato, `_pending_pullback` viene perso. Questo è accettabile e intenzionale in entrambi i piani ma va tenuto presente in fase di debugging post-restart.
