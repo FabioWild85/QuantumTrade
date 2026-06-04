@@ -1382,6 +1382,12 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   const [fngBiasDelta,         setFngBiasDelta]         = useState('0.03');
   // Binance Cross-Exchange CVD
   const [binanceCvd, setBinanceCvd] = useState(false);
+  // Pullback Entry
+  const [pullbackEnabled,       setPullbackEnabled]       = useState(false);
+  const [pullbackImpulseAtr,    setPullbackImpulseAtr]    = useState('1.5');
+  const [pullbackZoneAtr,       setPullbackZoneAtr]       = useState('0.3');
+  const [pullbackWindowH,       setPullbackWindowH]       = useState('3');
+  const [pullbackFallbackAtr,   setPullbackFallbackAtr]   = useState('0.5');
   const [compareMode,         setCompareMode]         = useState(false);
 
   // ── Regime quick-selector ────────────────────────────────────────────────────
@@ -1745,6 +1751,12 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     fng_bias_delta:                parseFloat(fngBiasDelta),
     // Binance Cross-Exchange CVD
     binance_cvd_enabled:           binanceCvd,
+    // Pullback Entry
+    pullback_entry_enabled:        pullbackEnabled,
+    pullback_impulse_atr_mult:     parseFloat(pullbackImpulseAtr),
+    pullback_zone_atr:             parseFloat(pullbackZoneAtr),
+    pullback_window_h:             parseInt(pullbackWindowH),
+    pullback_fallback_atr:         parseFloat(pullbackFallbackAtr),
   });
 
   const downloadConfig = () => {
@@ -2931,6 +2943,62 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                     checked={binanceCvd}
                     onChange={setBinanceCvd}
                   />
+                </div>
+              </section>
+
+              {/* ── Pullback Entry ──────────────────────────────────────────────── */}
+              <section className="space-y-5">
+                <h4 className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest flex items-center gap-2">
+                  <span className="w-1.5 h-1.5 rounded-full bg-cyan-500" />
+                  Pullback Entry
+                </h4>
+                <div className="space-y-4 bg-slate-50 dark:bg-white/[0.02] p-4 rounded-2xl border border-slate-100 dark:border-white/5">
+                  <Toggle
+                    label="Pullback Entry — Timing Ottimizzato"
+                    desc="Su candele forti (range > N×ATR), attende un ritracciamento prima di entrare. Migliora R:R strutturalmente. Completamente backtestabile — usa high/low intrabar per simulare il fill."
+                    checked={pullbackEnabled}
+                    onChange={setPullbackEnabled}
+                  />
+                  {pullbackEnabled && (
+                    <div className="space-y-4 pt-1">
+                      <Tooltip text="Range candela 4H deve superare N×ATR per attivare l'attesa del pullback. 1.5 = top ~25% candele per ampiezza. Default: 1.5" pos="top" width="wide">
+                        <NumInput
+                          label="Soglia Impulso (×ATR)"
+                          value={pullbackImpulseAtr}
+                          onChange={setPullbackImpulseAtr}
+                          step="0.1" min="1.0" max="3.0"
+                          unit="×ATR"
+                        />
+                      </Tooltip>
+                      <Tooltip text="Distanza dalla chiusura 4H (in ATR) che il prezzo deve raggiungere per triggerare l'entrata. 0.3 ≈ 20% del range candela. Default: 0.30" pos="top" width="wide">
+                        <NumInput
+                          label="Profondità Pullback (×ATR)"
+                          value={pullbackZoneAtr}
+                          onChange={setPullbackZoneAtr}
+                          step="0.05" min="0.1" max="1.0"
+                          unit="×ATR"
+                        />
+                      </Tooltip>
+                      <Tooltip text="Finestre di attesa in ore (= numero di candele 4H da attendere). Dopo il timeout scatta il fallback. Default: 3h" pos="top" width="wide">
+                        <NumInput
+                          label="Finestra Attesa (ore)"
+                          value={pullbackWindowH}
+                          onChange={setPullbackWindowH}
+                          step="1" min="1" max="8"
+                          unit="h"
+                        />
+                      </Tooltip>
+                      <Tooltip text="Se scade il timeout ma il prezzo è ancora entro N×ATR dalla chiusura 4H, entra comunque via market. Oltre questa soglia il segnale decade. Default: 0.5" pos="top" width="wide">
+                        <NumInput
+                          label="Limite Fallback (×ATR)"
+                          value={pullbackFallbackAtr}
+                          onChange={setPullbackFallbackAtr}
+                          step="0.1" min="0.2" max="2.0"
+                          unit="×ATR"
+                        />
+                      </Tooltip>
+                    </div>
+                  )}
                 </div>
               </section>
 

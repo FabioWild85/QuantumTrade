@@ -6,6 +6,7 @@ Fees: HL taker 0.035% per side, funding accrued every 2 candles (8h cycle).
 """
 
 import logging
+import math
 import threading
 from datetime import datetime, timezone
 from typing import Optional
@@ -118,6 +119,12 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
     funding_bias_delta    = getattr(cfg, "funding_bias_delta",    0.03)
     # Fear & Greed Bias
     fng_gate_enabled      = getattr(cfg, "fng_gate_enabled",      False)
+    # Pullback Entry
+    pullback_entry_enabled    = getattr(cfg, "pullback_entry_enabled",    False)
+    pullback_impulse_atr_mult = getattr(cfg, "pullback_impulse_atr_mult", 1.5)
+    pullback_zone_atr         = getattr(cfg, "pullback_zone_atr",         0.3)
+    pullback_window_h         = getattr(cfg, "pullback_window_h",         3)
+    pullback_fallback_atr     = getattr(cfg, "pullback_fallback_atr",     0.5)
     fng_extreme_fear_thr  = getattr(cfg, "fng_extreme_fear_thr",  20.0)
     fng_fear_thr          = getattr(cfg, "fng_fear_thr",          35.0)
     fng_greed_thr         = getattr(cfg, "fng_greed_thr",         65.0)
@@ -285,6 +292,7 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
 
     equity        = capital
     position      = None   # {side, entry, sl, tp, size_usd, bar_idx, partial_done, entry_atr}
+    pending_pb    = None   # pending pullback dict when pullback_entry_enabled
     trades        = []
     equity_curve  = [{"bar": 0, "equity": equity}]
     funding_col   = "funding" in df_feat.columns
@@ -303,6 +311,107 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
             raise RuntimeError("backtest_cancelled")
         row = df_feat.iloc[i]
         features = row.to_dict()
+
+        # ── Pending pullback: check fill/decay BEFORE funding and position mgmt ──
+        if pending_pb is not None and position is None:
+            curr_high_pb = float(row.get("high", row["close"]))
+            curr_low_pb  = float(row.get("low",  row["close"]))
+            pb_dir       = pending_pb["direction"]
+            pb_zone      = pending_pb["pullback_zone"]
+            pb_fallback  = pending_pb["fallback_limit"]
+            pb_expires   = pending_pb["expires_bar"]
+            pb_atr       = pending_pb["atr_at_signal"]
+            pb_close_4h  = pending_pb["close_4h"]
+            pb_ob_sl     = pending_pb.get("ob_sl_price")
+
+            # Check decay: price broke hard opposite direction (worst-case intrabar)
+            _decay = (
+                (pb_dir == "long"  and curr_high_pb > pb_fallback) or
+                (pb_dir == "short" and curr_low_pb  < pb_fallback)
+            )
+            # Check fill: price touched pullback zone intrabar
+            _filled = (
+                (pb_dir == "long"  and curr_low_pb  <= pb_zone) or
+                (pb_dir == "short" and curr_high_pb >= pb_zone)
+            )
+
+            if _decay and not _filled:
+                pending_pb = None
+            elif _filled:
+                # Entry at the pullback zone price (limit-like fill)
+                _entry_px = pb_zone
+                _orig_sl_dist = (
+                    abs(pending_pb["orig_sl"] - pb_close_4h) / pb_atr
+                    if pb_atr > 0 else getattr(cfg, "sl_atr_mult", 2.0)
+                )
+                if pb_ob_sl is not None:
+                    _pb_sl = pb_ob_sl
+                else:
+                    # Reanchor SL from actual entry
+                    if pb_dir == "long":
+                        _pb_sl = _entry_px - _orig_sl_dist * pb_atr
+                    else:
+                        _pb_sl = _entry_px + _orig_sl_dist * pb_atr
+                _pb_tp       = pending_pb["orig_tp"]
+                _pb_size_usd = pending_pb["size_usd"]
+                fee_entry = _pb_size_usd * HL_TAKER_FEE
+                equity   -= fee_entry
+                position  = {
+                    "side":              pb_dir,
+                    "entry":             _entry_px,
+                    "sl":                _pb_sl,
+                    "tp":                _pb_tp,
+                    "size_usd":          _pb_size_usd,
+                    "bar_idx":           i,
+                    "entry_atr":         pb_atr,
+                    "partial_done":      False,
+                    "sl_trailing_active": False,
+                    "high_water":        _entry_px,
+                    "be_sl_applied":     False,
+                    "lgbm_strikes":      0,
+                    "fee_entry":         fee_entry,
+                    "funding_paid":      0.0,
+                    "entry_mode":        "pullback",
+                }
+                pending_pb = None
+            elif i >= pending_pb["expires_bar"]:
+                # Timeout: fallback entry if still in range
+                _cur_px = float(row["close"])
+                _in_range = (
+                    (pb_dir == "long"  and _cur_px <= pb_fallback) or
+                    (pb_dir == "short" and _cur_px >= pb_fallback)
+                )
+                if _in_range:
+                    _entry_px = _cur_px
+                    if pb_ob_sl is not None:
+                        _pb_sl = pb_ob_sl
+                    else:
+                        _orig_sl_dist = (
+                            abs(pending_pb["orig_sl"] - pb_close_4h) / pb_atr
+                            if pb_atr > 0 else getattr(cfg, "sl_atr_mult", 2.0)
+                        )
+                        _pb_sl = (_entry_px - _orig_sl_dist * pb_atr if pb_dir == "long"
+                                  else _entry_px + _orig_sl_dist * pb_atr)
+                    fee_entry = pending_pb["size_usd"] * HL_TAKER_FEE
+                    equity   -= fee_entry
+                    position  = {
+                        "side":              pb_dir,
+                        "entry":             _entry_px,
+                        "sl":                _pb_sl,
+                        "tp":                pending_pb["orig_tp"],
+                        "size_usd":          pending_pb["size_usd"],
+                        "bar_idx":           i,
+                        "entry_atr":         pb_atr,
+                        "partial_done":      False,
+                        "sl_trailing_active": False,
+                        "high_water":        _entry_px,
+                        "be_sl_applied":     False,
+                        "lgbm_strikes":      0,
+                        "fee_entry":         fee_entry,
+                        "funding_paid":      0.0,
+                        "entry_mode":        "pullback_fallback",
+                    }
+                pending_pb = None
 
         # Inject RegimeDetector signal — update every 4 bars (matching live cadence).
         if _bt_regime_detector is not None and i % 4 == 0 and i >= 120:
@@ -579,7 +688,10 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                 covariates=covars_bt,
             )
 
-            if result.action != "no_trade":
+            if result.action != "no_trade" and pending_pb is not None:
+                # Already in pullback wait mode — skip new signal
+                pass
+            elif result.action != "no_trade":
                 close_price = float(row["close"])
                 _use_dynamic = dynamic_sl_tp_enabled and use_chronos
                 _p10_available = use_chronos
@@ -629,6 +741,55 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                         params, result.features_snapshot, close_price,
                     )
                 effective_size_usd = params.size_usd * result.size_factor
+                # ── Pullback Entry simulation ─────────────────────────────────
+                if pullback_entry_enabled:
+                    _h = float(row.get("high", close_price))
+                    _l = float(row.get("low",  close_price))
+                    _impulse = (_h - _l) / atr if atr > 0 else 0.0
+                    if _impulse >= pullback_impulse_atr_mult:
+                        pb_dist = pullback_zone_atr * atr
+                        fb_dist = pullback_fallback_atr * atr
+                        sl_buf  = atr * 0.05
+                        if result.action == "long":
+                            ob_top    = float(v) if (v := result.features_snapshot.get("ob_bull_top_px")) is not None and pd.notna(v) and float(v) > 0 else None
+                            ob_bot    = float(v) if (v := result.features_snapshot.get("ob_bull_bot_px")) is not None and pd.notna(v) and float(v) > 0 else None
+                            ob_active = bool(result.features_snapshot.get("ob_bull_active"))
+                            if ob_active and ob_top and ob_top < close_price:
+                                _pb_zone = ob_top
+                                _ob_sl   = (ob_bot - sl_buf) if ob_bot else (ob_top - sl_buf * 4)
+                            else:
+                                _pb_zone = close_price - pb_dist
+                                _ob_sl   = None
+                            _fb_limit = close_price + fb_dist
+                        else:
+                            ob_bot    = float(v) if (v := result.features_snapshot.get("ob_bear_bot_px")) is not None and pd.notna(v) and float(v) > 0 else None
+                            ob_top    = float(v) if (v := result.features_snapshot.get("ob_bear_top_px")) is not None and pd.notna(v) and float(v) > 0 else None
+                            ob_active = bool(result.features_snapshot.get("ob_bear_active"))
+                            if ob_active and ob_bot and ob_bot > close_price:
+                                _pb_zone = ob_bot
+                                _ob_sl   = (ob_top + sl_buf) if ob_top else (ob_bot + sl_buf * 4)
+                            else:
+                                _pb_zone = close_price + pb_dist
+                                _ob_sl   = None
+                            _fb_limit = close_price - fb_dist
+                        # expires_bar: window is in hours, bars are 4H → divide by 4
+                        # ceil so that e.g. 3h → 1 bar, 5h → 2 bars, 8h → 2 bars
+                        _expire_bars = max(1, math.ceil(pullback_window_h / 4))
+                        pending_pb = {
+                            "direction":    result.action,
+                            "close_4h":     close_price,
+                            "atr_at_signal": atr,
+                            "pullback_zone": _pb_zone,
+                            "fallback_limit": _fb_limit,
+                            "expires_bar":  i + _expire_bars,  # converted from hours to 4H bars
+                            "orig_sl":      params.stop_loss,
+                            "orig_tp":      params.take_profit,
+                            "size_usd":     effective_size_usd,
+                            "ob_sl_price":  _ob_sl,
+                        }
+                        continue  # skip immediate entry — wait for pullback
+
+                # Immediate entry (pullback not enabled or impulse below threshold)
                 fee_entry = effective_size_usd * HL_TAKER_FEE
                 equity   -= fee_entry
                 position  = {
@@ -644,8 +805,9 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                     "high_water":        close_price,
                     "be_sl_applied":     False,
                     "lgbm_strikes":      0,
-                    "fee_entry":         fee_entry,   # tracked for accurate trade record
-                    "funding_paid":      0.0,          # accumulated funding costs
+                    "fee_entry":         fee_entry,
+                    "funding_paid":      0.0,
+                    "entry_mode":        "immediate",
                 }
 
     # ── 6. Close any open position at last price ──────────────────────────────

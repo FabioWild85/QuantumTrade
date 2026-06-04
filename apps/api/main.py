@@ -277,6 +277,12 @@ class BotConfig(BaseModel):
     fng_greed_thr:         float = Field(65.0,    ge=50.0,    le=80.0)
     fng_extreme_greed_thr: float = Field(80.0,    ge=60.0,    le=95.0)
     fng_bias_delta:        float = Field(0.03,    ge=0.01,    le=0.08)
+    # Pullback Entry — delayed entry on strong impulse candles
+    pullback_entry_enabled:    bool  = Field(False)
+    pullback_impulse_atr_mult: float = Field(1.5, ge=1.0, le=3.0)
+    pullback_zone_atr:         float = Field(0.3, ge=0.1, le=1.0)
+    pullback_window_h:         int   = Field(3,   ge=1,   le=8)
+    pullback_fallback_atr:     float = Field(0.5, ge=0.2, le=2.0)
 
 
 class StartBotRequest(BaseModel):
@@ -490,6 +496,27 @@ async def bot_status():
     if not engine:
         raise HTTPException(503, "Engine not initialized")
     return await engine.get_status()
+
+
+@app.get("/pullback/status")
+async def pullback_status():
+    """Returns the active pending pullback signal, if any."""
+    if not engine:
+        raise HTTPException(503, "Engine not initialized")
+    status = await engine.get_status()
+    return {"pending_pullback": status.get("pending_pullback")}
+
+
+@app.post("/pullback/cancel")
+async def pullback_cancel():
+    """Cancels the active pending pullback signal (and any live GTC order if in live mode)."""
+    if not engine:
+        raise HTTPException(503, "Engine not initialized")
+    result = await engine.cancel_pending_pullback()
+    if not result.get("cancelled"):
+        raise HTTPException(404, result.get("reason", "no_pending_pullback"))
+    _log_event("pullback_cancelled", f"Pending pullback manuale cancellato ({result.get('direction')})", "info", result)
+    return result
 
 
 # ─── Data & Forecast ─────────────────────────────────────────────────────────

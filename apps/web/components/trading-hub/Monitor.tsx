@@ -60,6 +60,16 @@ interface BotStatus {
   } | null;
   macro_pause_active?: string | null;
   retrain_due?: boolean;
+  pending_pullback?: {
+    direction: string;
+    pullback_zone: number;
+    fallback_limit: number;
+    expires_at: string;
+    ob_order_id: string | null;
+    ob_sl_price: number | null;
+    close_4h: number;
+    atr_at_signal: number;
+  } | null;
 }
 
 interface InferenceLog {
@@ -604,6 +614,42 @@ export const Monitor: React.FC<{ apiBase: string }> = ({ apiBase }) => {
           </div>
         </div>
       )}
+
+      {/* ── Pending Pullback Banner ───────────────────────────────────────── */}
+      {status?.pending_pullback && !status?.position && (() => {
+        const pb    = status.pending_pullback!;
+        const isLong = pb.direction === 'long';
+        const exp   = new Date(pb.expires_at);
+        const expStr = exp.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' }) + ' UTC';
+        const hasOB = pb.ob_order_id !== null;
+        const cancelPb = async () => {
+          try {
+            await fetch('/pullback/cancel', { method: 'POST' });
+          } catch (_) {}
+        };
+        return (
+          <div className="elegant-card px-5 py-3.5 bg-cyan-50 dark:bg-cyan-500/10 border border-cyan-200 dark:border-cyan-500/30 flex items-center gap-3">
+            <span className="text-lg">🎯</span>
+            <div className="flex-1 min-w-0">
+              <p className="text-xs font-bold text-cyan-800 dark:text-cyan-300 uppercase tracking-wider">
+                Pullback {isLong ? 'LONG' : 'SHORT'} in attesa
+                {hasOB && <span className="ml-2 text-[9px] px-1.5 py-0.5 bg-cyan-100 dark:bg-cyan-500/20 rounded font-bold">OB Limit Order</span>}
+              </p>
+              <p className="text-[10px] text-cyan-700 dark:text-cyan-400 mt-0.5">
+                Target: <span className="font-mono font-bold">${pb.pullback_zone.toLocaleString('en-US', { maximumFractionDigits: 0 })}</span>
+                {pb.ob_sl_price && <> · SL strutturale: <span className="font-mono">${pb.ob_sl_price.toLocaleString('en-US', { maximumFractionDigits: 0 })}</span></>}
+                {' · '}Scade: <span className="font-mono">{expStr}</span>
+              </p>
+            </div>
+            <button
+              onClick={cancelPb}
+              className="text-[10px] font-bold text-cyan-600 dark:text-cyan-400 hover:text-rose-500 dark:hover:text-rose-400 transition-colors px-2 py-1 rounded border border-cyan-200 dark:border-cyan-500/30 hover:border-rose-300 dark:hover:border-rose-500/30"
+            >
+              Cancella
+            </button>
+          </div>
+        );
+      })()}
 
       {/* ── Manual Trade Panel ───────────────────────────────────────────── */}
       {(() => {
@@ -1271,6 +1317,28 @@ function buildTradeNarrative(pos: Position): string {
   // C2 price target
   if (c2Target !== null) {
     p += `Il modello Chronos stima un prezzo mediano di **$${c2Target.toLocaleString('en-US', { maximumFractionDigits: 0 })}** come riferimento per il prossimo ciclo. `;
+  }
+
+  // Pullback Entry context
+  const pullbackLine = lines.find(l => l.startsWith('PullbackEntry:'));
+  if (pullbackLine) {
+    const mSignal      = pullbackLine.match(/signal_close=([\d.]+)/);
+    const mActual      = pullbackLine.match(/actual_entry=([\d.]+)/);
+    const mImprovement = pullbackLine.match(/improvement=([\d.]+)/);
+    const isFallback   = pullbackLine.includes('pullback_fallback') || pullbackLine.includes('ob_fallback');
+    const isOBFill     = pullbackLine.includes('ob_limit_filled');
+    if (mSignal && mActual && mImprovement) {
+      const signalPx = parseFloat(mSignal[1]);
+      const actualPx = parseFloat(mActual[1]);
+      const improv   = parseFloat(mImprovement[1]);
+      if (isOBFill) {
+        p += `Il bot aveva rilevato un impulso forte e piazzato un **ordine limit GTC** al livello dell'Order Block ($${signalPx.toLocaleString('en-US', { maximumFractionDigits: 0 })}). L'ordine è stato fillato a **$${actualPx.toLocaleString('en-US', { maximumFractionDigits: 0 })}** con SL strutturale — entry più precisa e stop più stretto rispetto all'entry immediata. `;
+      } else if (isFallback) {
+        p += `Il segnale è scattato alla chiusura 4H a **$${signalPx.toLocaleString('en-US', { maximumFractionDigits: 0 })}** ma il prezzo non ha eseguito il pullback atteso. Scaduta la finestra di attesa e verificato che il prezzo fosse ancora vicino al livello originale, il bot è entrato via **fallback** a **$${actualPx.toLocaleString('en-US', { maximumFractionDigits: 0 })}**. `;
+      } else {
+        p += `Il segnale era stato generato alla chiusura 4H a **$${signalPx.toLocaleString('en-US', { maximumFractionDigits: 0 })}**, ma il bot ha atteso un ${isLong ? 'ritracciamento' : 'rimbalzo tecnico'} per migliorare il timing di entrata. Il prezzo è tornato nella zona attesa e il trade è stato aperto a **$${actualPx.toLocaleString('en-US', { maximumFractionDigits: 0 })}** — **$${improv.toLocaleString('en-US', { maximumFractionDigits: 0 })} più favorevole** rispetto all'entry immediata, migliorando strutturalmente il rapporto rischio/rendimento. `;
+      }
+    }
   }
 
   // TP/SL expectation

@@ -82,6 +82,12 @@ interface Config {
   iv_high_percentile: number;
   iv_low_percentile: number;
   iv_size_factor: number;
+  // Pullback Entry
+  pullback_entry_enabled: boolean;
+  pullback_impulse_atr_mult: number;
+  pullback_zone_atr: number;
+  pullback_window_h: number;
+  pullback_fallback_atr: number;
   // Dual ATR
   dual_atr_enabled: boolean;
   // Signal quality filters (formerly hardcoded)
@@ -206,6 +212,12 @@ const DEFAULTS: Config = {
   iv_high_percentile: 80,
   iv_low_percentile: 20,
   iv_size_factor: 0.7,
+  // Pullback Entry
+  pullback_entry_enabled: false,
+  pullback_impulse_atr_mult: 1.5,
+  pullback_zone_atr: 0.3,
+  pullback_window_h: 3,
+  pullback_fallback_atr: 0.5,
   // Dual ATR
   dual_atr_enabled: false,
   // Signal quality filters
@@ -1304,6 +1316,80 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
               <div className="p-2 rounded-lg bg-violet-50 dark:bg-violet-500/5 border border-violet-100 dark:border-violet-500/15">
                 <p className="text-[9px] text-violet-600 dark:text-violet-400 font-medium">2 feature aggiuntive per LGBM (al prossimo retrain): <code className="font-mono">iv_7d</code> · <code className="font-mono">iv_7d_percentile</code></p>
                 <p className="text-[9px] text-slate-400 dark:text-slate-500 mt-1">Il sizing IV è immediato (nessun retrain necessario). Le feature diventano input LGBM solo dopo un retrain esplicito con questo toggle attivo.</p>
+              </div>
+            </div>
+          )}
+        </div>
+      </Section>
+
+      {/* Pullback Entry */}
+      <Section title="Pullback Entry — Timing Ottimizzato" description="Quando una candela 4H ha un range > N×ATR (impulso forte), invece di entrare subito il bot aspetta un ritracciamento tecnico. Migliora il R:R strutturalmente: entry più favorevole, SL più stretto. Default OFF — abilitare solo dopo 60+ trade live.">
+        <div className={`flex flex-col gap-3 mb-6 pb-6 border-b transition-colors duration-200 ${config.pullback_entry_enabled ? 'border-cyan-200 dark:border-cyan-500/25' : 'border-slate-100 dark:border-white/5'}`}>
+          <label className="flex items-center gap-3 cursor-pointer group">
+            <div className="relative">
+              <input type="checkbox" className="sr-only" checked={config.pullback_entry_enabled} onChange={e => setConfig(c => ({ ...c, pullback_entry_enabled: e.target.checked }))} />
+              <div className={`w-9 h-[18px] rounded-full transition-all duration-300 ${config.pullback_entry_enabled ? 'bg-cyan-600' : 'bg-slate-200 dark:bg-white/10'}`} />
+              <div className={`absolute top-[3px] left-[3px] w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.pullback_entry_enabled ? 'translate-x-[18px]' : ''}`} />
+            </div>
+            <div>
+              <p className={`text-xs font-bold leading-tight transition-colors ${config.pullback_entry_enabled ? 'text-cyan-600 dark:text-cyan-400' : 'text-slate-700 dark:text-slate-300'}`}>
+                Pullback Entry {config.pullback_entry_enabled && <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-cyan-100 dark:bg-cyan-500/20 text-cyan-600 dark:text-cyan-400 uppercase tracking-wider">Attivo</span>}
+              </p>
+              <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5">
+                {config.pullback_entry_enabled ? `Attiva su candele > ${config.pullback_impulse_atr_mult}×ATR — attende ritracciamento fino a ${config.pullback_window_h}h` : 'Entry immediata su ogni segnale (comportamento attuale)'}
+              </p>
+            </div>
+          </label>
+
+          {config.pullback_entry_enabled && (
+            <div className="flex flex-col gap-3 mt-1">
+              {/* Impulse threshold */}
+              <div className="flex flex-col gap-1">
+                <div className="flex justify-between items-center">
+                  <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">Soglia Impulso (×ATR)</span>
+                  <span className="text-[10px] font-bold text-cyan-600 dark:text-cyan-400">{config.pullback_impulse_atr_mult.toFixed(1)}×</span>
+                </div>
+                <input type="range" min={1.0} max={3.0} step={0.1} value={config.pullback_impulse_atr_mult}
+                  onChange={e => setConfig(c => ({ ...c, pullback_impulse_atr_mult: parseFloat(e.target.value) }))}
+                  className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-cyan-500" />
+                <p className="text-[9px] text-slate-400 dark:text-slate-500">Range candela 4H deve superare N×ATR per attivare l'attesa. 1.5 = top ~25% delle candele. Default: 1.5</p>
+              </div>
+              {/* Pullback zone */}
+              <div className="flex flex-col gap-1">
+                <div className="flex justify-between items-center">
+                  <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">Profondità Pullback (×ATR)</span>
+                  <span className="text-[10px] font-bold text-cyan-600 dark:text-cyan-400">{config.pullback_zone_atr.toFixed(2)}×</span>
+                </div>
+                <input type="range" min={0.1} max={1.0} step={0.05} value={config.pullback_zone_atr}
+                  onChange={e => setConfig(c => ({ ...c, pullback_zone_atr: parseFloat(e.target.value) }))}
+                  className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-cyan-500" />
+                <p className="text-[9px] text-slate-400 dark:text-slate-500">Distanza dalla chiusura 4H che il prezzo deve raggiungere per triggerare l'entrata. 0.3 ≈ 20–30% del range candela. Default: 0.30</p>
+              </div>
+              {/* Window */}
+              <div className="flex flex-col gap-1">
+                <div className="flex justify-between items-center">
+                  <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">Finestra Attesa (ore)</span>
+                  <span className="text-[10px] font-bold text-cyan-600 dark:text-cyan-400">{config.pullback_window_h}h</span>
+                </div>
+                <input type="range" min={1} max={8} step={1} value={config.pullback_window_h}
+                  onChange={e => setConfig(c => ({ ...c, pullback_window_h: parseInt(e.target.value) }))}
+                  className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-cyan-500" />
+                <p className="text-[9px] text-slate-400 dark:text-slate-500">Ore massime di attesa. Dopo il timeout scatta il fallback (o decay). Default: 3h (prime 3 candele 1H)</p>
+              </div>
+              {/* Fallback ATR */}
+              <div className="flex flex-col gap-1">
+                <div className="flex justify-between items-center">
+                  <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">Limite Fallback (×ATR)</span>
+                  <span className="text-[10px] font-bold text-cyan-600 dark:text-cyan-400">{config.pullback_fallback_atr.toFixed(1)}×</span>
+                </div>
+                <input type="range" min={0.2} max={2.0} step={0.1} value={config.pullback_fallback_atr}
+                  onChange={e => setConfig(c => ({ ...c, pullback_fallback_atr: parseFloat(e.target.value) }))}
+                  className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-cyan-500" />
+                <p className="text-[9px] text-slate-400 dark:text-slate-500">Se scade il timeout ma il prezzo è ancora entro N×ATR dalla chiusura 4H, entra comunque. Oltre questa distanza il segnale decade. Default: 0.5</p>
+              </div>
+              <div className="p-2 rounded-lg bg-cyan-50 dark:bg-cyan-500/5 border border-cyan-100 dark:border-cyan-500/15">
+                <p className="text-[9px] text-cyan-700 dark:text-cyan-300 font-medium">Se c'è un Order Block attivo nella direzione del trade, il bot usa quel livello come zona target invece dell'ATR-based — SL strutturale più stretto.</p>
+                <p className="text-[9px] text-slate-400 dark:text-slate-500 mt-1">In live mode piazza un ordine GTC limit reale su HL. In paper mode simula l'attesa internamente. Completamente backtestabile.</p>
               </div>
             </div>
           )}

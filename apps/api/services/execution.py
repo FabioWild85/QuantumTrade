@@ -10,7 +10,8 @@ import logging
 import math
 import os
 import uuid
-from datetime import datetime, timezone
+from dataclasses import dataclass
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 import numpy as np
@@ -47,6 +48,22 @@ CIRCUIT_BREAKER_THRESHOLD = 5   # stop bot after N consecutive cycle errors
 # Concept drift: check every N cycles (~4 days on 4H), cooldown 24h between retrains
 DRIFT_CHECK_INTERVAL     = 24
 DRIFT_RETRAIN_COOLDOWN_H = 24
+
+
+# ── Pullback Entry state ──────────────────────────────────────────────────────
+
+@dataclass
+class PendingPullback:
+    """Active pullback pending signal — created when a strong impulse candle is detected."""
+    direction:      str            # "long" | "short"
+    close_4h:       float          # 4H close price at signal time
+    atr_at_signal:  float          # ATR_14 at signal time (anchors all zone calculations)
+    pullback_zone:  float          # target entry price (OB level or ATR-based)
+    fallback_limit: float          # price beyond which signal decays (opposite direction)
+    expires_at:     datetime       # absolute expiry timestamp
+    decision_result: object        # original DecisionResult (size_factor, reasoning, etc.)
+    ob_sl_price:    Optional[float] = None  # structural SL when OB mode active
+    ob_order_id:    Optional[str]   = None  # HL GTC order ID (live mode only)
 
 
 # ── Config dataclass ──────────────────────────────────────────────────────────
@@ -176,6 +193,12 @@ class BotConfig:
         self.fng_greed_thr         = kw.get("fng_greed_thr",         65.0)
         self.fng_extreme_greed_thr = kw.get("fng_extreme_greed_thr", 80.0)
         self.fng_bias_delta        = kw.get("fng_bias_delta",        0.03)
+        # Pullback Entry — delayed entry on strong impulse candles
+        self.pullback_entry_enabled    = kw.get("pullback_entry_enabled",    False)
+        self.pullback_impulse_atr_mult = kw.get("pullback_impulse_atr_mult", 1.5)
+        self.pullback_zone_atr         = kw.get("pullback_zone_atr",         0.3)
+        self.pullback_window_h         = kw.get("pullback_window_h",         3)
+        self.pullback_fallback_atr     = kw.get("pullback_fallback_atr",     0.5)
 
     def model_dump(self) -> dict:
         return self.__dict__
@@ -211,7 +234,8 @@ class ExecutionEngine:
         self._regime_signal: Optional[RegimeSignal] = None
 
         # State
-        self._position: Optional[dict]  = None   # active position dict
+        self._position: Optional[dict]         = None   # active position dict
+        self._pending_pullback: Optional[PendingPullback] = None  # pending pullback signal
         self._equity: float             = 10_000.0  # paper equity (USD)
         self._cycle_count: int          = 0
         self._consecutive_errors: int   = 0
@@ -448,6 +472,17 @@ class ExecutionEngine:
         if self._task:
             self._task.cancel()
         await self._ws.stop()
+
+        # Cancel any active GTC limit order and pending pullback signal
+        if self._pending_pullback is not None:
+            pb = self._pending_pullback
+            if pb.ob_order_id is not None and self.mode == "live":
+                try:
+                    await self._cancel_ob_limit_order(pb.ob_order_id)
+                except Exception as _ke:
+                    log.warning("Kill: cancel OB limit order failed: %s", _ke)
+            log.info("Kill switch: cancelled pending pullback (%s)", pb.direction)
+            self._pending_pullback = None
 
         orders_cancelled = 0
         positions_closed = 0
@@ -727,6 +762,20 @@ class ExecutionEngine:
             "config":                   self.config.model_dump(),
             "regime_signal":            regime_data,
             "last_drift_check":         self._last_drift_result,
+            "pending_pullback": (
+                {
+                    "direction":     self._pending_pullback.direction,
+                    "pullback_zone": self._pending_pullback.pullback_zone,
+                    "fallback_limit": self._pending_pullback.fallback_limit,
+                    "expires_at":    self._pending_pullback.expires_at.isoformat(),
+                    "ob_order_id":   self._pending_pullback.ob_order_id,
+                    "ob_sl_price":   self._pending_pullback.ob_sl_price,
+                    "close_4h":      self._pending_pullback.close_4h,
+                    "atr_at_signal": self._pending_pullback.atr_at_signal,
+                }
+                if self._pending_pullback is not None
+                else None
+            ),
         }
 
     # ── Main Loop ─────────────────────────────────────────────────────────────
@@ -1328,8 +1377,42 @@ class ExecutionEngine:
             asyncio.create_task(self._notifier.send_macro_pause_end(self._macro_pause_active))
             self._macro_pause_active = None
 
+        # ── Pullback entry: check pending signal every cycle ─────────────────────
+        # Called before the new-position block so that a pullback fill sets
+        # self._position = ... and the block below correctly skips opening a second trade.
+        if self._pending_pullback is not None:
+            _pb_price = self._ws.latest_mark or snap["mark_price"]
+            await self._check_pullback_entry(_pb_price, snap, atr)
+
         if result.action != "no_trade" and allowed and self._position is None:
-            await self._open_position(result, snap, atr, inference_id, atr_sl=atr_sl)
+            # Check if pullback mode should activate for this signal
+            _pb_enabled = getattr(self.config, "pullback_entry_enabled", False)
+            if _pb_enabled and self._pending_pullback is not None:
+                # Already in pullback wait mode — skip new signal
+                log.info("Pullback wait active (%s) — new %s signal queued but skipped",
+                         self._pending_pullback.direction, result.action)
+            elif _pb_enabled:
+                _h = float(latest.get("high") or 0)
+                _l = float(latest.get("low")  or 0)
+                _atr_v = atr or snap["mark_price"] * 0.01
+                _impulse = (_h - _l) / _atr_v if _atr_v > 0 else 0.0
+                if _impulse >= getattr(self.config, "pullback_impulse_atr_mult", 1.5):
+                    self._pending_pullback = await self._create_pending_pullback(
+                        result, latest, _atr_v, snap
+                    )
+                    log.info(
+                        "Pullback mode activated: %s impulse_ratio=%.2f ≥ %.2f | "
+                        "zone=%.2f fallback=%.2f expires=%s",
+                        result.action, _impulse,
+                        getattr(self.config, "pullback_impulse_atr_mult", 1.5),
+                        self._pending_pullback.pullback_zone,
+                        self._pending_pullback.fallback_limit,
+                        self._pending_pullback.expires_at.strftime("%H:%M UTC"),
+                    )
+                else:
+                    await self._open_position(result, snap, atr, inference_id, atr_sl=atr_sl)
+            else:
+                await self._open_position(result, snap, atr, inference_id, atr_sl=atr_sl)
         elif not allowed:
             log.info("Trade blocked: %s", block_reason)
         elif result.action != "no_trade" and self._position is not None:
@@ -2239,6 +2322,309 @@ class ExecutionEngine:
                 db.table("bot_configs").update({"params": existing}).eq("name", "default").execute()
             except Exception as exc:
                 log.warning("Could not clear live position state: %s", exc)
+
+    # ── Pullback Entry methods ────────────────────────────────────────────────
+
+    async def _create_pending_pullback(
+        self, result, latest: dict, atr: float, snap: dict
+    ) -> "PendingPullback":
+        """
+        Creates a PendingPullback after a strong impulse candle.
+        In paper mode: passive monitoring with the OB level (or ATR zone) as target.
+        In live mode:  places a real GTC limit order on HL when an OB is active.
+        """
+        close   = float(latest.get("close") or snap["mark_price"])
+        pb_dist = getattr(self.config, "pullback_zone_atr",     0.3) * atr
+        fb_dist = getattr(self.config, "pullback_fallback_atr", 0.5) * atr
+        window  = getattr(self.config, "pullback_window_h",     3)
+        expires = datetime.now(timezone.utc) + timedelta(hours=window)
+        sl_buf  = atr * 0.05   # tiny buffer so SL sits just outside the OB boundary
+        ob_order_id: Optional[str] = None
+        ob_sl_price: Optional[float] = None
+
+        if result.action == "long":
+            ob_top    = self._safe_float(latest.get("ob_bull_top_px"))
+            ob_bot    = self._safe_float(latest.get("ob_bull_bot_px"))
+            ob_active = bool(latest.get("ob_bull_active"))
+            if ob_active and ob_top and ob_top < close:
+                pullback_zone = ob_top
+                ob_sl_price   = (ob_bot - sl_buf) if ob_bot else (ob_top - sl_buf * 4)
+                if self.mode == "live":
+                    try:
+                        eff_size = (
+                            self._risk.calculate_trade_params(
+                                result.action, close, atr, self._equity
+                            ).size_contracts * result.size_factor
+                        )
+                        ob_order_id = await self._place_ob_limit_order("long", ob_top, eff_size)
+                        log.info("OB GTC limit (long): oid=%s px=%.2f sl=%.2f", ob_order_id, ob_top, ob_sl_price)
+                    except Exception as _e:
+                        log.warning("OB limit order failed (fallback to passive): %s", _e)
+            else:
+                pullback_zone = close - pb_dist
+            fallback_limit = close + fb_dist   # price runs up → signal decays
+        else:   # short
+            ob_bot    = self._safe_float(latest.get("ob_bear_bot_px"))
+            ob_top    = self._safe_float(latest.get("ob_bear_top_px"))
+            ob_active = bool(latest.get("ob_bear_active"))
+            if ob_active and ob_bot and ob_bot > close:
+                pullback_zone = ob_bot
+                ob_sl_price   = (ob_top + sl_buf) if ob_top else (ob_bot + sl_buf * 4)
+                if self.mode == "live":
+                    try:
+                        eff_size = (
+                            self._risk.calculate_trade_params(
+                                result.action, close, atr, self._equity
+                            ).size_contracts * result.size_factor
+                        )
+                        ob_order_id = await self._place_ob_limit_order("short", ob_bot, eff_size)
+                        log.info("OB GTC limit (short): oid=%s px=%.2f sl=%.2f", ob_order_id, ob_bot, ob_sl_price)
+                    except Exception as _e:
+                        log.warning("OB limit order failed (fallback to passive): %s", _e)
+            else:
+                pullback_zone = close + pb_dist
+            fallback_limit = close - fb_dist   # price drops hard → signal decays
+
+        return PendingPullback(
+            direction=result.action,
+            close_4h=close,
+            atr_at_signal=atr,
+            pullback_zone=pullback_zone,
+            fallback_limit=fallback_limit,
+            expires_at=expires,
+            decision_result=result,
+            ob_sl_price=ob_sl_price,
+            ob_order_id=ob_order_id,
+        )
+
+    async def _check_pullback_entry(self, price: float, snap: dict, atr: Optional[float]):
+        """
+        Evaluates the active pending pullback. Called every cycle with current mark price.
+        Opens a position when conditions are met; clears pending on decay or timeout.
+        Paper mode: simulates fill by comparing mark price vs. pullback_zone.
+        Live mode (OB order placed): queries HL order status.
+        """
+        if self._pending_pullback is None:
+            return
+        pb = self._pending_pullback
+
+        # If a position was opened in the same cycle (race-guard), cancel pending
+        if self._position:
+            if pb.ob_order_id is not None and self.mode == "live":
+                await self._cancel_ob_limit_order(pb.ob_order_id)
+                log.info("Pullback OB order cancelled: position already open (oid=%s)", pb.ob_order_id)
+            self._pending_pullback = None
+            return
+
+        now       = datetime.now(timezone.utc)
+        direction = pb.direction
+
+        # ── Live mode with active GTC order ────────────────────────────────
+        if pb.ob_order_id is not None and self.mode == "live":
+            order_status = await self._get_ob_order_status(pb.ob_order_id)
+            if order_status == "filled":
+                log.info("OB GTC order filled (live): oid=%s dir=%s", pb.ob_order_id, direction)
+                await self._register_ob_limit_fill(pb, snap, atr)
+                return
+            # Decay: price broke hard opposite direction
+            decay = (
+                (direction == "long"  and price > pb.fallback_limit) or
+                (direction == "short" and price < pb.fallback_limit)
+            )
+            if decay:
+                await self._cancel_ob_limit_order(pb.ob_order_id)
+                log.info("OB GTC cancelled: decay opposite breakout (%s price=%.2f)", direction, price)
+                self._pending_pullback = None
+                return
+            if now >= pb.expires_at:
+                await self._cancel_ob_limit_order(pb.ob_order_id)
+                in_range = (
+                    (direction == "long"  and price <= pb.fallback_limit) or
+                    (direction == "short" and price >= pb.fallback_limit)
+                )
+                if in_range:
+                    log.info("OB GTC timeout — fallback market (live): price=%.2f", price)
+                    await self._execute_pullback_entry(pb, snap, atr, use_atr_sl=True)
+                else:
+                    log.info("OB GTC timeout + price too far — signal decayed (live): price=%.2f", price)
+                    self._pending_pullback = None
+            return
+
+        # ── Paper mode / passive monitoring (no live GTC order) ────────────
+        # In paper mode, OB zone is used as the passive monitoring target too.
+        # Price touched the pullback zone → enter immediately
+        hit_zone = (
+            (direction == "long"  and price <= pb.pullback_zone) or
+            (direction == "short" and price >= pb.pullback_zone)
+        )
+        if hit_zone:
+            log.info("Pullback entry triggered (%s): price=%.2f zone=%.2f", direction, price, pb.pullback_zone)
+            # use_atr_sl=False: OB mode → "ob_market_fill"; passive → "pullback_market"
+            # Timeout fallbacks use use_atr_sl=True → "pullback_fallback"
+            await self._execute_pullback_entry(pb, snap, atr, use_atr_sl=False)
+            return
+
+        # Decay: price broke hard opposite direction
+        decay = (
+            (direction == "long"  and price > pb.fallback_limit) or
+            (direction == "short" and price < pb.fallback_limit)
+        )
+        if decay:
+            log.info("Pullback decayed (%s): opposite breakout price=%.2f fallback=%.2f",
+                     direction, price, pb.fallback_limit)
+            self._pending_pullback = None
+            return
+
+        # Timeout: check fallback
+        if now >= pb.expires_at:
+            in_range = (
+                (direction == "long"  and price <= pb.fallback_limit) or
+                (direction == "short" and price >= pb.fallback_limit)
+            )
+            if in_range:
+                log.info("Pullback fallback (%s): timeout, price=%.2f still near close=%.2f",
+                         direction, price, pb.close_4h)
+                await self._execute_pullback_entry(pb, snap, atr, use_atr_sl=True)
+            else:
+                log.info("Pullback decayed (%s): timeout + price too far (%.2f)", direction, price)
+                self._pending_pullback = None
+
+    async def _execute_pullback_entry(
+        self, pb: "PendingPullback", snap: dict, atr: Optional[float], use_atr_sl: bool = False
+    ):
+        """
+        Opens a position from a triggered pullback (market order at current price).
+
+        SL note: _open_position always recomputes SL via calculate_trade_params(entry_price=snap[mark_price])
+        so it is naturally re-anchored to the actual entry price using config.sl_atr_mult.
+        For OB mode, apply_structural_sl() inside _open_position handles the OB-based SL automatically.
+        No manual SL override is needed here.
+
+        entry_mode labels:
+          "pullback_market"  — zone hit, passive monitoring (no OB)
+          "ob_market_fill"   — zone hit, OB level was the target (paper simulated as passive)
+          "pullback_fallback"— timeout fallback entry
+        """
+        actual_entry = snap["mark_price"]
+        _atr = atr or actual_entry * 0.01
+
+        if use_atr_sl:
+            entry_mode = "pullback_fallback"
+        elif pb.ob_sl_price is not None:
+            entry_mode = "ob_market_fill"
+        else:
+            entry_mode = "pullback_market"
+
+        improvement = abs(pb.close_4h - actual_entry)
+        pb.decision_result.reasoning.append(
+            f"PullbackEntry: {entry_mode} | signal_close={pb.close_4h:.2f} "
+            f"actual_entry={actual_entry:.2f} improvement={improvement:.2f} "
+            f"impulse_ratio={(improvement / pb.atr_at_signal if pb.atr_at_signal > 0 else 0):.2f}×ATR"
+        )
+
+        inf_id = getattr(pb.decision_result, "inference_id", None)
+        await self._open_position(pb.decision_result, snap, _atr, inf_id)
+        self._pending_pullback = None
+
+    async def _register_ob_limit_fill(
+        self, pb: "PendingPullback", snap: dict, atr: Optional[float]
+    ):
+        """
+        Called when a live GTC limit order was filled by HL. Registers the trade internally.
+        SL is handled by apply_structural_sl() inside _open_position (OB-aware).
+        """
+        _atr = atr or snap["mark_price"] * 0.01
+        _ob_sl_str = f"{pb.ob_sl_price:.2f}" if pb.ob_sl_price is not None else "atr_based"
+        pb.decision_result.reasoning.append(
+            f"PullbackEntry: ob_limit_filled | signal_close={pb.close_4h:.2f} "
+            f"limit_px={pb.pullback_zone:.2f} ob_sl={_ob_sl_str} oid={pb.ob_order_id}"
+        )
+        inf_id = getattr(pb.decision_result, "inference_id", None)
+        await self._open_position(pb.decision_result, snap, _atr, inf_id)
+        self._pending_pullback = None
+
+    async def _place_ob_limit_order(self, direction: str, limit_px: float, size: float) -> str:
+        """Places a GTC limit order on HL. Returns the order ID. Raises on failure."""
+        if not HL_AGENT_PRIVKEY:
+            raise RuntimeError("HL_AGENT_PRIVATE_KEY not set — cannot place OB limit order")
+        from hyperliquid.exchange import Exchange
+        from hyperliquid.utils import constants
+        import eth_account
+        wallet   = eth_account.Account.from_key(HL_AGENT_PRIVKEY)
+        endpoint = constants.TESTNET_API_URL if HL_TESTNET else constants.MAINNET_API_URL
+        exchange = Exchange(wallet, endpoint, account_address=os.getenv("HL_WALLET_ADDRESS"))
+        is_buy   = (direction == "long")
+        result   = await asyncio.to_thread(
+            exchange.order,
+            SYMBOL, is_buy, size, round(limit_px, 1),
+            {"limit": {"tif": "Gtc"}},
+            False,  # reduce_only
+        )
+        oid = str(
+            result.get("response", {}).get("data", {}).get("statuses", [{}])[0]
+            .get("resting", {}).get("oid", "")
+        )
+        if not oid:
+            raise RuntimeError(f"OB limit order returned no oid: {result}")
+        return oid
+
+    async def _cancel_ob_limit_order(self, oid: str):
+        """Cancels a GTC limit order on HL. Non-fatal if already filled or not found."""
+        try:
+            if not HL_AGENT_PRIVKEY:
+                return
+            from hyperliquid.exchange import Exchange
+            from hyperliquid.utils import constants
+            import eth_account
+            wallet   = eth_account.Account.from_key(HL_AGENT_PRIVKEY)
+            endpoint = constants.TESTNET_API_URL if HL_TESTNET else constants.MAINNET_API_URL
+            exchange = Exchange(wallet, endpoint, account_address=os.getenv("HL_WALLET_ADDRESS"))
+            await asyncio.to_thread(exchange.cancel, SYMBOL, int(oid))
+            log.info("OB GTC order cancelled: oid=%s", oid)
+        except Exception as _e:
+            log.warning("Cancel OB limit order oid=%s failed (may already be filled): %s", oid, _e)
+
+    async def _get_ob_order_status(self, oid: str) -> str:
+        """Returns 'filled', 'open', or 'cancelled' for a live GTC order."""
+        try:
+            wallet = os.getenv("HL_WALLET_ADDRESS", "")
+            if not wallet:
+                return "open"
+            import httpx
+            endpoint = (
+                "https://api.hyperliquid-testnet.xyz/info"
+                if HL_TESTNET else
+                "https://api.hyperliquid.xyz/info"
+            )
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.post(
+                    endpoint,
+                    json={"type": "orderStatus", "user": wallet, "oid": int(oid)},
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                # HL response: {"order": {"order": {...}, "status": "open"/"filled"/...}, "status": "order"}
+                # The outer "status" is always "order" — the actual order status is nested inside
+                order_status = (data.get("order") or {}).get("status", "open")
+                if order_status == "filled":
+                    return "filled"
+                if order_status in ("cancelled", "rejected"):
+                    return "cancelled"
+                return "open"
+        except Exception as _e:
+            log.warning("OB order status fetch failed (assuming open): %s", _e)
+            return "open"
+
+    async def cancel_pending_pullback(self) -> dict:
+        """Cancel the active pending pullback signal (also cancels live GTC order if present)."""
+        if self._pending_pullback is None:
+            return {"cancelled": False, "reason": "no_pending_pullback"}
+        pb = self._pending_pullback
+        if pb.ob_order_id is not None and self.mode == "live":
+            await self._cancel_ob_limit_order(pb.ob_order_id)
+        self._pending_pullback = None
+        log.info("Pending pullback cancelled manually (dir=%s)", pb.direction)
+        return {"cancelled": True, "direction": pb.direction}
 
     # ── Live order submission (Hyperliquid SDK) ───────────────────────────────
 
