@@ -119,6 +119,11 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
     funding_bias_delta    = getattr(cfg, "funding_bias_delta",    0.03)
     # Fear & Greed Bias
     fng_gate_enabled      = getattr(cfg, "fng_gate_enabled",      False)
+    # Exhaustion Guard thresholds
+    exhaustion_rsi_low    = getattr(cfg, "exhaustion_rsi_low",    28.0)
+    exhaustion_rsi_high   = getattr(cfg, "exhaustion_rsi_high",   72.0)
+    exhaustion_ret48_pct  = getattr(cfg, "exhaustion_ret48_pct",   6.0)
+    exhaustion_boost      = getattr(cfg, "exhaustion_boost",       0.06)
     # Pullback Entry
     pullback_entry_enabled    = getattr(cfg, "pullback_entry_enabled",    False)
     pullback_impulse_atr_mult = getattr(cfg, "pullback_impulse_atr_mult", 1.5)
@@ -274,6 +279,11 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
         fng_greed_thr=fng_greed_thr,
         fng_extreme_greed_thr=fng_extreme_greed_thr,
         fng_bias_delta=fng_bias_delta,
+        # Exhaustion Guard thresholds
+        exhaustion_rsi_low=exhaustion_rsi_low,
+        exhaustion_rsi_high=exhaustion_rsi_high,
+        exhaustion_ret48_pct=exhaustion_ret48_pct,
+        exhaustion_boost=exhaustion_boost,
     )
     risk = RiskManager(
         sl_atr_mult=sl_atr_mult,
@@ -296,6 +306,56 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
     trades        = []
     equity_curve  = [{"bar": 0, "equity": equity}]
     funding_col   = "funding" in df_feat.columns
+
+    # ── Parameter activity counters ───────────────────────────────────────────
+    param_stats: dict = {
+        # Signal volume
+        "bars_evaluated":           0,
+        "signals_long":             0,
+        "signals_short":            0,
+        "no_trade":                 0,
+        # Hard gates (blocked a potential trade entirely)
+        "gate_adx":                 0,
+        "gate_sweep":               0,
+        "gate_confluence":          0,
+        "gate_c2_uncertainty":      0,
+        "gate_c2_cont":             0,
+        "gate_fvg_long":            0,
+        "gate_fvg_short":           0,
+        "gate_late_entry":          0,
+        "gate_path_obstruction":    0,
+        "gate_consec_bars":         0,
+        # Bias / threshold modifiers
+        "mod_mtf_alignment":        0,
+        "mod_regime_bias":          0,
+        "mod_counter_trend_size":   0,
+        "mod_funding_bias":         0,
+        "mod_fng_bias":             0,
+        "mod_iv_size_reduction":    0,
+        "mod_exhaustion_guard":     0,
+        "mod_absorption_filter":    0,
+        "mod_sweep_conf_bonus":     0,
+        # Entry — structural SL/TP overrides
+        "sl_structural_ob":         0,
+        "sl_fvg":                   0,
+        "sl_swing":                 0,
+        "tp_ob":                    0,
+        # Position management
+        "pm_trailing_sl":           0,
+        "pm_be_sl":                 0,
+        "pm_partial_tp":            0,
+        "pm_lgbm_exit":             0,
+        "pm_max_hold":              0,
+        # Trade exit reasons
+        "exit_stop_loss":           0,
+        "exit_take_profit":         0,
+        "exit_end_of_period":       0,
+        # Pullback entry
+        "pb_activated":             0,
+        "pb_filled_zone":           0,
+        "pb_filled_fallback":       0,
+        "pb_decayed":               0,
+    }
 
     # Enhanced regime detection — mirrors live behavior (every 4 bars, cached between).
     # Instantiated once before the loop; detect() called on the growing slice df_feat[:i+1].
@@ -337,7 +397,9 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
 
             if _decay and not _filled:
                 pending_pb = None
+                param_stats["pb_decayed"] += 1
             elif _filled:
+                param_stats["pb_filled_zone"] += 1
                 # Entry at the pullback zone price (limit-like fill)
                 _entry_px = pb_zone
                 _orig_sl_dist = (
@@ -382,6 +444,7 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                     (pb_dir == "short" and _cur_px >= pb_fallback)
                 )
                 if _in_range:
+                    param_stats["pb_filled_fallback"] += 1
                     _entry_px = _cur_px
                     if pb_ob_sl is not None:
                         _pb_sl = pb_ob_sl
@@ -411,6 +474,8 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                         "funding_paid":      0.0,
                         "entry_mode":        "pullback_fallback",
                     }
+                else:
+                    param_stats["pb_decayed"] += 1
                 pending_pb = None
 
         # Inject RegimeDetector signal — update every 4 bars (matching live cadence).
@@ -464,6 +529,7 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                     if moved_enough:
                         position["sl_trailing_active"] = True
                         position["high_water"] = curr_high if side == "long" else curr_low
+                        param_stats["pm_trailing_sl"] += 1
                 if position.get("sl_trailing_active"):
                     if side == "long":
                         position["high_water"] = max(position["high_water"], curr_high)
@@ -486,6 +552,7 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                     else:
                         position["sl"] = min(position["sl"], entry)
                     position["be_sl_applied"] = True
+                    param_stats["pm_be_sl"] += 1
 
             # ── Partial TP: close partial_tp_pct% at partial_tp_atr_mult×ATR ──
             # Use high/low for detection; exit at the target price, not close.
@@ -510,6 +577,7 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                     position["funding_paid"] = 0.0  # reset after assignment
                     position["size_usd"]   *= (1.0 - partial_frac)
                     position["partial_done"] = True
+                    param_stats["pm_partial_tp"] += 1
                     trades.append({
                         "side": side, "entry": entry, "exit": partial_exit_price,
                         "pnl_pct": round(pnl_pct_p, 4),
@@ -540,6 +608,7 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                 else:
                     position["lgbm_strikes"] = 0
                 if position.get("lgbm_strikes", 0) >= lgbm_exit_confirm_bars:
+                    param_stats["pm_lgbm_exit"] += 1
                     pnl_pct_e  = (close_price - entry) / entry * 100 if side == "long" \
                                  else (entry - close_price) / entry * 100
                     pnl_usd_e  = position["size_usd"] * pnl_pct_e / 100
@@ -563,6 +632,7 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
 
             # ── Max hold bars: time-based force exit ──────────────────────────
             if not already_closed and max_hold_bars_enabled and bars_held >= max_hold_bars_val:
+                param_stats["pm_max_hold"] += 1
                 pnl_pct_m  = (close_price - entry) / entry * 100 if side == "long" \
                              else (entry - close_price) / entry * 100
                 pnl_usd_m  = position["size_usd"] * pnl_pct_m / 100
@@ -599,6 +669,8 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                 hit_sl = hit_tp = False
 
             if hit_sl or hit_tp:
+                if hit_sl: param_stats["exit_stop_loss"]   += 1
+                else:       param_stats["exit_take_profit"] += 1
                 reason     = "stop_loss" if hit_sl else "take_profit"
                 exit_price = position["sl"] if hit_sl else position["tp"]
                 pnl_pct    = (exit_price - entry) / entry * 100 if side == "long" \
@@ -688,6 +760,49 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                 covariates=covars_bt,
             )
 
+            # ── Parameter activity tracking — parse reasoning string ──────────
+            # Gate loop: gates are mutually exclusive — at most one per evaluation.
+            # Uses `break` to stop at the first gate match (gates cause immediate return).
+            param_stats["bars_evaluated"] += 1
+            for _line in result.reasoning:
+                if "GATE: ADX"               in _line: param_stats["gate_adx"]             += 1; break
+                if "GATE: Liquidity sweep"   in _line or ("GATE: Sweep" in _line and "conflicts" in _line):
+                    param_stats["gate_sweep"] += 1; break
+                if "GATE: Confluence"        in _line: param_stats["gate_confluence"]        += 1; break
+                if "GATE: C2 uncertainty"    in _line: param_stats["gate_c2_uncertainty"]    += 1; break
+                if "GATE: C2 cont_prob"      in _line: param_stats["gate_c2_cont"]           += 1; break
+                if "FILTER: Bearish FVG"     in _line: param_stats["gate_fvg_long"]          += 1; break
+                if "FILTER: Bullish FVG"     in _line: param_stats["gate_fvg_short"]         += 1; break
+                if "FILTER: LateEntry"       in _line: param_stats["gate_late_entry"]        += 1; break
+                if "FILTER: PathObstruction" in _line: param_stats["gate_path_obstruction"]  += 1; break
+                if "FILTER: ConsecBars"      in _line: param_stats["gate_consec_bars"]       += 1; break
+            # Modifier loop: per-evaluation flags avoid double-count from multi-line modifiers
+            # (e.g. ExhaustionGuard adds up to 2 lines when both long and short conditions fire).
+            _mods_seen: set = set()
+            for _line in result.reasoning:
+                if "MTF:"             in _line and "regime" in _line.lower() and "mod_mtf" not in _mods_seen:
+                    param_stats["mod_mtf_alignment"]    += 1; _mods_seen.add("mod_mtf")
+                if "RegimeBias"       in _line and "nessun" not in _line and "neutralizzato" not in _line and "mod_regime" not in _mods_seen:
+                    param_stats["mod_regime_bias"]      += 1; _mods_seen.add("mod_regime")
+                if "FundingBias:"     in _line and "mod_funding" not in _mods_seen:
+                    param_stats["mod_funding_bias"]     += 1; _mods_seen.add("mod_funding")
+                if "FNG:"             in _line and "mod_fng" not in _mods_seen:
+                    param_stats["mod_fng_bias"]         += 1; _mods_seen.add("mod_fng")
+                if "ExhaustionGuard"  in _line and "mod_exhaust" not in _mods_seen:
+                    param_stats["mod_exhaustion_guard"] += 1; _mods_seen.add("mod_exhaust")
+                if "AbsorptionFilter:" in _line and "mod_abs" not in _mods_seen:
+                    param_stats["mod_absorption_filter"]+= 1; _mods_seen.add("mod_abs")
+                if "SweepConf:"       in _line and "mod_sweep" not in _mods_seen:
+                    param_stats["mod_sweep_conf_bonus"] += 1; _mods_seen.add("mod_sweep")
+            if result.action == "long":
+                param_stats["signals_long"]  += 1
+                if result.size_factor < 0.99: param_stats["mod_counter_trend_size"] += 1
+            elif result.action == "short":
+                param_stats["signals_short"] += 1
+                if result.size_factor < 0.99: param_stats["mod_counter_trend_size"] += 1
+            else:
+                param_stats["no_trade"] += 1
+
             if result.action != "no_trade" and pending_pb is not None:
                 # Already in pullback wait mode — skip new signal
                 pass
@@ -725,27 +840,36 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                 )
                 # Structural SL: mirror live execution — place SL behind OB when within 2%.
                 if structural_sl_enabled:
-                    apply_structural_sl(
+                    _sl_applied, _ = apply_structural_sl(
                         params, result.features_snapshot, close_price,
                         ob_buffer_pct=ob_buffer_pct,
                         ob_buffer_min_atr=ob_buffer_min_atr,
                     )
+                    if _sl_applied: param_stats["sl_structural_ob"] += 1
                 if fvg_sl_enabled:
-                    apply_fvg_sl(
+                    _fvg_applied, _ = apply_fvg_sl(
                         params, result.features_snapshot, close_price,
                         ob_buffer_pct=ob_buffer_pct,
                         ob_buffer_min_atr=ob_buffer_min_atr,
                     )
+                    if _fvg_applied: param_stats["sl_fvg"] += 1
                 if swing_sl_enabled:
-                    apply_swing_sl(
+                    _sw_applied, _ = apply_swing_sl(
                         params, result.features_snapshot, close_price,
                     )
+                    if _sw_applied: param_stats["sl_swing"] += 1
+                # OB TP (tracked via params change — check if ob_tp produced a different TP)
+                if ob_tp_enabled and result.features_snapshot.get(
+                    "ob_bear_top_px" if result.action == "long" else "ob_bull_bot_px"
+                ):
+                    param_stats["tp_ob"] += 1
                 effective_size_usd = params.size_usd * result.size_factor
                 # ── Pullback Entry simulation ─────────────────────────────────
                 if pullback_entry_enabled:
-                    _h = float(row.get("high", close_price))
-                    _l = float(row.get("low",  close_price))
-                    _impulse = (_h - _l) / atr if atr > 0 else 0.0
+                    # Impulso = corpo candela (abs(close-open)), NON range totale (high-low).
+                    # Il range include doji e shadow che non indicano un vero impulso direzionale.
+                    _open_bt = float(row.get("open", close_price))
+                    _impulse = abs(close_price - _open_bt) / atr if atr > 0 else 0.0
                     if _impulse >= pullback_impulse_atr_mult:
                         pb_dist = pullback_zone_atr * atr
                         fb_dist = pullback_fallback_atr * atr
@@ -775,6 +899,7 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                         # expires_bar: window is in hours, bars are 4H → divide by 4
                         # ceil so that e.g. 3h → 1 bar, 5h → 2 bars, 8h → 2 bars
                         _expire_bars = max(1, math.ceil(pullback_window_h / 4))
+                        param_stats["pb_activated"] += 1
                         pending_pb = {
                             "direction":    result.action,
                             "close_4h":     close_price,
@@ -824,6 +949,7 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
         gross_pnl      = position["size_usd"] * pnl_pct / 100
         pnl_usd        = gross_pnl - fee_last
         equity        += pnl_usd
+        param_stats["exit_end_of_period"] += 1
         trades.append({
             "side": side, "entry": position["entry"], "exit": last_price,
             "pnl_pct": round(pnl_pct, 4),
@@ -841,6 +967,50 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
         datetime.fromisoformat(req.to_date) - datetime.fromisoformat(req.from_date)
     ).days
 
+    # param_config: which parameters were ENABLED for this backtest run.
+    # Used by the frontend to distinguish "disabled" from "enabled but never triggered".
+    param_config: dict = {
+        # Gates
+        "gate_adx":               adx_gate_enabled,
+        "gate_sweep":             sweep_gate_enabled and not sweep_gate_directional,
+        "gate_confluence":        (confluence_gate or 0) > 0,
+        "gate_c2_uncertainty":    c2_uncertainty_gate_enabled and use_chronos,
+        "gate_c2_cont":           c2_cont_prob_gate_enabled and use_chronos,
+        "gate_fvg_long":          fvg_filter_enabled,
+        "gate_fvg_short":         fvg_filter_enabled,
+        "gate_late_entry":        late_entry_filter_enabled,
+        "gate_path_obstruction":  path_obstruction_enabled,
+        "gate_consec_bars":       consec_bars_filter_enabled,
+        # Modifiers
+        "mod_mtf_alignment":      mtf_alignment_enabled,
+        "mod_regime_bias":        regime_bias_enabled,
+        "mod_counter_trend_size": regime_bias_enabled and getattr(cfg, "regime_bias_size_factor", 1.0) < 1.0,
+        "mod_funding_bias":       funding_gate_enabled,
+        "mod_fng_bias":           fng_gate_enabled,
+        "mod_iv_size_reduction":  False,  # options IV not simulated in backtest
+        "mod_exhaustion_guard":   exhaustion_guard_enabled,
+        "mod_absorption_filter":  absorption_filter_enabled,
+        "mod_sweep_conf_bonus":   sweep_gate_directional,
+        # Structural SL/TP
+        "sl_structural_ob":       structural_sl_enabled,
+        "sl_fvg":                 fvg_sl_enabled,
+        "sl_swing":               swing_sl_enabled,
+        "tp_ob":                  ob_tp_enabled,
+        # Position management
+        "pm_trailing_sl":         trailing_sl_enabled,
+        "pm_be_sl":               be_sl_enabled,
+        "pm_partial_tp":          partial_tp_enabled,
+        "pm_lgbm_exit":           lgbm_exit_enabled,
+        "pm_max_hold":            max_hold_bars_enabled,
+        # Pullback entry
+        "pb_activated":           pullback_entry_enabled,
+        "pb_filled_zone":         pullback_entry_enabled,
+        "pb_filled_fallback":     pullback_entry_enabled,
+        "pb_decayed":             pullback_entry_enabled,
+        # Data sources (no runtime counter — on/off only)
+        "data_binance_cvd":       binance_cvd_enabled,
+    }
+
     result = {
         "symbol":          symbol,
         "from_date":       req.from_date,
@@ -851,6 +1021,8 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
         "stats":           stats,
         "trades":          trades,
         "equity_curve":    equity_curve,
+        "param_stats":     param_stats,
+        "param_config":    param_config,
     }
     clean = _sanitize(result)
 

@@ -193,9 +193,14 @@ class BotConfig:
         self.fng_greed_thr         = kw.get("fng_greed_thr",         65.0)
         self.fng_extreme_greed_thr = kw.get("fng_extreme_greed_thr", 80.0)
         self.fng_bias_delta        = kw.get("fng_bias_delta",        0.03)
+        # Exhaustion Guard — configurable thresholds
+        self.exhaustion_rsi_low    = kw.get("exhaustion_rsi_low",    28.0)
+        self.exhaustion_rsi_high   = kw.get("exhaustion_rsi_high",   72.0)
+        self.exhaustion_ret48_pct  = kw.get("exhaustion_ret48_pct",   6.0)
+        self.exhaustion_boost      = kw.get("exhaustion_boost",       0.06)
         # Pullback Entry — delayed entry on strong impulse candles
         self.pullback_entry_enabled    = kw.get("pullback_entry_enabled",    False)
-        self.pullback_impulse_atr_mult = kw.get("pullback_impulse_atr_mult", 1.5)
+        self.pullback_impulse_atr_mult = kw.get("pullback_impulse_atr_mult", 1.2)
         self.pullback_zone_atr         = kw.get("pullback_zone_atr",         0.3)
         self.pullback_window_h         = kw.get("pullback_window_h",         3)
         self.pullback_fallback_atr     = kw.get("pullback_fallback_atr",     0.5)
@@ -1265,6 +1270,11 @@ class ExecutionEngine:
             iv_high_percentile          = getattr(cfg, "iv_high_percentile",    80.0),
             iv_low_percentile           = getattr(cfg, "iv_low_percentile",     20.0),
             iv_size_factor              = getattr(cfg, "iv_size_factor",        0.7),
+            # Exhaustion Guard thresholds
+            exhaustion_rsi_low          = getattr(cfg, "exhaustion_rsi_low",    28.0),
+            exhaustion_rsi_high         = getattr(cfg, "exhaustion_rsi_high",   72.0),
+            exhaustion_ret48_pct        = getattr(cfg, "exhaustion_ret48_pct",   6.0),
+            exhaustion_boost            = getattr(cfg, "exhaustion_boost",       0.06),
         )
         result = decision_engine.decide(
             features=latest,
@@ -1392,19 +1402,23 @@ class ExecutionEngine:
                 log.info("Pullback wait active (%s) — new %s signal queued but skipped",
                          self._pending_pullback.direction, result.action)
             elif _pb_enabled:
-                _h = float(latest.get("high") or 0)
-                _l = float(latest.get("low")  or 0)
-                _atr_v = atr or snap["mark_price"] * 0.01
-                _impulse = (_h - _l) / _atr_v if _atr_v > 0 else 0.0
+                # Impulso misurato sul CORPO (abs(close - open)), NON sul range totale (high - low).
+                # Il range include shadow e doji che non rappresentano un vero impulso direzionale.
+                _close_px = float(latest.get("close") or snap["mark_price"])
+                _open_px  = float(latest.get("open")  or _close_px)
+                _atr_v    = atr or snap["mark_price"] * 0.01
+                _impulse  = abs(_close_px - _open_px) / _atr_v if _atr_v > 0 else 0.0
                 if _impulse >= getattr(self.config, "pullback_impulse_atr_mult", 1.5):
                     self._pending_pullback = await self._create_pending_pullback(
                         result, latest, _atr_v, snap
                     )
                     log.info(
-                        "Pullback mode activated: %s impulse_ratio=%.2f ≥ %.2f | "
+                        "Pullback mode activated: %s body_ratio=%.2f ≥ %.2f "
+                        "(body=%.0f open=%.0f close=%.0f) | "
                         "zone=%.2f fallback=%.2f expires=%s",
                         result.action, _impulse,
                         getattr(self.config, "pullback_impulse_atr_mult", 1.5),
+                        abs(_close_px - _open_px), _open_px, _close_px,
                         self._pending_pullback.pullback_zone,
                         self._pending_pullback.fallback_limit,
                         self._pending_pullback.expires_at.strftime("%H:%M UTC"),

@@ -83,6 +83,11 @@ class DecisionEngine:
         iv_high_percentile: float = 80.0,
         iv_low_percentile: float = 20.0,
         iv_size_factor: float = 0.7,
+        # Exhaustion Guard — configurable thresholds
+        exhaustion_rsi_low:   float = 28.0,
+        exhaustion_rsi_high:  float = 72.0,
+        exhaustion_ret48_pct: float = 6.0,
+        exhaustion_boost:     float = 0.06,
     ):
         self.directional_threshold       = directional_threshold
         self.adx_gate                    = adx_gate
@@ -130,6 +135,10 @@ class DecisionEngine:
         self.iv_high_percentile    = iv_high_percentile
         self.iv_low_percentile     = iv_low_percentile
         self.iv_size_factor        = iv_size_factor
+        self.exhaustion_rsi_low    = exhaustion_rsi_low
+        self.exhaustion_rsi_high   = exhaustion_rsi_high
+        self.exhaustion_ret48_pct  = exhaustion_ret48_pct
+        self.exhaustion_boost      = exhaustion_boost
 
     def decide(
         self,
@@ -401,18 +410,20 @@ class DecisionEngine:
         if self.exhaustion_guard_enabled:
             _exh_short_conds: list[str] = []
             _exh_long_conds:  list[str] = []
+            _ret48_thr = self.exhaustion_ret48_pct / 100.0
 
-            if rsi_14 < 28:
-                _exh_short_conds.append(f"RSI {rsi_14:.1f} < 28")
-            if ret_48 < -0.06:
-                _exh_short_conds.append(f"ret_48 {ret_48*100:.1f}% < -6%")
-            if rsi_14 > 72:
-                _exh_long_conds.append(f"RSI {rsi_14:.1f} > 72")
-            if ret_48 > 0.06:
-                _exh_long_conds.append(f"ret_48 {ret_48*100:.1f}% > +6%")
+            if rsi_14 < self.exhaustion_rsi_low:
+                _exh_short_conds.append(f"RSI {rsi_14:.1f} < {self.exhaustion_rsi_low:.0f}")
+            if ret_48 < -_ret48_thr:
+                _exh_short_conds.append(f"ret_48 {ret_48*100:.1f}% < -{self.exhaustion_ret48_pct:.0f}%")
+            if rsi_14 > self.exhaustion_rsi_high:
+                _exh_long_conds.append(f"RSI {rsi_14:.1f} > {self.exhaustion_rsi_high:.0f}")
+            if ret_48 > _ret48_thr:
+                _exh_long_conds.append(f"ret_48 {ret_48*100:.1f}% > +{self.exhaustion_ret48_pct:.0f}%")
 
-            _exh_short_boost = 0.06 if _exh_short_conds else 0.0
-            _exh_long_boost  = 0.06 if _exh_long_conds  else 0.0
+            _exh_boost = self.exhaustion_boost
+            _exh_short_boost = _exh_boost if _exh_short_conds else 0.0
+            _exh_long_boost  = _exh_boost if _exh_long_conds  else 0.0
 
             if _exh_short_conds:
                 reasoning.append(

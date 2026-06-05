@@ -277,9 +277,14 @@ class BotConfig(BaseModel):
     fng_greed_thr:         float = Field(65.0,    ge=50.0,    le=80.0)
     fng_extreme_greed_thr: float = Field(80.0,    ge=60.0,    le=95.0)
     fng_bias_delta:        float = Field(0.03,    ge=0.01,    le=0.08)
+    # Exhaustion Guard — configurable thresholds
+    exhaustion_rsi_low:   float = Field(28.0, ge=15.0, le=45.0)
+    exhaustion_rsi_high:  float = Field(72.0, ge=55.0, le=85.0)
+    exhaustion_ret48_pct: float = Field(6.0,  ge=2.0,  le=20.0)
+    exhaustion_boost:     float = Field(0.06, ge=0.01, le=0.20)
     # Pullback Entry — delayed entry on strong impulse candles
     pullback_entry_enabled:    bool  = Field(False)
-    pullback_impulse_atr_mult: float = Field(1.5, ge=1.0, le=3.0)
+    pullback_impulse_atr_mult: float = Field(1.2, ge=0.5, le=3.0)
     pullback_zone_atr:         float = Field(0.3, ge=0.1, le=1.0)
     pullback_window_h:         int   = Field(3,   ge=1,   le=8)
     pullback_fallback_atr:     float = Field(0.5, ge=0.2, le=2.0)

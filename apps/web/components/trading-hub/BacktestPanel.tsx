@@ -35,6 +35,55 @@ interface BacktestTrade {
 
 interface EquityPoint { bar: number; equity: number; }
 
+interface ParamStats {
+  // signal volume
+  bars_evaluated: number;
+  signals_long: number;
+  signals_short: number;
+  no_trade: number;
+  // hard gates
+  gate_adx: number;
+  gate_sweep: number;
+  gate_confluence: number;
+  gate_c2_uncertainty: number;
+  gate_c2_cont: number;
+  gate_fvg_long: number;
+  gate_fvg_short: number;
+  gate_late_entry: number;
+  gate_path_obstruction: number;
+  gate_consec_bars: number;
+  // bias/modifiers
+  mod_mtf_alignment: number;
+  mod_regime_bias: number;
+  mod_counter_trend_size: number;
+  mod_funding_bias: number;
+  mod_fng_bias: number;
+  mod_iv_size_reduction: number;
+  mod_exhaustion_guard: number;
+  mod_absorption_filter: number;
+  mod_sweep_conf_bonus: number;
+  // structural SL/TP overrides
+  sl_structural_ob: number;
+  sl_fvg: number;
+  sl_swing: number;
+  tp_ob: number;
+  // position management
+  pm_trailing_sl: number;
+  pm_be_sl: number;
+  pm_partial_tp: number;
+  pm_lgbm_exit: number;
+  pm_max_hold: number;
+  // trade exits
+  exit_stop_loss: number;
+  exit_take_profit: number;
+  exit_end_of_period: number;
+  // pullback entry
+  pb_activated: number;
+  pb_filled_zone: number;
+  pb_filled_fallback: number;
+  pb_decayed: number;
+}
+
 interface BacktestResult {
   symbol: string;
   from_date: string;
@@ -45,6 +94,8 @@ interface BacktestResult {
   stats: BacktestStats;
   trades: BacktestTrade[];
   equity_curve: EquityPoint[];
+  param_stats?: ParamStats;
+  param_config?: Record<string, boolean>;
 }
 
 // ── History types ──────────────────────────────────────────────────────────────
@@ -689,6 +740,247 @@ const ConfigSummary: React.FC<{ config: Record<string, any> }> = ({ config: c })
   );
 };
 
+// ── Parameter Activity Report ─────────────────────────────────────────────────
+const ParamActivity: React.FC<{ ps: ParamStats; cfg?: Record<string, boolean> }> = ({ ps, cfg }) => {
+  const total  = ps.bars_evaluated || 1;
+  const trades = (ps.signals_long ?? 0) + (ps.signals_short ?? 0);
+
+  // isOn: true = enabled in backtest settings, false = disabled (hidden from report)
+  // When param_config is not available (old backtest result), show all rows.
+  const isOn = (key: string): boolean => cfg ? (cfg[key] ?? false) : true;
+
+  const pct = (n: number, base = total) => base > 0 ? Math.round(n / base * 100) : 0;
+
+  type Row = {
+    key: string;           // matches param_config keys
+    label: string;
+    count: number;
+    pct?: number;
+    note?: string;
+    alwaysShow?: boolean;  // signal/exit rows always shown regardless of param_config
+  };
+
+  const groups: { title: string; color: string; dot: string; rows: Row[]; alwaysShow?: boolean }[] = [
+    {
+      title: 'Segnali Valutati',
+      color: 'border-indigo-200 dark:border-indigo-500/20',
+      dot: 'bg-indigo-500',
+      alwaysShow: true,
+      rows: [
+        { key: '_bars',   label: 'Candele analizzate (LGBM attivo)',    count: ps.bars_evaluated, alwaysShow: true },
+        { key: '_long',   label: 'Segnali LONG generati',  count: ps.signals_long,  pct: pct(ps.signals_long),  note: `${pct(ps.signals_long)}% delle candele`,  alwaysShow: true },
+        { key: '_short',  label: 'Segnali SHORT generati', count: ps.signals_short, pct: pct(ps.signals_short), note: `${pct(ps.signals_short)}% delle candele`, alwaysShow: true },
+        { key: '_notrade',label: 'No-trade (sotto soglia)', count: ps.no_trade,     pct: pct(ps.no_trade),      note: `${pct(ps.no_trade)}% delle candele`,      alwaysShow: true },
+      ],
+    },
+    {
+      title: 'Gate — Blocchi Hard (trade impediti)',
+      color: 'border-rose-200 dark:border-rose-500/20',
+      dot: 'bg-rose-500',
+      rows: [
+        { key: 'gate_adx',              label: 'ADX Gate (mercato compresso)',                count: ps.gate_adx,             pct: pct(ps.gate_adx) },
+        { key: 'gate_sweep',            label: 'Liquidity Sweep Gate',                        count: ps.gate_sweep,           pct: pct(ps.gate_sweep) },
+        { key: 'gate_confluence',       label: 'Confluence Gate (QT score basso)',            count: ps.gate_confluence,      pct: pct(ps.gate_confluence) },
+        { key: 'gate_c2_uncertainty',   label: 'C2 Uncertainty Gate',                         count: ps.gate_c2_uncertainty,  pct: pct(ps.gate_c2_uncertainty) },
+        { key: 'gate_c2_cont',          label: 'C2 Continuation Gate',                        count: ps.gate_c2_cont,         pct: pct(ps.gate_c2_cont) },
+        { key: 'gate_fvg_long',         label: 'FVG Filter — bloccato LONG (bearish FVG sopra)',  count: ps.gate_fvg_long,   pct: pct(ps.gate_fvg_long) },
+        { key: 'gate_fvg_short',        label: 'FVG Filter — bloccato SHORT (bullish FVG sotto)', count: ps.gate_fvg_short,  pct: pct(ps.gate_fvg_short) },
+        { key: 'gate_late_entry',       label: 'Late Entry Filter (entry troppo lontana da OB)', count: ps.gate_late_entry,  pct: pct(ps.gate_late_entry) },
+        { key: 'gate_path_obstruction', label: 'Path Obstruction (OB opposto blocca il percorso)', count: ps.gate_path_obstruction, pct: pct(ps.gate_path_obstruction) },
+        { key: 'gate_consec_bars',      label: 'Consecutive Bars Filter (trend overextended)', count: ps.gate_consec_bars,  pct: pct(ps.gate_consec_bars) },
+      ],
+    },
+    {
+      title: 'Modificatori — Soglie & Size',
+      color: 'border-amber-200 dark:border-amber-500/20',
+      dot: 'bg-amber-500',
+      rows: [
+        { key: 'mod_mtf_alignment',      label: 'MTF Alignment (soglia abbassata per trend daily)', count: ps.mod_mtf_alignment,      pct: pct(ps.mod_mtf_alignment) },
+        { key: 'mod_regime_bias',        label: 'Regime Bias (soglia alzata per trade contro-trend)', count: ps.mod_regime_bias,      pct: pct(ps.mod_regime_bias) },
+        { key: 'mod_counter_trend_size', label: 'Size ridotta (trade contro-trend, regime bias)', count: ps.mod_counter_trend_size, pct: trades > 0 ? pct(ps.mod_counter_trend_size, trades) : 0, note: trades > 0 ? `${pct(ps.mod_counter_trend_size, trades)}% dei trade` : undefined },
+        { key: 'mod_funding_bias',       label: 'Funding Rate Bias (soglia adattata al funding)',  count: ps.mod_funding_bias,       pct: pct(ps.mod_funding_bias) },
+        { key: 'mod_fng_bias',           label: 'Fear & Greed Bias (soglia contrarian)',            count: ps.mod_fng_bias,           pct: pct(ps.mod_fng_bias) },
+        { key: 'mod_exhaustion_guard',   label: 'Exhaustion Guard (RSI estremo o ret_48 overextended)',     count: ps.mod_exhaustion_guard,   pct: pct(ps.mod_exhaustion_guard) },
+        { key: 'mod_absorption_filter',  label: 'Absorption Filter (volume anomalo, soglia +0.03)', count: ps.mod_absorption_filter, pct: pct(ps.mod_absorption_filter) },
+        { key: 'mod_sweep_conf_bonus',   label: 'Sweep Confluenza direzionale (bonus -0.03)',       count: ps.mod_sweep_conf_bonus,   pct: pct(ps.mod_sweep_conf_bonus) },
+      ],
+    },
+    {
+      title: 'Entry — Override SL/TP Strutturale',
+      color: 'border-violet-200 dark:border-violet-500/20',
+      dot: 'bg-violet-500',
+      rows: [
+        { key: 'sl_structural_ob', label: 'Structural SL da Order Block (SL dietro OB)', count: ps.sl_structural_ob, pct: trades > 0 ? pct(ps.sl_structural_ob, trades) : 0, note: trades > 0 ? `${pct(ps.sl_structural_ob, trades)}% dei trade` : undefined },
+        { key: 'sl_fvg',           label: 'SL da Fair Value Gap (SL dietro FVG)',         count: ps.sl_fvg,           pct: trades > 0 ? pct(ps.sl_fvg, trades)           : 0, note: trades > 0 ? `${pct(ps.sl_fvg, trades)}% dei trade`           : undefined },
+        { key: 'sl_swing',         label: 'SL da Swing High/Low strutturale',              count: ps.sl_swing,         pct: trades > 0 ? pct(ps.sl_swing, trades)         : 0, note: trades > 0 ? `${pct(ps.sl_swing, trades)}% dei trade`         : undefined },
+        { key: 'tp_ob',            label: 'TP da Order Block opposto (OB come target)',   count: ps.tp_ob,            pct: trades > 0 ? pct(ps.tp_ob, trades)            : 0, note: trades > 0 ? `${pct(ps.tp_ob, trades)}% dei trade`            : undefined },
+      ],
+    },
+    {
+      title: 'Gestione Posizione (mid-trade)',
+      color: 'border-emerald-200 dark:border-emerald-500/20',
+      dot: 'bg-emerald-500',
+      rows: [
+        { key: 'pm_trailing_sl', label: 'Trailing SL attivato (high-water mark)',            count: ps.pm_trailing_sl, pct: trades > 0 ? pct(ps.pm_trailing_sl, trades) : 0, note: trades > 0 ? `${pct(ps.pm_trailing_sl, trades)}% dei trade` : undefined },
+        { key: 'pm_be_sl',       label: 'Break-even SL applicato (SL a breakeven)',          count: ps.pm_be_sl,       pct: trades > 0 ? pct(ps.pm_be_sl, trades)       : 0, note: trades > 0 ? `${pct(ps.pm_be_sl, trades)}% dei trade`       : undefined },
+        { key: 'pm_partial_tp',  label: 'Partial TP eseguito (50% della posizione chiusa)', count: ps.pm_partial_tp,  pct: trades > 0 ? pct(ps.pm_partial_tp, trades)  : 0, note: trades > 0 ? `${pct(ps.pm_partial_tp, trades)}% dei trade`  : undefined },
+        { key: 'pm_lgbm_exit',   label: 'LGBM Exit (uscita AI per segnale invertito)',      count: ps.pm_lgbm_exit,   pct: trades > 0 ? pct(ps.pm_lgbm_exit, trades)   : 0, note: trades > 0 ? `${pct(ps.pm_lgbm_exit, trades)}% dei trade`   : undefined },
+        { key: 'pm_max_hold',    label: 'Max Hold (uscita temporale forzata)',               count: ps.pm_max_hold,    pct: trades > 0 ? pct(ps.pm_max_hold, trades)    : 0, note: trades > 0 ? `${pct(ps.pm_max_hold, trades)}% dei trade`    : undefined },
+      ],
+    },
+    {
+      title: 'Uscite Trade',
+      color: 'border-slate-200 dark:border-slate-500/20',
+      dot: 'bg-slate-400',
+      alwaysShow: true,
+      rows: [
+        { key: '_sl',  label: 'Stop Loss colpito',              count: ps.exit_stop_loss,    pct: trades > 0 ? pct(ps.exit_stop_loss, trades)    : 0, note: trades > 0 ? `${pct(ps.exit_stop_loss, trades)}% dei trade`    : undefined, alwaysShow: true },
+        { key: '_tp',  label: 'Take Profit raggiunto',          count: ps.exit_take_profit,  pct: trades > 0 ? pct(ps.exit_take_profit, trades)  : 0, note: trades > 0 ? `${pct(ps.exit_take_profit, trades)}% dei trade`  : undefined, alwaysShow: true },
+        { key: '_eop', label: 'Fine periodo (posizione aperta)', count: ps.exit_end_of_period,pct: trades > 0 ? pct(ps.exit_end_of_period, trades): 0, alwaysShow: true },
+      ],
+    },
+    // Pullback: shown only when enabled (pb_activated in param_config) or when it actually fired
+    ...((isOn('pb_activated') || (ps.pb_activated ?? 0) > 0) ? [{
+      title: 'Pullback Entry',
+      color: 'border-cyan-200 dark:border-cyan-500/20',
+      dot: 'bg-cyan-500',
+      rows: [
+        { key: 'pb_activated',     label: 'Impulso ≥ soglia (segnali in modalità pullback)', count: ps.pb_activated ?? 0,     pct: trades > 0 ? pct(ps.pb_activated ?? 0, trades) : 0, note: trades > 0 ? `${pct(ps.pb_activated ?? 0, trades)}% dei trade` : undefined },
+        { key: 'pb_filled_zone',   label: 'Fill di zona (pullback raggiunto prima del timeout)', count: ps.pb_filled_zone ?? 0,   pct: (ps.pb_activated ?? 0) > 0 ? pct(ps.pb_filled_zone ?? 0, ps.pb_activated!) : 0, note: (ps.pb_activated ?? 0) > 0 ? `${pct(ps.pb_filled_zone ?? 0, ps.pb_activated!)}% delle attivazioni` : undefined },
+        { key: 'pb_filled_fallback',label: 'Fill fallback (timeout, prezzo ancora vicino)',    count: ps.pb_filled_fallback ?? 0,pct: (ps.pb_activated ?? 0) > 0 ? pct(ps.pb_filled_fallback ?? 0, ps.pb_activated!) : 0, note: (ps.pb_activated ?? 0) > 0 ? `${pct(ps.pb_filled_fallback ?? 0, ps.pb_activated!)}% delle attivazioni` : undefined },
+        { key: 'pb_decayed',       label: 'Segnale decaduto (prezzo fuori range o timeout)',   count: ps.pb_decayed ?? 0,       pct: (ps.pb_activated ?? 0) > 0 ? pct(ps.pb_decayed ?? 0, ps.pb_activated!) : 0, note: (ps.pb_activated ?? 0) > 0 ? `${pct(ps.pb_decayed ?? 0, ps.pb_activated!)}% delle attivazioni` : undefined },
+      ],
+    }] : []),
+  ];
+
+  return (
+    <div className="elegant-card bg-white dark:bg-[#151E32] overflow-hidden">
+      <div className="px-6 py-4 border-b border-slate-100 dark:border-white/5 bg-slate-50/50 dark:bg-white/[0.02]">
+        <h3 className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest flex items-center gap-2">
+          <span className="w-1 h-3 bg-slate-400 dark:bg-slate-500 rounded-full" />
+          Attività Parametri — {ps.bars_evaluated.toLocaleString()} candele analizzate
+        </h3>
+        <p className="text-[10px] text-slate-400 dark:text-slate-500 mt-1">
+          Mostra solo i parametri attivi nelle impostazioni di questo backtest. <strong className="text-slate-500 dark:text-slate-400">Contatore 0</strong> = attivo ma mai scattato nel periodo — valuta se disabilitarlo.
+        </p>
+      </div>
+      <div className="p-6 space-y-5">
+        {/* ── Dati & Sorgenti: feature senza counter runtime ─────────────── */}
+        {cfg && (() => {
+          // Sorgenti dati attive: non hanno un counter ma vanno sempre mostrate
+          // quando presenti in param_config. Aggiungere qui ogni nuovo toggle dati.
+          const dataSources: { key: string; label: string; detail: string }[] = [
+            {
+              key:    'data_binance_cvd',
+              label:  'Binance Cross-Exchange CVD',
+              detail: 'taker_buy_vol → 3 feature LightGBM (binance_cvd_slope · binance_absorption_z · cross_cvd_div)',
+            },
+            // ── AGGIUNGI QUI FUTURE SORGENTI DATI ──────────────────────────────
+            // { key: 'data_deribit_iv', label: 'Deribit IV (Options)', detail: '...' },
+          ];
+          const active = dataSources.filter(s => cfg[s.key] === true);
+          const inactive = dataSources.filter(s => cfg[s.key] === false);
+          if (active.length === 0 && inactive.length === 0) return null;
+          return (
+            <div className="rounded-xl border border-sky-200 dark:border-sky-500/20 overflow-hidden">
+              <div className="px-4 py-2.5 bg-slate-50/50 dark:bg-white/[0.02] flex items-center justify-between border-b border-slate-100 dark:border-white/5">
+                <div className="flex items-center gap-2">
+                  <span className="w-1.5 h-1.5 rounded-full bg-sky-500" />
+                  <span className="text-[10px] font-bold text-slate-600 dark:text-slate-300 uppercase tracking-widest">Dati & Sorgenti Esterne</span>
+                </div>
+                <span className="text-[9px] font-medium text-slate-400 dark:text-slate-500">
+                  {active.length} attiv{active.length === 1 ? 'a' : 'e'} su {dataSources.length}
+                </span>
+              </div>
+              <div className="divide-y divide-slate-50 dark:divide-white/[0.03]">
+                {active.map(s => (
+                  <div key={s.key} className="flex items-center gap-3 px-4 py-2.5">
+                    <div className="flex-1 min-w-0">
+                      <span className="text-[11px] font-medium text-slate-700 dark:text-slate-200">{s.label}</span>
+                      <span className="ml-2 text-[9px] text-slate-400 dark:text-slate-500">{s.detail}</span>
+                    </div>
+                    <span className="text-[9px] font-bold px-2 py-0.5 rounded-full bg-sky-100 dark:bg-sky-500/15 text-sky-600 dark:text-sky-400 flex-shrink-0">ATTIVO</span>
+                  </div>
+                ))}
+                {inactive.length > 0 && (
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2 bg-slate-50/30 dark:bg-transparent">
+                    <span className="text-[8px] font-bold text-slate-300 dark:text-slate-600 uppercase tracking-widest shrink-0">Non usati:</span>
+                    {inactive.map(s => (
+                      <span key={s.key} className="text-[9px] text-slate-300 dark:text-slate-600">{s.label}</span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* ── Gruppi con counter ─────────────────────────────────────────── */}
+        {groups.map(g => {
+          // Filter rows: always-show rows are always included; others only if enabled in param_config
+          const visibleRows = g.rows.filter(r => r.alwaysShow || g.alwaysShow || isOn(r.key));
+          // Skip entire group if no visible rows (all features disabled)
+          if (visibleRows.length === 0) return null;
+
+          const firedRows   = visibleRows.filter(r => r.count > 0);
+          const unfiledRows = visibleRows.filter(r => r.count === 0);
+
+          return (
+            <div key={g.title} className={`rounded-xl border ${g.color} overflow-hidden`}>
+              {/* Group header */}
+              <div className="px-4 py-2.5 bg-slate-50/50 dark:bg-white/[0.02] flex items-center justify-between border-b border-slate-100 dark:border-white/5">
+                <div className="flex items-center gap-2">
+                  <span className={`w-1.5 h-1.5 rounded-full ${g.dot}`} />
+                  <span className="text-[10px] font-bold text-slate-600 dark:text-slate-300 uppercase tracking-widest">{g.title}</span>
+                </div>
+                <span className="text-[9px] font-medium text-slate-400 dark:text-slate-500">
+                  {visibleRows.length} parametr{visibleRows.length === 1 ? 'o' : 'i'} attivi
+                </span>
+              </div>
+              <div className="divide-y divide-slate-50 dark:divide-white/[0.03]">
+                {/* Fired rows — with bar and count */}
+                {firedRows.map(r => (
+                  <div key={r.key} className="flex items-center gap-3 px-4 py-2.5">
+                    <div className="flex-1 min-w-0">
+                      <span className="text-[11px] font-medium text-slate-700 dark:text-slate-200 leading-tight">{r.label}</span>
+                      {r.note && <span className="ml-2 text-[9px] text-slate-400 dark:text-slate-500">{r.note}</span>}
+                    </div>
+                    <div className="flex items-center gap-2.5 flex-shrink-0">
+                      {r.pct !== undefined && r.pct > 0 && (
+                        <div className="w-20 h-1.5 rounded-full bg-slate-100 dark:bg-white/5 overflow-hidden">
+                          <div
+                            className={`h-full rounded-full ${g.dot}`}
+                            style={{ width: `${Math.min(100, r.pct)}%`, opacity: 0.65 }}
+                          />
+                        </div>
+                      )}
+                      <span className="text-[12px] font-bold text-slate-800 dark:text-slate-100 tabular-nums min-w-[2.5rem] text-right">
+                        {r.count.toLocaleString()}
+                      </span>
+                    </div>
+                  </div>
+                ))}
+                {/* Unfired rows — compact, dim, with "mai scattato" badge */}
+                {unfiledRows.length > 0 && (
+                  <div className="px-4 py-2.5 flex flex-wrap items-center gap-x-3 gap-y-1.5 bg-slate-50/30 dark:bg-white/[0.01]">
+                    <span className="text-[8px] font-bold text-slate-300 dark:text-slate-600 uppercase tracking-widest shrink-0">Mai scattato:</span>
+                    {unfiledRows.map(r => (
+                      <span key={r.key} className="text-[9px] text-slate-400 dark:text-slate-500 flex items-center gap-1">
+                        <span className={`w-1 h-1 rounded-full ${g.dot} opacity-40 inline-block`} />
+                        {r.label}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+};
+
 // ── History result card ────────────────────────────────────────────────────────
 const HistoryResultCard: React.FC<{ result: BacktestResult; config?: Record<string, any> }> = ({ result, config }) => {
   const [lev, setLev] = useState<LeverageOption>(1);
@@ -754,6 +1046,8 @@ const HistoryResultCard: React.FC<{ result: BacktestResult; config?: Record<stri
           <TradeTable trades={disp.trades} showLevEquity={lev > 1} initialCapital={result.initial_capital} />
         </div>
       )}
+      {/* Parameter Activity Report */}
+      {result.param_stats && <ParamActivity ps={result.param_stats} cfg={result.param_config} />}
     </div>
   );
 };
@@ -1351,6 +1645,10 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   const [dualAtr, setDualAtr] = useState(false);
   // Signal quality filters
   const [exhaustionGuard,    setExhaustionGuard]    = useState(true);
+  const [exhaustionRsiLow,   setExhaustionRsiLow]   = useState('28');
+  const [exhaustionRsiHigh,  setExhaustionRsiHigh]  = useState('72');
+  const [exhaustionRet48,    setExhaustionRet48]    = useState('6.0');
+  const [exhaustionBoost,    setExhaustionBoost]    = useState('0.06');
   const [structuralSl,       setStructuralSl]       = useState(false);
   const [obBufferPct,        setObBufferPct]        = useState('0.3');
   const [obBufferMinAtr,     setObBufferMinAtr]     = useState('0.0');
@@ -1384,7 +1682,7 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   const [binanceCvd, setBinanceCvd] = useState(false);
   // Pullback Entry
   const [pullbackEnabled,       setPullbackEnabled]       = useState(false);
-  const [pullbackImpulseAtr,    setPullbackImpulseAtr]    = useState('1.5');
+  const [pullbackImpulseAtr,    setPullbackImpulseAtr]    = useState('1.2');
   const [pullbackZoneAtr,       setPullbackZoneAtr]       = useState('0.3');
   const [pullbackWindowH,       setPullbackWindowH]       = useState('3');
   const [pullbackFallbackAtr,   setPullbackFallbackAtr]   = useState('0.5');
@@ -1484,6 +1782,10 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     if (p.absorption_z_threshold    !== undefined) setAbsorptionZThresh(String(p.absorption_z_threshold));
     if (p.dual_atr_enabled           !== undefined) setDualAtr(!!p.dual_atr_enabled);
     if (p.exhaustion_guard_enabled   !== undefined) setExhaustionGuard(!!p.exhaustion_guard_enabled);
+    if (p.exhaustion_rsi_low         !== undefined) setExhaustionRsiLow(String(p.exhaustion_rsi_low));
+    if (p.exhaustion_rsi_high        !== undefined) setExhaustionRsiHigh(String(p.exhaustion_rsi_high));
+    if (p.exhaustion_ret48_pct       !== undefined) setExhaustionRet48(String(p.exhaustion_ret48_pct));
+    if (p.exhaustion_boost           !== undefined) setExhaustionBoost(String(p.exhaustion_boost));
     if (p.structural_sl_enabled      !== undefined) setStructuralSl(!!p.structural_sl_enabled);
     if (p.ob_buffer_pct              !== undefined) setObBufferPct(String(p.ob_buffer_pct));
     if (p.ob_buffer_min_atr          !== undefined) setObBufferMinAtr(String(p.ob_buffer_min_atr));
@@ -1515,6 +1817,14 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     if (p.be_sl_activation      !== undefined) setAdvBeSLAct(String(p.be_sl_activation));
     if (p.max_hold_bars_enabled !== undefined) setAdvMaxHold(!!p.max_hold_bars_enabled);
     if (p.max_hold_bars         !== undefined) setAdvMaxHoldBars(String(p.max_hold_bars));
+    // Binance Cross-Exchange CVD
+    if (p.binance_cvd_enabled   !== undefined) setBinanceCvd(!!p.binance_cvd_enabled);
+    // Pullback Entry
+    if (p.pullback_entry_enabled     !== undefined) setPullbackEnabled(!!p.pullback_entry_enabled);
+    if (p.pullback_impulse_atr_mult  !== undefined) setPullbackImpulseAtr(String(p.pullback_impulse_atr_mult));
+    if (p.pullback_zone_atr          !== undefined) setPullbackZoneAtr(String(p.pullback_zone_atr));
+    if (p.pullback_window_h          !== undefined) setPullbackWindowH(String(p.pullback_window_h));
+    if (p.pullback_fallback_atr      !== undefined) setPullbackFallbackAtr(String(p.pullback_fallback_atr));
   }, []);
 
   useEffect(() => {
@@ -1726,6 +2036,10 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     dual_atr_enabled:              dualAtr,
     // Signal quality filters
     exhaustion_guard_enabled:      exhaustionGuard,
+    exhaustion_rsi_low:            parseFloat(exhaustionRsiLow),
+    exhaustion_rsi_high:           parseFloat(exhaustionRsiHigh),
+    exhaustion_ret48_pct:          parseFloat(exhaustionRet48),
+    exhaustion_boost:              parseFloat(exhaustionBoost),
     structural_sl_enabled:         structuralSl,
     ob_buffer_pct:                 parseFloat(obBufferPct),
     ob_buffer_min_atr:             parseFloat(obBufferMinAtr),
@@ -1811,7 +2125,7 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
       `TP — Swing:             ${swingTp ? `ATTIVO — blend ${Math.round(parseFloat(swingTpBlend) * 100)}% Swing / ${Math.round((1 - parseFloat(swingTpBlend)) * 100)}% ATR` : 'DISATTIVATO'}`,
       '',
       '━━━ SIGNAL QUALITY FILTERS ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
-      `Exhaustion Guard:       ${exhaustionGuard ? 'ATTIVO' : 'DISATTIVATO'}`,
+      `Exhaustion Guard:       ${exhaustionGuard ? `ATTIVO — RSI low ${exhaustionRsiLow} · RSI high ${exhaustionRsiHigh} · ret48 ±${exhaustionRet48}% · boost +${exhaustionBoost}` : 'DISATTIVATO'}`,
       `Absorption Filter:      ${absorptionFilter ? `ATTIVO — soglia z ${absorptionZThresh}σ` : 'DISATTIVATO'}`,
       `Dual ATR (SL/TP):       ${dualAtr ? 'ATTIVO (SL=ATR_21, TP=ATR_14)' : 'DISATTIVATO'}`,
       `Late Entry Filter:      ${lateEntryFilter ? `ATTIVO — max OB dist ${lateEntryMaxObDist} ATR` : 'DISATTIVATO'}`,
@@ -1821,7 +2135,25 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
       '━━━ BIAS DI MERCATO ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
       `Funding Rate Bias:      ${fundingGate ? `ATTIVO — lookback ${fundingGateLookback} bar · high ${(parseFloat(fundingHighThr)*10000).toFixed(1)}bps · extreme ${(parseFloat(fundingExtremeThr)*10000).toFixed(1)}bps · Δ${fundingBiasDelta}` : 'DISATTIVATO'}`,
       `Fear & Greed Bias:      ${fngGate ? `ATTIVO — ExFear <${fngExtremeFearThr} · Fear <${fngFearThr} · Greed >${fngGreedThr} · ExGreed >${fngExtremeGreedThr} · Δ${fngBiasDelta}` : 'DISATTIVATO'}`,
+      '',
+      '━━━ DATI AGGIUNTIVI ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
+      `Binance Cross-Exchange CVD: ${binanceCvd ? 'ATTIVO (taker_buy_vol → binance_cvd_slope, binance_absorption_z, cross_cvd_div)' : 'DISATTIVATO'}`,
+      '',
+      '━━━ PULLBACK ENTRY ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
+      `Pullback Entry:         ${pullbackEnabled ? 'ATTIVO' : 'DISATTIVATO'}`,
+      ...(pullbackEnabled ? [
+        `  Soglia impulso corpo: ${pullbackImpulseAtr}×ATR (abs(close-open) ≥ soglia per attivare)`,
+        `  Profondità pullback:  ${pullbackZoneAtr}×ATR (ritracciamento target dalla chiusura 4H)`,
+        `  Finestra attesa:      ${pullbackWindowH}h (${Math.max(1, Math.ceil(parseInt(pullbackWindowH) / 4))} bar 4H)`,
+        `  Limite fallback:      ${pullbackFallbackAtr}×ATR (oltre → segnale decade)`,
+      ] : []),
     ];
+    // ── NOTA MANUTENZIONE ─────────────────────────────────────────────────────
+    // Il blocco "CONFIG JSON COMPLETO" in fondo include SEMPRE il 100% dei campi
+    // tramite buildConfig(true). Le sezioni di testo sopra devono essere aggiornate
+    // manualmente ogni volta che si aggiunge un nuovo parametro a buildConfig.
+    // Per verificare la copertura: confronta le chiavi di buildConfig() con le righe
+    // di testo in questa funzione. Il JSON è la fonte di verità, il testo è UX.
 
     if (result) {
       const s = result.stats;
@@ -2763,6 +3095,9 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                     <TradeTable trades={disp.trades} showLevEquity={leverage > 1} initialCapital={result.initial_capital} />
                   </div>
                 )}
+
+                {/* Parameter Activity Report */}
+                {result.param_stats && <ParamActivity ps={result.param_stats} cfg={result.param_config} />}
               </>
             );
           })()}
@@ -2860,10 +3195,26 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                     )}
                     <Toggle
                       label="Exhaustion Guard"
-                      desc="RSI < 28 o ret_48 < −6% → threshold +0.06 (blocca entrate in zona esaurimento)"
+                      desc={`RSI < ${exhaustionRsiLow} o ret_48 < −${exhaustionRet48}% → threshold +${exhaustionBoost} (blocca entrate in zona esaurimento)`}
                       checked={exhaustionGuard}
                       onChange={setExhaustionGuard}
                     />
+                    {exhaustionGuard && (
+                      <div className="space-y-3 pl-1">
+                        <Tooltip text="RSI 4H sotto questa soglia = zona ipervenduto → la guard alza il threshold SHORT per ridurre il rischio di shortare vicino a un rimbalzo. Default: 28" pos="top" width="wide">
+                          <NumInput label="RSI Ipervenduto (short guard)" value={exhaustionRsiLow} onChange={setExhaustionRsiLow} step="1" min="15" max="45" unit="" />
+                        </Tooltip>
+                        <Tooltip text="RSI 4H sopra questa soglia = zona ipercomprato → la guard alza il threshold LONG per ridurre il rischio di longare vicino a un pullback. Default: 72" pos="top" width="wide">
+                          <NumInput label="RSI Ipercomprato (long guard)" value={exhaustionRsiHigh} onChange={setExhaustionRsiHigh} step="1" min="55" max="85" unit="" />
+                        </Tooltip>
+                        <Tooltip text="Se il rendimento delle ultime 48 candele 4H supera ±N%, il mercato è overextended — la guard si attiva anche senza RSI estremo. Default: 6%" pos="top" width="wide">
+                          <NumInput label="Soglia Rendimento 48 bar" value={exhaustionRet48} onChange={setExhaustionRet48} step="0.5" min="2" max="20" unit="%" />
+                        </Tooltip>
+                        <Tooltip text="Quanto viene alzata la soglia direzionale quando la guard scatta. Es. 0.06 con threshold 0.62 → richiede 0.68 per entrare. Default: 0.06" pos="top" width="wide">
+                          <NumInput label="Boost Soglia (Δ threshold)" value={exhaustionBoost} onChange={setExhaustionBoost} step="0.01" min="0.01" max="0.20" unit="" />
+                        </Tooltip>
+                      </div>
+                    )}
                     <Toggle
                       label="Dual ATR — SL su ATR_21, TP su ATR_14"
                       desc="SL calcolato su ATR_21 (smooth, meno sensibile agli spike) — TP su ATR_14 (reattivo). Produce SL più stabile e R:R migliorato."
@@ -2961,12 +3312,12 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                   />
                   {pullbackEnabled && (
                     <div className="space-y-4 pt-1">
-                      <Tooltip text="Range candela 4H deve superare N×ATR per attivare l'attesa del pullback. 1.5 = top ~25% candele per ampiezza. Default: 1.5" pos="top" width="wide">
+                      <Tooltip text="CORPO candela (close−open) ≥ N×ATR. Misura solo il movimento netto, esclude shadow e doji. 1.2× = top ~7% candele (85% PB rate). 1.5× = top ~4% (87% PB rate). Default: 1.2" pos="top" width="wide">
                         <NumInput
-                          label="Soglia Impulso (×ATR)"
+                          label="Soglia Impulso Corpo (×ATR)"
                           value={pullbackImpulseAtr}
                           onChange={setPullbackImpulseAtr}
-                          step="0.1" min="1.0" max="3.0"
+                          step="0.1" min="0.5" max="3.0"
                           unit="×ATR"
                         />
                       </Tooltip>

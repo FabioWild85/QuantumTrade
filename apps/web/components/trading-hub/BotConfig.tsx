@@ -82,6 +82,11 @@ interface Config {
   iv_high_percentile: number;
   iv_low_percentile: number;
   iv_size_factor: number;
+  // Exhaustion Guard thresholds
+  exhaustion_rsi_low: number;
+  exhaustion_rsi_high: number;
+  exhaustion_ret48_pct: number;
+  exhaustion_boost: number;
   // Pullback Entry
   pullback_entry_enabled: boolean;
   pullback_impulse_atr_mult: number;
@@ -212,9 +217,14 @@ const DEFAULTS: Config = {
   iv_high_percentile: 80,
   iv_low_percentile: 20,
   iv_size_factor: 0.7,
+  // Exhaustion Guard thresholds
+  exhaustion_rsi_low: 28,
+  exhaustion_rsi_high: 72,
+  exhaustion_ret48_pct: 6.0,
+  exhaustion_boost: 0.06,
   // Pullback Entry
   pullback_entry_enabled: false,
-  pullback_impulse_atr_mult: 1.5,
+  pullback_impulse_atr_mult: 1.2,
   pullback_zone_atr: 0.3,
   pullback_window_h: 3,
   pullback_fallback_atr: 0.5,
@@ -1336,7 +1346,7 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                 Pullback Entry {config.pullback_entry_enabled && <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-cyan-100 dark:bg-cyan-500/20 text-cyan-600 dark:text-cyan-400 uppercase tracking-wider">Attivo</span>}
               </p>
               <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5">
-                {config.pullback_entry_enabled ? `Attiva su candele > ${config.pullback_impulse_atr_mult}×ATR — attende ritracciamento fino a ${config.pullback_window_h}h` : 'Entry immediata su ogni segnale (comportamento attuale)'}
+                {config.pullback_entry_enabled ? `Attiva su candele con corpo > ${config.pullback_impulse_atr_mult}×ATR — attende ritracciamento fino a ${config.pullback_window_h}h` : 'Entry immediata su ogni segnale (comportamento attuale)'}
               </p>
             </div>
           </label>
@@ -1349,10 +1359,10 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                   <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">Soglia Impulso (×ATR)</span>
                   <span className="text-[10px] font-bold text-cyan-600 dark:text-cyan-400">{config.pullback_impulse_atr_mult.toFixed(1)}×</span>
                 </div>
-                <input type="range" min={1.0} max={3.0} step={0.1} value={config.pullback_impulse_atr_mult}
+                <input type="range" min={0.5} max={3.0} step={0.1} value={config.pullback_impulse_atr_mult}
                   onChange={e => setConfig(c => ({ ...c, pullback_impulse_atr_mult: parseFloat(e.target.value) }))}
                   className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-cyan-500" />
-                <p className="text-[9px] text-slate-400 dark:text-slate-500">Range candela 4H deve superare N×ATR per attivare l'attesa. 1.5 = top ~25% delle candele. Default: 1.5</p>
+                <p className="text-[9px] text-slate-400 dark:text-slate-500">Corpo candela (close−open) ≥ N×ATR. <strong>Misura solo il movimento netto, esclude shadow e doji.</strong> 1.2× = top ~7% candele (85% PB rate). 1.5× = top ~4% (87%). Default: 1.2</p>
               </div>
               {/* Pullback zone */}
               <div className="flex flex-col gap-1">
@@ -3282,11 +3292,60 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                 {config.exhaustion_guard_enabled && <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-rose-100 dark:bg-rose-500/20 text-rose-600 dark:text-rose-400 uppercase tracking-wider">Attivo</span>}
               </p>
               <p className="text-[10px] text-slate-400 dark:text-slate-500 leading-snug mt-1">
-                Se <span className="font-mono text-slate-600 dark:text-slate-300">RSI 4H &lt; 28</span> o <span className="font-mono text-slate-600 dark:text-slate-300">ret_48 &lt; −6%</span> il threshold short aumenta <span className="font-mono text-slate-600 dark:text-slate-300">+0.06</span>. Speculare per long (<span className="font-mono text-slate-600 dark:text-slate-300">RSI &gt; 72</span> / <span className="font-mono text-slate-600 dark:text-slate-300">ret_48 &gt; +6%</span>). Blocca entrate in zone di esaurimento tecnico.
+                Se RSI 4H &lt; {config.exhaustion_rsi_low} o ret_48 &lt; −{config.exhaustion_ret48_pct}% il threshold short aumenta +{config.exhaustion_boost.toFixed(2)}. Speculare per long (RSI &gt; {config.exhaustion_rsi_high} / ret_48 &gt; +{config.exhaustion_ret48_pct}%).
               </p>
             </div>
           </label>
           </Tooltip>
+
+          {config.exhaustion_guard_enabled && (
+            <div className="ml-2 pl-4 border-l-2 border-rose-200 dark:border-rose-500/30 space-y-3">
+              {/* RSI low */}
+              <div className="flex flex-col gap-1">
+                <div className="flex justify-between items-center">
+                  <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">RSI Ipervenduto (short guard)</span>
+                  <span className="text-[10px] font-bold text-rose-600 dark:text-rose-400">RSI &lt; {config.exhaustion_rsi_low}</span>
+                </div>
+                <input type="range" min={15} max={45} step={1} value={config.exhaustion_rsi_low}
+                  onChange={e => setConfig(c => ({ ...c, exhaustion_rsi_low: parseFloat(e.target.value) }))}
+                  className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-rose-500" />
+                <p className="text-[9px] text-slate-400 dark:text-slate-500">Quando RSI 4H è sotto questa soglia, la guard alza il threshold short (rischio rimbalzo). Default: 28</p>
+              </div>
+              {/* RSI high */}
+              <div className="flex flex-col gap-1">
+                <div className="flex justify-between items-center">
+                  <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">RSI Ipercomprato (long guard)</span>
+                  <span className="text-[10px] font-bold text-rose-600 dark:text-rose-400">RSI &gt; {config.exhaustion_rsi_high}</span>
+                </div>
+                <input type="range" min={55} max={85} step={1} value={config.exhaustion_rsi_high}
+                  onChange={e => setConfig(c => ({ ...c, exhaustion_rsi_high: parseFloat(e.target.value) }))}
+                  className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-rose-500" />
+                <p className="text-[9px] text-slate-400 dark:text-slate-500">Quando RSI 4H supera questa soglia, la guard alza il threshold long (rischio pullback). Default: 72</p>
+              </div>
+              {/* ret_48 */}
+              <div className="flex flex-col gap-1">
+                <div className="flex justify-between items-center">
+                  <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">Soglia Rendimento 48 bar (%)</span>
+                  <span className="text-[10px] font-bold text-rose-600 dark:text-rose-400">±{config.exhaustion_ret48_pct}%</span>
+                </div>
+                <input type="range" min={2} max={20} step={0.5} value={config.exhaustion_ret48_pct}
+                  onChange={e => setConfig(c => ({ ...c, exhaustion_ret48_pct: parseFloat(e.target.value) }))}
+                  className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-rose-500" />
+                <p className="text-[9px] text-slate-400 dark:text-slate-500">Se il rendimento sulle ultime 48 candele supera ±N%, il mercato è overextended. Usato insieme all'RSI. Default: 6%</p>
+              </div>
+              {/* boost */}
+              <div className="flex flex-col gap-1">
+                <div className="flex justify-between items-center">
+                  <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">Boost Soglia (Δ threshold)</span>
+                  <span className="text-[10px] font-bold text-rose-600 dark:text-rose-400">+{config.exhaustion_boost.toFixed(2)}</span>
+                </div>
+                <input type="range" min={0.01} max={0.20} step={0.01} value={config.exhaustion_boost}
+                  onChange={e => setConfig(c => ({ ...c, exhaustion_boost: parseFloat(e.target.value) }))}
+                  className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-rose-500" />
+                <p className="text-[9px] text-slate-400 dark:text-slate-500">Quanto alzare la soglia direzionale quando la guard scatta. Es. 0.06 con threshold 0.62 → richiede 0.68 per entrare. Default: 0.06</p>
+              </div>
+            </div>
+          )}
 
           {/* Late Entry Distance Filter */}
           <Tooltip text="Blocca l'entry se il prezzo è già troppo lontano dall'Order Block attivo (ob_dist > soglia ATR). Il filtro è attivo solo quando esiste un OB nella direzione del trade — se non c'è OB viene ignorato per non bloccare trade legittimi senza struttura vicina." width="wide" pos="top">
