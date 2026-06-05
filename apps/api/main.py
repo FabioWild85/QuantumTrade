@@ -11,7 +11,7 @@ import time as _time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Literal, Optional
 
 import psutil
 
@@ -288,6 +288,39 @@ class BotConfig(BaseModel):
     pullback_zone_atr:         float = Field(0.3, ge=0.1, le=1.0)
     pullback_window_h:         int   = Field(3,   ge=1,   le=8)
     pullback_fallback_atr:     float = Field(0.5, ge=0.2, le=2.0)
+    # Reversal Zone Detector (defaults calibrated on BTC 4H 2025-2026, 2001 bars)
+    reversal_mode_enabled:        bool  = Field(False)
+    reversal_score_threshold:     float = Field(0.34,     ge=0.25, le=0.70)   # recal on BTC 4H 3y (2023-26): P99=0.40, max=0.53; 0.38 fired only 1.0% of bars
+    reversal_min_components:      int   = Field(3,        ge=2,    le=7)       # was 4; only 2% of bars ever reach 4 active components
+    reversal_component_min_score: float = Field(0.40,     ge=0.20, le=0.80)   # was 0.50
+    reversal_size_factor:         float = Field(0.50,     ge=0.20, le=1.00)   # was 0.70; conservative until validated
+    reversal_sl_atr_mult:         float = Field(1.2,      ge=0.50, le=3.00)
+    reversal_tp_atr_mult:         float = Field(2.0,      ge=1.00, le=6.00)   # was 2.5; 2.0 ATR ≈ 2.4% achievable
+    reversal_rr_min:              float = Field(1.5,      ge=1.00, le=4.00)   # was 1.8; wick_pct=0.25 gives avg R:R 1.88
+    reversal_conflict_block:      bool  = Field(True)
+    reversal_trend_hold_only:     bool  = Field(True)
+    reversal_max_hold_bars:       int   = Field(4,        ge=2,    le=20)     # was 6; BTC reversals resolve in <16h
+    reversal_ob_dist_max:         float = Field(2.0,      ge=0.50, le=5.00)
+    reversal_consec_bars_min:     int   = Field(5,        ge=3,    le=10)
+    reversal_adx_peak_min:        float = Field(35.0,     ge=20.0, le=50.0)   # was 32; >32 fires 33.7% of bars
+    reversal_ema50_dist_extreme:  float = Field(3.0,      ge=1.50, le=6.00)
+    reversal_ret48_extreme:       float = Field(0.08,     ge=0.03, le=0.20)
+    reversal_transition_risk_min: float = Field(0.55,     ge=0.30, le=0.90)
+    reversal_bars_in_regime_min:  int   = Field(40,       ge=10,   le=100)
+    reversal_funding_extreme_thr: float = Field(0.000028, ge=0.000005, le=0.00050)  # was 0.00025; P90/48 on real BTC data
+    reversal_absorption_z:        float = Field(1.8,      ge=1.00, le=4.00)
+    reversal_wick_threshold:      float = Field(0.50,     ge=0.30, le=0.85)   # was 0.60; 7.4% → 14.6% of bars
+    reversal_vol_climax_z:        float = Field(2.0,      ge=1.50, le=4.00)
+    reversal_stoch_ob:            float = Field(0.65,     ge=0.60, le=0.90)
+    reversal_stoch_os:            float = Field(0.35,     ge=0.10, le=0.40)
+    reversal_rsi_div_threshold:   float = Field(0.03,     ge=0.01, le=0.08)
+    reversal_daily_rsi_extreme_high: float = Field(75.0,  ge=70.0, le=85.0)
+    reversal_daily_rsi_extreme_low:  float = Field(25.0,  ge=15.0, le=30.0)
+    reversal_daily_ema_dist_extreme: float = Field(4.0,   ge=2.00, le=8.00)
+    reversal_iv_exhaustion_high:     float = Field(80.0,  ge=60.0, le=95.0)
+    reversal_entry_mode:    Literal["close", "limit_retest"] = Field("limit_retest")
+    reversal_retest_wick_pct:    float = Field(0.25,  ge=0.0,  le=1.0)  # was 0.50; R:R 1.88 vs 1.49 at 0.50
+    reversal_retest_expiry_bars: int   = Field(3,     ge=1,    le=6)    # was 2; 12h window instead of 8h
 
 
 class StartBotRequest(BaseModel):
@@ -451,6 +484,31 @@ class RetrainRequest(BaseModel):
     optuna_n_trials: Optional[int] = Field(
         None, ge=10, le=200,
         description="Numero di trial Optuna. Sovrascrive il valore in config se impostato.",
+    )
+
+
+class Retrain1hRequest(BaseModel):
+    from_date: Optional[str] = Field(
+        None,
+        description="YYYY-MM-DD — se impostato usa Binance 1H da quella data a oggi. "
+                    "Se None usa gli ultimi 2000 candles da HL.",
+    )
+    forward_bars: int = Field(
+        4, ge=1, le=12,
+        description="Orizzonte di previsione in barre 1H (default 4 = equivalente 4H). "
+                    "La soglia ATR viene scalata di sqrt(forward_bars).",
+    )
+    use_optuna: bool = Field(
+        False,
+        description="Se True esegue Bayesian hyperparameter search prima del WF CV.",
+    )
+    optuna_n_trials: int = Field(
+        30, ge=10, le=100,
+        description="Numero di trial Optuna per il modello 1H.",
+    )
+    lookback_candles: int = Field(
+        2000, ge=500, le=5000,
+        description="Candles HL da usare quando from_date è None.",
     )
 
 
@@ -917,19 +975,47 @@ async def calibrator_stats():
 # ─── Gate LightGBM 1H ────────────────────────────────────────────────────────
 
 @app.post("/retrain/1h")
-async def retrain_1h_endpoint():
+async def retrain_1h_endpoint(req: Optional[Retrain1hRequest] = None):
     """
-    Train the LightGBM 1H gate model on the last 2000 1H candles.
-    Also reloads the model into the running engine instance.
-    Independent from the main 4H retrain — safe to call at any time.
+    Train the LightGBM 1H gate model.
+
+    Enhancements vs baseline:
+    - from_date: fetches Binance 1H history from that date (years of data vs HL's 2000-candle window)
+    - forward_bars: multi-bar prediction horizon aligned with 4H signal (default 4)
+    - use_optuna: Bayesian hyperparameter search (30 trials by default)
+    - Adds h4_ema50_dist / h4_adx / h4_rsi / h4_regime as 4H context features
+    Reloads the model into the running engine on success.
     """
     if not engine:
         raise HTTPException(503, "Engine not initialized")
-    from services.trainer import LGBMTrainer
+
+    from services.trainer import LGBMTrainer, _retrain_lock, _retrain_1h_lock
+    # Block if a 4H deep retrain is running (it will retrain 1H internally).
+    if _retrain_lock.locked():
+        return {"status": "busy", "reason": "4H retrain in progress — includes 1H retrain"}
+    # Block if a standalone 1H retrain is already running.
+    if _retrain_1h_lock.locked():
+        return {"status": "busy", "reason": "1H retrain already in progress"}
+
+    r = req or Retrain1hRequest()
     _trainer = LGBMTrainer()
-    result = await _trainer.retrain_1h()
+    result = await _trainer.retrain_1h(
+        from_date=r.from_date,
+        lookback_candles=r.lookback_candles,
+        forward_bars=r.forward_bars,
+        use_optuna=r.use_optuna,
+        optuna_n_trials=r.optuna_n_trials,
+    )
     if result.get("status") == "ok":
         engine._load_1h_model()
+    _log_event(
+        "lgbm_1h_retrain",
+        f"1H retrain: status={result.get('status')} from={r.from_date or 'HL'} "
+        f"fwd={r.forward_bars}bar oos_acc={result.get('oos_accuracy','N/A')} "
+        f"rows={result.get('train_rows','N/A')} optuna={r.use_optuna}",
+        "info",
+        result,
+    )
     return result
 
 
@@ -1103,7 +1189,9 @@ async def backtest_start(req: BacktestRequest, background_tasks: BackgroundTasks
             if cancel_event.is_set():
                 backtest_jobs[job_id] = {"status": "cancelled", "result": {"error": "Backtest annullato"}, "_ts": _t2.time()}
             else:
-                log.error(f"Backtest job {job_id} failed: {e}")
+                import traceback as _tb
+                _full_tb = _tb.format_exc()
+                log.error(f"Backtest job {job_id} failed: {e}\n{_full_tb}")
                 backtest_jobs[job_id] = {"status": "error", "result": {"error": str(e)}, "_ts": _t2.time()}
         finally:
             if _active_job_id == job_id:
@@ -1285,6 +1373,86 @@ async def regime_history(limit: int = 48):
     except Exception as exc:
         log.debug("regime_history: table may not exist yet: %s", exc)
         return []
+
+
+# ── Reversal Zone Detector ────────────────────────────────────────────────────
+
+@app.get("/reversal/current")
+async def reversal_current():
+    """Returns the latest ReversalZoneDetector result and pending state."""
+    if not engine:
+        raise HTTPException(503, "Engine not initialized")
+    try:
+        rev_result  = getattr(engine, "_last_reversal_result", None)
+        rev_pending = getattr(engine, "_reversal_pending",     None)
+
+        result_data = None
+        if rev_result is not None:
+            result_data = {
+                "score":           rev_result.score,
+                "direction":       rev_result.direction,
+                "component_count": rev_result.component_count,
+                "components":      rev_result.components,
+                "reasoning":       rev_result.reasoning,
+            }
+
+        pending_data = None
+        if rev_pending is not None:
+            pending_data = {
+                "direction":     rev_pending.get("direction"),
+                "entry_limit":   rev_pending.get("entry_limit"),
+                "sl":            rev_pending.get("sl"),
+                "tp":            rev_pending.get("tp"),
+                "signal_bar":    rev_pending.get("signal_bar"),
+                "expiry_bar":    rev_pending.get("expiry_bar"),
+                "atr_at_signal": rev_pending.get("atr_at_signal"),
+            }
+
+        return {
+            "reversal_enabled": getattr(engine.config, "reversal_mode_enabled", False),
+            "result":           result_data,
+            "pending":          pending_data,
+            "updated_at":       datetime.now(timezone.utc).isoformat(),
+        }
+    except Exception as exc:
+        raise HTTPException(500, str(exc))
+
+
+@app.get("/reversal/history")
+async def reversal_history(limit: int = 24):
+    """
+    Returns recent reversal signals from inference_logs.
+    reversal_score/dir are stored inside the features JSONB column,
+    not as top-level columns — so we fetch features and extract in Python.
+    """
+    try:
+        db = get_supabase()
+        rows = (
+            db.table("inference_logs")
+              .select("created_at, features")
+              .order("created_at", desc=True)
+              .limit(min(limit * 4, 200))  # over-fetch: most rows have score=0
+              .execute()
+        )
+        entries = []
+        for r in (rows.data or []):
+            feats = r.get("features") or {}
+            score = feats.get("reversal_score", 0.0)
+            if score and float(score) > 0:
+                d_long  = float(feats.get("reversal_dir_long",  0.0) or 0.0)
+                d_short = float(feats.get("reversal_dir_short", 0.0) or 0.0)
+                direction = "long" if d_long > 0.5 else ("short" if d_short > 0.5 else None)
+                entries.append({
+                    "detected_at": r.get("created_at"),
+                    "score":       round(float(score), 4),
+                    "direction":   direction,
+                })
+                if len(entries) >= limit:
+                    break
+        return {"history": entries}
+    except Exception as exc:
+        log.debug("reversal_history failed: %s", exc)
+        return {"history": []}
 
 
 # ── Config Presets ────────────────────────────────────────────────────────────

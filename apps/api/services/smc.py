@@ -436,6 +436,73 @@ def build_all_features(
     if options_bias_enabled or reversal_mode_enabled:
         d = build_options_features(d, iv_7d_value)
 
+    # ── Reversal Zone Detector features (only when reversal_mode_enabled) ────
+    if reversal_mode_enabled:
+        # RSI divergence
+        _rsi_win       = 10
+        _ph_roll       = d["high"].rolling(_rsi_win).max()
+        _rsi_h_roll    = d["rsi_14"].rolling(_rsi_win).max()
+        d["rsi_div_bear"] = (
+            (d["high"] >= _ph_roll) & (d["rsi_14"] < _rsi_h_roll * 0.97)
+        ).astype(float)
+        _pl_roll       = d["low"].rolling(_rsi_win).min()
+        _rsi_l_roll    = d["rsi_14"].rolling(_rsi_win).min()
+        d["rsi_div_bull"] = (
+            (d["low"] <= _pl_roll) & (d["rsi_14"] > _rsi_l_roll * 1.03)
+        ).astype(float)
+
+        # MACD divergence
+        _macd_win      = 10
+        _price_hh_r    = d["high"].rolling(_macd_win).max()
+        _macd_hh_r     = d["macd_hist"].rolling(_macd_win).max()
+        d["macd_div_bear"] = (
+            (d["high"] >= _price_hh_r) &
+            (d["macd_hist"] < _macd_hh_r * 0.90) &
+            (d["macd_hist"] < 0)
+        ).astype(float)
+        _price_ll_r    = d["low"].rolling(_macd_win).min()
+        _macd_ll_r     = d["macd_hist"].rolling(_macd_win).min()
+        d["macd_div_bull"] = (
+            (d["low"] <= _price_ll_r) &
+            (d["macd_hist"] > _macd_ll_r * 0.90) &
+            (d["macd_hist"] > 0)
+        ).astype(float)
+
+        # Volume climax Z-score
+        _vwin          = 50
+        d["vol_z_50"]  = (
+            (d["volume"] - d["volume"].rolling(_vwin).mean()) /
+            (d["volume"].rolling(_vwin).std() + 1e-9)
+        )
+        d["vol_climax_bear"] = (
+            (d["vol_z_50"] > 2.0) & (d["rsi_14"] > 65) & (d["close"] < d["open"])
+        ).astype(float)
+        d["vol_climax_bull"] = (
+            (d["vol_z_50"] > 2.0) & (d["rsi_14"] < 35) & (d["close"] > d["open"])
+        ).astype(float)
+
+        # Wick rejection ratio
+        _crange        = (d["high"] - d["low"]).replace(0, np.nan)
+        _btop          = d[["open", "close"]].max(axis=1)
+        _bbot          = d[["open", "close"]].min(axis=1)
+        d["wick_reject_bear"] = ((d["high"] - _btop) / _crange).clip(0, 1)
+        d["wick_reject_bull"] = ((_bbot - d["low"]) / _crange).clip(0, 1)
+
+        # Stochastic RSI
+        _srsi          = ta.momentum.StochRSIIndicator(d["close"], window=14, smooth1=3, smooth2=3)
+        d["stoch_rsi_k"] = _srsi.stochrsi_k()
+        d["stoch_rsi_d"] = _srsi.stochrsi_d()
+        d["stoch_cross_bull"] = (
+            (d["stoch_rsi_k"] > d["stoch_rsi_d"]) &
+            (d["stoch_rsi_k"].shift(1) <= d["stoch_rsi_d"].shift(1)) &
+            (d["stoch_rsi_k"] < 0.35)
+        ).astype(float)
+        d["stoch_cross_bear"] = (
+            (d["stoch_rsi_k"] < d["stoch_rsi_d"]) &
+            (d["stoch_rsi_k"].shift(1) >= d["stoch_rsi_d"].shift(1)) &
+            (d["stoch_rsi_k"] > 0.65)
+        ).astype(float)
+
     log.debug("Feature matrix: %d columns, %d rows", d.shape[1], len(d))
     return d
 
@@ -464,6 +531,61 @@ FEATURE_GROUPS = {
     # Options IV features (Phase 1). Only populated when options_bias_enabled OR reversal_mode_enabled.
     # Included in LGBM training automatically on next retrain when those flags are active.
     "options_phase1": ["iv_7d", "iv_7d_percentile"],
+    # Reversal Zone Detector features. Only computed when reversal_mode_enabled=True.
+    # Included in LGBM training on next retrain; until then getattr(f, key, 0.0) handles missing safely.
+    "reversal": [
+        "rsi_div_bear", "rsi_div_bull",
+        "macd_div_bear", "macd_div_bull",
+        "vol_climax_bear", "vol_climax_bull", "vol_z_50",
+        "wick_reject_bear", "wick_reject_bull",
+        "stoch_rsi_k", "stoch_rsi_d",
+        "stoch_cross_bull", "stoch_cross_bear",
+    ],
 }
 
 ALL_FEATURES = [f for group in FEATURE_GROUPS.values() for f in group]
+
+# Extra features used only by the 1H gate model (not part of the 4H feature set).
+LGBM_1H_EXTRA_FEATURES = ["h4_ema50_dist", "h4_adx", "h4_rsi", "h4_regime"]
+
+
+def build_4h_context_for_1h(df_1h: pd.DataFrame) -> pd.DataFrame:
+    """
+    Resample 1H OHLCV → 4H, compute EMA50 dist, ADX14, RSI14, regime.
+    Forward-fill onto the 1H index (no lookahead bias).
+    Adds columns: h4_ema50_dist, h4_adx, h4_rsi, h4_regime.
+    Called both at training time (trainer.py) and at inference time (execution.py)
+    so the 1H gate model sees the same 4H context in both phases.
+    """
+    d = df_1h.copy()
+
+    h4 = df_1h.resample("4h").agg(
+        {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}
+    ).dropna()
+
+    ctx_cols = ["h4_ema50_dist", "h4_adx", "h4_rsi", "h4_regime"]
+
+    if len(h4) < 55:  # need at least 50 bars for EMA50 to warm up
+        for col in ctx_cols:
+            d[col] = 0.0
+        return d
+
+    h4_atr     = ta.volatility.AverageTrueRange(h4["high"], h4["low"], h4["close"], 14).average_true_range()
+    h4_ema50   = ta.trend.EMAIndicator(h4["close"], 50).ema_indicator()
+    h4_adx_ser = ta.trend.ADXIndicator(h4["high"], h4["low"], h4["close"], 14).adx()
+    h4_rsi_ser = ta.momentum.RSIIndicator(h4["close"], 14).rsi()
+
+    ctx = pd.DataFrame(index=h4.index)
+    ctx["h4_ema50_dist"] = (h4["close"] - h4_ema50) / (h4_atr + 1e-9)
+    ctx["h4_adx"]        = h4_adx_ser
+    ctx["h4_rsi"]        = h4_rsi_ser
+    ctx["h4_regime"]     = np.where(
+        (h4["close"] > h4_ema50) & (h4_adx_ser > 20),  1.0,
+        np.where((h4["close"] < h4_ema50) & (h4_adx_ser > 20), -1.0, 0.0),
+    )
+
+    ctx_aligned = ctx.reindex(d.index, method="ffill")
+    for col in ctx_cols:
+        d[col] = ctx_aligned[col].fillna(0.0)
+
+    return d

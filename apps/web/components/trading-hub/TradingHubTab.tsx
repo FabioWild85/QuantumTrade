@@ -7,9 +7,10 @@ import { HubSettings } from './HubSettings';
 import { BacktestPanel } from './BacktestPanel';
 import { ServerLogs } from './ServerLogs';
 import { RegimePanel } from './RegimePanel';
+import { ReversalPanel } from './ReversalPanel';
 import { ServerStatus } from './ServerStatus';
 
-type HubPage = 'monitor' | 'forecast' | 'config' | 'trades' | 'backtest' | 'regime' | 'logs' | 'server' | 'settings';
+type HubPage = 'monitor' | 'forecast' | 'config' | 'trades' | 'backtest' | 'regime' | 'reversal' | 'logs' | 'server' | 'settings';
 
 interface NavItem {
   id: HubPage;
@@ -76,8 +77,17 @@ const NAV: NavItem[] = [
       </svg>
     )
   },
-  { 
-    id: 'logs',     
+  {
+    id: 'reversal',
+    label: 'Reversal',
+    icon: (
+      <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" d="M7 16V4m0 0L3 8m4-4l4 4M17 8v12m0 0l4-4m-4 4l-4-4"/>
+      </svg>
+    )
+  },
+  {
+    id: 'logs',
     label: 'Server Log',
     icon: (
       <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
@@ -272,7 +282,8 @@ export const TradingHubTab: React.FC<TradingHubTabProps> = ({ onBackToDashboard 
         {page === 'config'   && <BotConfig     apiBase={API_BASE} />}
         {page === 'trades'   && <TradeLog      apiBase={API_BASE} />}
         {page === 'backtest' && <BacktestPanel apiBase={API_BASE} />}
-        {page === 'regime'   && <RegimePanel   apiBase={API_BASE} />}
+        {page === 'regime'   && <RegimePanel    apiBase={API_BASE} />}
+        {page === 'reversal' && <ReversalPanel  apiBase={API_BASE} />}
         {page === 'logs'     && <ServerLogs    apiBase={API_BASE} />}
         {page === 'server'   && <ServerStatus  apiBase={API_BASE} />}
         {page === 'settings' && <HubSettings   apiBase={API_BASE} />}

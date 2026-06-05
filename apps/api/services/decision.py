@@ -27,6 +27,7 @@ class DecisionResult:
     forecast_p90: float
     forecast_uncertainty: float = 0.0
     size_factor: float = 1.0  # 1.0 = full size; <1.0 = reduced for counter-trend trades
+    _is_reversal: bool = False  # True when signal originates from ReversalZoneDetector
 
 
 class DecisionEngine:

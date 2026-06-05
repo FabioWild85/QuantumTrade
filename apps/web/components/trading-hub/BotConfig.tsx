@@ -134,6 +134,21 @@ interface Config {
   // Extra exit flags (from HubSettings)
   p10_sl_floor_enabled: boolean;
   enhanced_exit_enabled: boolean;
+  // Reversal Zone Detector
+  reversal_mode_enabled: boolean;
+  reversal_score_threshold: number;
+  reversal_min_components: number;
+  reversal_component_min_score: number;
+  reversal_size_factor: number;
+  reversal_sl_atr_mult: number;
+  reversal_tp_atr_mult: number;
+  reversal_rr_min: number;
+  reversal_conflict_block: boolean;
+  reversal_trend_hold_only: boolean;
+  reversal_max_hold_bars: number;
+  reversal_entry_mode: 'close' | 'limit_retest';
+  reversal_retest_wick_pct: number;
+  reversal_retest_expiry_bars: number;
 }
 
 const DEFAULTS: Config = {
@@ -267,6 +282,21 @@ const DEFAULTS: Config = {
   fng_bias_delta: 0.03,
   p10_sl_floor_enabled: false,
   enhanced_exit_enabled: false,
+  // Reversal Zone Detector (recalibrated on BTC 4H 3y 2023-26)
+  reversal_mode_enabled: false,
+  reversal_score_threshold: 0.34,       // recal on BTC 4H 3y (2023-26): P99=0.40, max=0.53; 0.38 fired only 1.0% of bars
+  reversal_min_components: 3,           // was 4; only 2% of bars ever reach 4 active components
+  reversal_component_min_score: 0.40,   // was 0.50
+  reversal_size_factor: 0.50,           // was 0.70; conservative until validated
+  reversal_sl_atr_mult: 1.2,
+  reversal_tp_atr_mult: 2.0,            // was 2.5; 2.0×ATR ≈ 2.4% achievable in 2-3 bars
+  reversal_rr_min: 1.5,                 // was 1.8; wick_pct=0.25 gives avg R:R 1.88
+  reversal_conflict_block: true,
+  reversal_trend_hold_only: true,
+  reversal_max_hold_bars: 4,            // was 6; BTC reversals resolve in <16h or fail
+  reversal_entry_mode: 'limit_retest' as const,
+  reversal_retest_wick_pct: 0.25,       // was 0.50; R:R avg 1.88 vs 1.49 at 0.50
+  reversal_retest_expiry_bars: 3,       // was 2; 12h window instead of 8h
 };
 
 interface PruningMetrics {
@@ -307,7 +337,8 @@ interface CalibratorStats {
 }
 
 interface RetrainMetrics {
-  status: 'ok' | 'busy';
+  status: 'ok' | 'busy' | 'error';
+  error?: string;
   trained_at?: string;
   elapsed_s?: number;
   train_rows?: number;
@@ -358,7 +389,14 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   const [lgbm1hResult, setLgbm1hResult] = useState<{
     status: string; oos_accuracy?: number; oos_log_loss?: number;
     n_features?: number; elapsed_s?: number; train_rows?: number;
+    forward_bars?: number; wf_avg_accuracy?: number;
+    optuna?: { best_ll: number; n_trials: number };
+    error?: string;
   } | null>(null);
+  const [gate1hFromDate,    setGate1hFromDate]    = useState('');
+  const [gate1hOptuna,      setGate1hOptuna]      = useState(false);
+  const [gate1hTrials,      setGate1hTrials]      = useState(30);
+  const [gate1hForwardBars, setGate1hForwardBars] = useState(4);
   const [macroEvents, setMacroEvents] = useState<Array<{
     type: string; name: string; datetime_utc: string; days_away: number;
   }> | null>(null);
@@ -413,16 +451,47 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   };
 
   const handleRetrain1h = async () => {
-    if (!confirm('Addestra il modello LightGBM 1H Gate su 2000 candele orarie?\n\nIl processo dura 20–60 secondi. Non interrompe il bot.')) return;
+    const isDeep = !!gate1hFromDate;
+    const optunaNote = gate1hOptuna
+      ? `\n\n⚠ Optuna attivo: +2–5 minuti (${gate1hTrials} trial).`
+      : '';
+    const horizonNote = gate1hForwardBars !== 1
+      ? `\nOrizzonte: ${gate1hForwardBars} barre 1H (${gate1hForwardBars}H forward return).`
+      : '';
+    const dataNote = isDeep
+      ? `\nDati: Binance storico da ${gate1hFromDate} (anni di storia).`
+      : '\nDati: ultimi 2000 candles 1H da HL (~83 giorni).';
+
+    const msg = isDeep
+      ? `Deep Training Gate 1H da ${gate1hFromDate}${dataNote}${horizonNote}${optunaNote}\n\nIl modello 1H verrà riaddestrato su anni di dati. Procedere?`
+      : `Addestra Gate 1H su dati recenti HL.${dataNote}${horizonNote}${optunaNote}\n\nIl processo dura 20–60 secondi. Non interrompe il bot.`;
+
+    if (!confirm(msg)) return;
     setLgbm1hRetraining(true);
     setLgbm1hResult(null);
     try {
-      const r = await fetch(`${apiBase}/retrain/1h`, { method: 'POST' });
+      const body: Record<string, unknown> = {
+        forward_bars:    gate1hForwardBars,
+        use_optuna:      gate1hOptuna,
+        optuna_n_trials: gate1hTrials,
+      };
+      if (gate1hFromDate) body.from_date = gate1hFromDate;
+
+      const r = await fetch(`${apiBase}/retrain/1h`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!r.ok) {
+        const text = await r.text().catch(() => '');
+        setLgbm1hResult({ status: 'error', error: `Server ${r.status}: ${text.slice(0, 200)}` });
+        return;
+      }
       const data = await r.json();
       setLgbm1hResult(data);
       if (data.status === 'ok') setLgbm1hLoaded(true);
-    } catch {
-      setLgbm1hResult({ status: 'error' });
+    } catch (e) {
+      setLgbm1hResult({ status: 'error', error: String(e) });
     } finally {
       setLgbm1hRetraining(false);
     }
@@ -508,6 +577,11 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ use_optuna: config.use_optuna, optuna_n_trials: config.optuna_n_trials }),
       });
+      if (!r.ok) {
+        const text = await r.text().catch(() => '');
+        setRetrainResult({ status: 'error', error: `Server error ${r.status}: ${text.slice(0, 200)}` });
+        return;
+      }
       const data: RetrainMetrics = await r.json();
       setRetrainResult(data);
       if (data.status === 'ok') {
@@ -516,8 +590,8 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
         loadFeatureImportance();
         loadPruningStats();
       }
-    } catch {
-      setRetrainResult({ status: 'busy' });
+    } catch (e) {
+      setRetrainResult({ status: 'error', error: String(e) });
     } finally {
       setRetraining(false);
     }
@@ -549,6 +623,11 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
           optuna_n_trials: config.optuna_n_trials,
         }),
       });
+      if (!r.ok) {
+        const text = await r.text().catch(() => '');
+        setRetrainResult({ status: 'error', error: `Server error ${r.status}: ${text.slice(0, 200)}` });
+        return;
+      }
       const data: RetrainMetrics = await r.json();
       setRetrainResult(data);
       if (data.status === 'ok') {
@@ -557,8 +636,8 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
         loadFeatureImportance();
         loadPruningStats();
       }
-    } catch {
-      setRetrainResult({ status: 'busy' });
+    } catch (e) {
+      setRetrainResult({ status: 'error', error: String(e) });
     } finally {
       setRetraining(false);
     }
@@ -1406,6 +1485,186 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
         </div>
       </Section>
 
+      {/* Reversal Zone Detector */}
+      <Section title="Reversal Zone Detector — Inversioni Strutturali" description="Sistema parallelo al trend-following che identifica top/bottom con 7 componenti pesati (SMC, momentum, exhaustion, volume, regime, funding, candle). Entra solo quando il trend dice 'hold'. Zero impatto se disabilitato.">
+        <div className={`flex flex-col gap-3 mb-6 pb-6 border-b transition-colors duration-200 ${config.reversal_mode_enabled ? 'border-violet-200 dark:border-violet-500/25' : 'border-slate-100 dark:border-white/5'}`}>
+          <label className="flex items-center gap-3 cursor-pointer group">
+            <div className="relative">
+              <input type="checkbox" className="sr-only" checked={config.reversal_mode_enabled} onChange={e => setConfig(c => ({ ...c, reversal_mode_enabled: e.target.checked }))} />
+              <div className={`w-9 h-[18px] rounded-full transition-all duration-300 ${config.reversal_mode_enabled ? 'bg-violet-600' : 'bg-slate-200 dark:bg-white/10'}`} />
+              <div className={`absolute top-[3px] left-[3px] w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.reversal_mode_enabled ? 'translate-x-[18px]' : ''}`} />
+            </div>
+            <div>
+              <p className={`text-xs font-bold leading-tight transition-colors ${config.reversal_mode_enabled ? 'text-violet-600 dark:text-violet-400' : 'text-slate-700 dark:text-slate-300'}`}>
+                Reversal Detector {config.reversal_mode_enabled && <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-violet-100 dark:bg-violet-500/20 text-violet-600 dark:text-violet-400 uppercase tracking-wider">Attivo</span>}
+              </p>
+              <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5">
+                {config.reversal_mode_enabled ? `Score ≥ ${config.reversal_score_threshold} · ≥ ${config.reversal_min_components} componenti · entry ${config.reversal_entry_mode === 'limit_retest' ? 'retest wick' : 'market close'}` : 'Disabilitato — nessun impatto sulla logica attuale'}
+              </p>
+            </div>
+          </label>
+
+          {config.reversal_mode_enabled && (
+            <div className="flex flex-col gap-3 mt-1">
+              {/* Entry Mode */}
+              <div className="flex flex-col gap-1">
+                <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">Modalità Entry</span>
+                <div className="flex gap-2">
+                  {(['limit_retest', 'close'] as const).map(m => (
+                    <button key={m} onClick={() => setConfig(c => ({ ...c, reversal_entry_mode: m }))}
+                      className={`flex-1 py-1.5 px-3 rounded-lg text-[10px] font-bold border transition-all ${config.reversal_entry_mode === m ? 'bg-violet-100 dark:bg-violet-500/20 text-violet-600 dark:text-violet-400 border-violet-300 dark:border-violet-500/40' : 'bg-slate-50 dark:bg-white/5 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-white/10 hover:border-violet-300 dark:hover:border-violet-500/30'}`}>
+                      {m === 'limit_retest' ? 'Limit Retest (↑ R:R)' : 'Market Close'}
+                    </button>
+                  ))}
+                </div>
+                <p className="text-[9px] text-slate-400 dark:text-slate-500">Limit Retest: aspetta il pullback al wick → SL più stretto, R:R migliore. Market Close: entra subito alla chiusura 4H.</p>
+              </div>
+
+              {/* Score threshold */}
+              <div className="flex flex-col gap-1">
+                <div className="flex justify-between items-center">
+                  <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">Score Minimo</span>
+                  <span className="text-[10px] font-bold text-violet-600 dark:text-violet-400">{config.reversal_score_threshold.toFixed(2)}</span>
+                </div>
+                <input type="range" min={0.25} max={0.70} step={0.01} value={config.reversal_score_threshold}
+                  onChange={e => setConfig(c => ({ ...c, reversal_score_threshold: parseFloat(e.target.value) }))}
+                  className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-violet-500" />
+                <p className="text-[9px] text-slate-400 dark:text-slate-500">Score 0–1 aggregato pesato. Default 0.34 (calibrato su BTC 4H 3 anni: P99=0.40, max=0.53). Alzare per meno segnali ma più qualità.</p>
+              </div>
+
+              {/* Min components */}
+              <div className="flex flex-col gap-1">
+                <div className="flex justify-between items-center">
+                  <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">Componenti Minime</span>
+                  <span className="text-[10px] font-bold text-violet-600 dark:text-violet-400">{config.reversal_min_components}/7</span>
+                </div>
+                <input type="range" min={2} max={7} step={1} value={config.reversal_min_components}
+                  onChange={e => setConfig(c => ({ ...c, reversal_min_components: parseInt(e.target.value) }))}
+                  className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-violet-500" />
+                <p className="text-[9px] text-slate-400 dark:text-slate-500">Componenti con score {'>'} 0.5 che devono essere attivi contemporaneamente. Default 3/7 (solo il 2% delle barre raggiunge 4 componenti).</p>
+              </div>
+
+              {/* Size factor */}
+              <div className="flex flex-col gap-1">
+                <div className="flex justify-between items-center">
+                  <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">Size Riduzione</span>
+                  <span className="text-[10px] font-bold text-violet-600 dark:text-violet-400">{Math.round(config.reversal_size_factor * 100)}%</span>
+                </div>
+                <input type="range" min={0.20} max={1.00} step={0.05} value={config.reversal_size_factor}
+                  onChange={e => setConfig(c => ({ ...c, reversal_size_factor: parseFloat(e.target.value) }))}
+                  className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-violet-500" />
+                <p className="text-[9px] text-slate-400 dark:text-slate-500">Percentuale della size normale. 70% = trade reversal più piccolo del trend. Consigliato 60–80%.</p>
+              </div>
+
+              {/* SL / TP ATR mult */}
+              <div className="grid grid-cols-2 gap-3">
+                <div className="flex flex-col gap-1">
+                  <div className="flex justify-between items-center">
+                    <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">SL (×ATR)</span>
+                    <span className="text-[10px] font-bold text-red-500 dark:text-red-400">{config.reversal_sl_atr_mult.toFixed(1)}×</span>
+                  </div>
+                  <input type="range" min={0.5} max={3.0} step={0.1} value={config.reversal_sl_atr_mult}
+                    onChange={e => setConfig(c => ({ ...c, reversal_sl_atr_mult: parseFloat(e.target.value) }))}
+                    className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-red-400" />
+                </div>
+                <div className="flex flex-col gap-1">
+                  <div className="flex justify-between items-center">
+                    <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">TP (×ATR)</span>
+                    <span className="text-[10px] font-bold text-emerald-500 dark:text-emerald-400">{config.reversal_tp_atr_mult.toFixed(1)}×</span>
+                  </div>
+                  <input type="range" min={1.0} max={6.0} step={0.1} value={config.reversal_tp_atr_mult}
+                    onChange={e => setConfig(c => ({ ...c, reversal_tp_atr_mult: parseFloat(e.target.value) }))}
+                    className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-emerald-400" />
+                </div>
+              </div>
+              <p className="text-[9px] text-slate-400 dark:text-slate-500 -mt-1">SL più stretto del trend (default 1.2 vs 2.0). TP ancorato alla close della candela segnale + N×ATR.</p>
+
+              {/* R:R min */}
+              <div className="flex flex-col gap-1">
+                <div className="flex justify-between items-center">
+                  <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">R:R Minimo</span>
+                  <span className="text-[10px] font-bold text-violet-600 dark:text-violet-400">{config.reversal_rr_min.toFixed(1)}:1</span>
+                </div>
+                <input type="range" min={1.0} max={4.0} step={0.1} value={config.reversal_rr_min}
+                  onChange={e => setConfig(c => ({ ...c, reversal_rr_min: parseFloat(e.target.value) }))}
+                  className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-violet-500" />
+                <p className="text-[9px] text-slate-400 dark:text-slate-500">Se il setup non raggiunge questo R:R, il trade viene skippato. In limit_retest mode: calibra insieme a wick_pct.</p>
+              </div>
+
+              {/* Max hold bars */}
+              <div className="flex flex-col gap-1">
+                <div className="flex justify-between items-center">
+                  <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">Max Hold (barre 4H)</span>
+                  <span className="text-[10px] font-bold text-violet-600 dark:text-violet-400">{config.reversal_max_hold_bars} bars = {config.reversal_max_hold_bars * 4}h</span>
+                </div>
+                <input type="range" min={2} max={20} step={1} value={config.reversal_max_hold_bars}
+                  onChange={e => setConfig(c => ({ ...c, reversal_max_hold_bars: parseInt(e.target.value) }))}
+                  className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-violet-500" />
+                <p className="text-[9px] text-slate-400 dark:text-slate-500">Le inversioni si esauriscono in tempi più brevi del trend. Default 6 barre = 24h. Sempre attivo per i trade reversal.</p>
+              </div>
+
+              {/* Limit retest params — solo se entry_mode == limit_retest */}
+              {config.reversal_entry_mode === 'limit_retest' && (
+                <div className="flex flex-col gap-3 p-3 rounded-lg bg-violet-50 dark:bg-violet-500/5 border border-violet-100 dark:border-violet-500/15">
+                  <p className="text-[9px] font-bold text-violet-700 dark:text-violet-300 uppercase tracking-widest">Parametri Limit Retest</p>
+                  <div className="flex flex-col gap-1">
+                    <div className="flex justify-between items-center">
+                      <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">Posizione nel Wick</span>
+                      <span className="text-[10px] font-bold text-violet-600 dark:text-violet-400">{Math.round(config.reversal_retest_wick_pct * 100)}%</span>
+                    </div>
+                    <input type="range" min={0} max={1} step={0.05} value={config.reversal_retest_wick_pct}
+                      onChange={e => setConfig(c => ({ ...c, reversal_retest_wick_pct: parseFloat(e.target.value) }))}
+                      className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-violet-500" />
+                    <p className="text-[9px] text-slate-400 dark:text-slate-500">0% = estremo del wick (SL minimo, R:R massimo). 50% = metà wick. 100% = close (nessun vantaggio sul market entry).</p>
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <div className="flex justify-between items-center">
+                      <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">Scadenza (barre 4H)</span>
+                      <span className="text-[10px] font-bold text-violet-600 dark:text-violet-400">{config.reversal_retest_expiry_bars} bar{config.reversal_retest_expiry_bars > 1 ? 're' : 'a'}</span>
+                    </div>
+                    <input type="range" min={1} max={6} step={1} value={config.reversal_retest_expiry_bars}
+                      onChange={e => setConfig(c => ({ ...c, reversal_retest_expiry_bars: parseInt(e.target.value) }))}
+                      className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-violet-500" />
+                    <p className="text-[9px] text-slate-400 dark:text-slate-500">Quante candele 4H aspettare il retest prima di annullare il pending. Default 2 = 8 ore di finestra.</p>
+                  </div>
+                </div>
+              )}
+
+              {/* Toggles conflict/hold-only */}
+              <div className="flex flex-col gap-2">
+                <label className="flex items-center gap-3 cursor-pointer">
+                  <div className="relative">
+                    <input type="checkbox" className="sr-only" checked={config.reversal_conflict_block} onChange={e => setConfig(c => ({ ...c, reversal_conflict_block: e.target.checked }))} />
+                    <div className={`w-8 h-4 rounded-full transition-all duration-300 ${config.reversal_conflict_block ? 'bg-violet-600' : 'bg-slate-200 dark:bg-white/10'}`} />
+                    <div className={`absolute top-0.5 left-0.5 w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.reversal_conflict_block ? 'translate-x-4' : ''}`} />
+                  </div>
+                  <div>
+                    <p className="text-[10px] font-bold text-slate-700 dark:text-slate-300">Conflict Block</p>
+                    <p className="text-[9px] text-slate-400 dark:text-slate-500">Se trend e reversal sono in direzioni opposte, blocca entrambi (hold). Raccomandato ON.</p>
+                  </div>
+                </label>
+                <label className="flex items-center gap-3 cursor-pointer">
+                  <div className="relative">
+                    <input type="checkbox" className="sr-only" checked={config.reversal_trend_hold_only} onChange={e => setConfig(c => ({ ...c, reversal_trend_hold_only: e.target.checked }))} />
+                    <div className={`w-8 h-4 rounded-full transition-all duration-300 ${config.reversal_trend_hold_only ? 'bg-violet-600' : 'bg-slate-200 dark:bg-white/10'}`} />
+                    <div className={`absolute top-0.5 left-0.5 w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.reversal_trend_hold_only ? 'translate-x-4' : ''}`} />
+                  </div>
+                  <div>
+                    <p className="text-[10px] font-bold text-slate-700 dark:text-slate-300">Solo su Trend Hold</p>
+                    <p className="text-[9px] text-slate-400 dark:text-slate-500">OFF = apre reversal anche quando trend concorda (boost). ON = reversal solo quando trend dice no-trade. Raccomandato ON.</p>
+                  </div>
+                </label>
+              </div>
+
+              <div className="p-2 rounded-lg bg-violet-50 dark:bg-violet-500/5 border border-violet-100 dark:border-violet-500/15">
+                <p className="text-[9px] text-violet-700 dark:text-violet-300 font-medium">SL/TP calcolati strutturalmente al momento del segnale. lgbm_exit bypassato (LGBM non è addestrato su counter-trend). Max hold sempre attivo per i reversal.</p>
+                <p className="text-[9px] text-slate-400 dark:text-slate-500 mt-1">Attivare dopo 100+ trade trend in paper. Fare un retrain prima di andare live per includere le 13 feature reversal nel modello LightGBM.</p>
+              </div>
+            </div>
+          )}
+        </div>
+      </Section>
+
       {/* Regime Bias */}
       <Section title="Regime Bias — Threshold Asimmetrico" description="Penalizza i trade contro-trend richiedendo un segnale più forte. In regime bull, i short richiedono ensemble_prob > threshold + delta; in bear, i long richiedono lo stesso. Sideways = simmetrico.">
         <div className={`flex flex-col gap-3 mb-6 pb-6 border-b transition-colors duration-200 ${config.regime_bias_enabled ? 'border-orange-200 dark:border-orange-500/25' : 'border-slate-100 dark:border-white/5'}`}>
@@ -2025,10 +2284,21 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                     ))}
                   </div>
                 </>
-              ) : (
+              ) : retrainResult.status === 'busy' ? (
                 <p className="text-[11px] font-bold text-amber-700 dark:text-amber-400 uppercase tracking-wide">
                   Retrain già in corso — riprova tra qualche secondo
                 </p>
+              ) : (
+                <div>
+                  <p className="text-[11px] font-bold text-red-700 dark:text-red-400 uppercase tracking-wide mb-1">
+                    Errore durante il retrain
+                  </p>
+                  {retrainResult.error && (
+                    <p className="text-[10px] font-mono text-red-600 dark:text-red-400 break-all">
+                      {retrainResult.error}
+                    </p>
+                  )}
+                </div>
               )}
             </div>
           </div>
@@ -2346,58 +2616,195 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
               </label>
             </Tooltip>
 
-            {/* Model status + Train button */}
-            <div className="flex items-center gap-2 flex-shrink-0 sm:flex-row">
-              <div className="flex items-center gap-1.5">
-                <div className={`w-2 h-2 rounded-full ${lgbm1hLoaded === true ? 'bg-emerald-500' : lgbm1hLoaded === false ? 'bg-rose-400' : 'bg-slate-300 dark:bg-slate-600'}`} />
-                <span className="text-[10px] font-medium text-slate-500 dark:text-slate-400">
-                  {lgbm1hLoaded === true ? 'Modello caricato' : lgbm1hLoaded === false ? 'Non addestrato' : '—'}
-                </span>
-              </div>
-              <Tooltip text="Addestra il modello LightGBM 1H su 2000 candele orarie (feature identiche al modello 4H, target: close[+1] > close[0] su 1H). Il processo dura 20–60s e non interrompe il bot. Dopo il primo addestramento, verrà ri-addestrato automaticamente ad ogni retrain 4H quando il gate è attivo." width="wide" pos="top">
-                <button
-                  onClick={handleRetrain1h}
-                  disabled={lgbm1hRetraining}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-bold bg-violet-600 hover:bg-violet-700 disabled:opacity-50 disabled:cursor-not-allowed text-white transition-colors sm:flex-shrink-0"
-                >
-                  {lgbm1hRetraining ? (
-                    <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
-                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
-                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/>
-                    </svg>
-                  ) : (
-                    <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
-                    </svg>
-                  )}
-                  {lgbm1hRetraining ? 'Addestro…' : lgbm1hLoaded ? 'Ri-addestra 1H' : 'Addestra 1H'}
-                </button>
-              </Tooltip>
+            {/* Model status indicator */}
+            <div className="flex items-center gap-1.5 flex-shrink-0">
+              <div className={`w-2 h-2 rounded-full ${lgbm1hLoaded === true ? 'bg-emerald-500' : lgbm1hLoaded === false ? 'bg-rose-400' : 'bg-slate-300 dark:bg-slate-600'}`} />
+              <span className="text-[10px] font-medium text-slate-500 dark:text-slate-400">
+                {lgbm1hLoaded === true ? 'Caricato' : lgbm1hLoaded === false ? 'Non addestrato' : '—'}
+              </span>
             </div>
           </div>
 
-          {/* Retrain result */}
-          {lgbm1hResult && (
-            <div className={`flex items-center gap-3 px-3 py-2 rounded-lg text-[11px] font-medium border ${
-              lgbm1hResult.status === 'ok'
-                ? 'bg-violet-50 dark:bg-violet-500/10 border-violet-200 dark:border-violet-500/30 text-violet-700 dark:text-violet-400'
-                : 'bg-rose-50 dark:bg-rose-500/10 border-rose-200 dark:border-rose-500/30 text-rose-700 dark:text-rose-400'
-            }`}>
-              {lgbm1hResult.status === 'ok' ? (
-                <>
-                  <span>✓ Modello 1H addestrato</span>
-                  <span className="text-slate-400 dark:text-slate-500">·</span>
-                  <span>OOS acc <span className="font-bold font-mono">{lgbm1hResult.oos_accuracy !== undefined ? `${(lgbm1hResult.oos_accuracy * 100).toFixed(1)}%` : '—'}</span></span>
-                  <span className="text-slate-400 dark:text-slate-500">·</span>
-                  <span>{lgbm1hResult.n_features} feature</span>
-                  <span className="text-slate-400 dark:text-slate-500">·</span>
-                  <span>{lgbm1hResult.elapsed_s}s</span>
-                </>
-              ) : (
-                <span>✕ Errore durante l'addestramento del modello 1H</span>
+          {/* ── Gate 1H Training Form ─────────────────────────────────────── */}
+          <div className="mt-3 p-3.5 rounded-xl border border-violet-200 dark:border-violet-500/20 bg-violet-50/30 dark:bg-violet-500/5 space-y-3">
+            <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-relaxed">
+              Addestra il Gate 1H su <span className="font-semibold text-violet-600 dark:text-violet-400">dati storici Binance</span> per superare il limite dei 2000 candles HL.
+              Il modello prevede il <span className="font-semibold">return a N barre</span> con contesto 4H integrato (<span className="font-mono text-[9px]">h4_ema50_dist, h4_adx, h4_rsi, h4_regime</span>).
+            </p>
+
+            {/* From-date presets */}
+            <div>
+              <p className="text-[9px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest mb-1.5">Storia dati (opzionale)</p>
+              <div className="flex gap-1.5 flex-wrap">
+                {(['1Y','2Y','3Y'] as const).map(label => {
+                  const yrs = parseInt(label);
+                  const d = new Date(); d.setFullYear(d.getFullYear() - yrs);
+                  const val = d.toISOString().slice(0, 10);
+                  return (
+                    <button
+                      key={label}
+                      onClick={() => setGate1hFromDate(gate1hFromDate === val ? '' : val)}
+                      disabled={lgbm1hRetraining}
+                      className={`px-2.5 py-1 rounded-lg text-[10px] font-bold uppercase tracking-wider border transition-all ${
+                        gate1hFromDate === val
+                          ? 'bg-violet-500 text-white border-violet-500'
+                          : 'bg-white dark:bg-white/5 text-slate-600 dark:text-slate-400 border-slate-200 dark:border-white/10 hover:border-violet-400 dark:hover:border-violet-500/50'
+                      }`}
+                    >{label}</button>
+                  );
+                })}
+                <input
+                  type="date"
+                  value={gate1hFromDate}
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setGate1hFromDate(e.target.value)}
+                  disabled={lgbm1hRetraining}
+                  className="flex-1 min-w-[105px] px-2 py-1 rounded-lg text-[10px] font-mono border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 text-slate-700 dark:text-slate-300 focus:outline-none focus:border-violet-400"
+                />
+                {gate1hFromDate && (
+                  <button onClick={() => setGate1hFromDate('')} disabled={lgbm1hRetraining}
+                    className="px-2 py-1 rounded-lg text-[10px] border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 text-slate-400 hover:text-rose-500 transition-colors">
+                    ✕
+                  </button>
+                )}
+              </div>
+              <p className="text-[9px] text-slate-400 dark:text-slate-500 mt-1">
+                {gate1hFromDate
+                  ? `Binance storico da ${gate1hFromDate} — migliaia di candles 1H`
+                  : 'Nessuna data → ultimi 2000 candles HL (~83 giorni)'}
+              </p>
+            </div>
+
+            {/* Forward bars */}
+            <div>
+              <p className="text-[9px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest mb-1.5">Orizzonte previsione</p>
+              <div className="flex gap-1.5">
+                {[1, 2, 4, 6].map(n => (
+                  <button
+                    key={n}
+                    onClick={() => setGate1hForwardBars(n)}
+                    disabled={lgbm1hRetraining}
+                    className={`flex-1 py-1.5 rounded-lg text-[10px] font-bold border transition-all ${
+                      gate1hForwardBars === n
+                        ? 'bg-violet-500 text-white border-violet-500'
+                        : 'bg-white dark:bg-white/5 text-slate-600 dark:text-slate-400 border-slate-200 dark:border-white/10 hover:border-violet-400 dark:hover:border-violet-500/50'
+                    }`}
+                  >
+                    {n}h
+                  </button>
+                ))}
+              </div>
+              <p className="text-[9px] text-slate-400 dark:text-slate-500 mt-1">
+                {gate1hForwardBars === 1 ? 'Prossima barra 1H (baseline originale)'
+                  : gate1hForwardBars === 4 ? `${gate1hForwardBars}H — allineato al segnale 4H (consigliato)`
+                  : `${gate1hForwardBars}H forward return — soglia ATR ×${(0.3 * Math.sqrt(gate1hForwardBars)).toFixed(2)}`}
+              </p>
+            </div>
+
+            {/* Optuna toggle */}
+            <div className={`rounded-xl border px-3 py-2.5 space-y-2 transition-colors ${gate1hOptuna ? 'border-amber-300 dark:border-amber-500/30 bg-amber-50/60 dark:bg-amber-500/5' : 'border-slate-200 dark:border-white/8 bg-white/50 dark:bg-white/[0.02]'}`}>
+              <label className="flex items-center justify-between gap-3 cursor-pointer">
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest">Optuna 1H</span>
+                  {gate1hOptuna && (
+                    <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-400 uppercase tracking-wider">Attivo</span>
+                  )}
+                </div>
+                <div className="relative flex-shrink-0">
+                  <input type="checkbox" className="sr-only" checked={gate1hOptuna}
+                    onChange={e => setGate1hOptuna(e.target.checked)} />
+                  <div className={`w-9 h-[18px] rounded-full transition-all duration-300 ${gate1hOptuna ? 'bg-amber-500' : 'bg-slate-200 dark:bg-white/10'}`} />
+                  <div className={`absolute top-[3px] left-[3px] w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${gate1hOptuna ? 'translate-x-[18px]' : ''}`} />
+                </div>
+              </label>
+              {gate1hOptuna && (
+                <div className="space-y-1.5 pt-1 border-t border-amber-200 dark:border-amber-500/20">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] text-slate-500 dark:text-slate-400">Trial</span>
+                    <span className="font-mono text-sm font-bold text-amber-600 dark:text-amber-400">{gate1hTrials}</span>
+                  </div>
+                  <input type="range" min={10} max={100} step={10} value={gate1hTrials}
+                    onChange={e => setGate1hTrials(parseInt(e.target.value))}
+                    className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/15 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3.5 [&::-webkit-slider-thumb]:h-3.5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-amber-500 [&::-webkit-slider-thumb]:shadow-sm [&::-webkit-slider-thumb]:cursor-pointer [&::-moz-range-thumb]:w-3.5 [&::-moz-range-thumb]:h-3.5 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-amber-500 [&::-moz-range-thumb]:border-0"
+                  />
+                  <div className="flex justify-between text-[9px] font-mono text-slate-400 dark:text-slate-500">
+                    <span>10 (~1 min)</span><span>30 (~3 min)</span><span>100 (~8 min)</span>
+                  </div>
+                </div>
               )}
             </div>
-          )}
+
+            {/* Train button */}
+            <button
+              onClick={handleRetrain1h}
+              disabled={lgbm1hRetraining}
+              className={`flex items-center justify-center gap-2 w-full py-2.5 rounded-xl text-[10px] font-bold uppercase tracking-widest transition-all border ${
+                lgbm1hRetraining
+                  ? 'bg-slate-100 dark:bg-white/5 text-slate-400 dark:text-slate-500 border-slate-200 dark:border-white/10 cursor-not-allowed'
+                  : gate1hFromDate
+                    ? 'bg-violet-600 text-white border-transparent hover:bg-violet-700 shadow-md active:scale-[0.98]'
+                    : 'bg-white dark:bg-white/5 text-violet-600 dark:text-violet-400 border-violet-300 dark:border-violet-500/30 hover:bg-violet-50 dark:hover:bg-violet-500/10'
+              }`}
+            >
+              {lgbm1hRetraining ? (
+                <>
+                  <svg className="w-3.5 h-3.5 animate-spin" viewBox="0 0 24 24" fill="none">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4l3-3-3-3v4a8 8 0 00-8 8h4z" />
+                  </svg>
+                  Training 1H in corso…
+                </>
+              ) : (
+                <>
+                  <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+                  </svg>
+                  {gate1hFromDate ? `Deep Train 1H da ${gate1hFromDate}` : 'Train 1H (dati recenti HL)'}
+                </>
+              )}
+            </button>
+
+            {/* Result */}
+            {lgbm1hResult && (
+              <div className={`rounded-xl px-3 py-2.5 border text-[10px] ${
+                lgbm1hResult.status === 'ok'
+                  ? 'bg-emerald-50 dark:bg-emerald-500/10 border-emerald-200 dark:border-emerald-500/30'
+                  : 'bg-rose-50 dark:bg-rose-500/10 border-rose-200 dark:border-rose-500/30'
+              }`}>
+                {lgbm1hResult.status === 'ok' ? (
+                  <>
+                    <p className="font-bold text-emerald-700 dark:text-emerald-400 uppercase tracking-wide mb-2">Modello 1H addestrato</p>
+                    <div className="grid grid-cols-3 gap-2">
+                      {[
+                        { label: 'OOS Acc', value: lgbm1hResult.oos_accuracy !== undefined ? `${(lgbm1hResult.oos_accuracy * 100).toFixed(1)}%` : '—' },
+                        { label: 'WF Acc',  value: lgbm1hResult.wf_avg_accuracy !== undefined ? `${(lgbm1hResult.wf_avg_accuracy * 100).toFixed(1)}%` : '—' },
+                        { label: 'Rows',    value: (lgbm1hResult.train_rows ?? 0).toLocaleString() },
+                        { label: 'Features',value: String(lgbm1hResult.n_features ?? '—') },
+                        { label: 'Horizon', value: lgbm1hResult.forward_bars !== undefined ? `${lgbm1hResult.forward_bars}H` : '—' },
+                        { label: 'Durata',  value: `${lgbm1hResult.elapsed_s ?? 0}s` },
+                      ].map(({ label, value }) => (
+                        <div key={label}>
+                          <p className="text-[9px] font-bold text-emerald-600 dark:text-emerald-500 uppercase tracking-widest">{label}</p>
+                          <p className="font-bold font-mono text-emerald-800 dark:text-emerald-300">{value}</p>
+                        </div>
+                      ))}
+                    </div>
+                    {lgbm1hResult.optuna && (
+                      <p className="text-[9px] text-amber-700 dark:text-amber-400 mt-1.5 font-mono">
+                        Optuna best_ll={lgbm1hResult.optuna.best_ll} ({lgbm1hResult.optuna.n_trials} trial)
+                      </p>
+                    )}
+                  </>
+                ) : (
+                  <div>
+                    <p className="font-bold text-rose-700 dark:text-rose-400 uppercase tracking-wide mb-1">Errore training 1H</p>
+                    {lgbm1hResult.error && (
+                      <p className="font-mono text-rose-600 dark:text-rose-400 break-all">{lgbm1hResult.error}</p>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
         </div>
 
         {/* Threshold sliders — only shown when gate is enabled */}

@@ -82,6 +82,13 @@ interface ParamStats {
   pb_filled_zone: number;
   pb_filled_fallback: number;
   pb_decayed: number;
+  // reversal zone detector
+  rev_signals?: number;
+  rev_pending_set?: number;
+  rev_pending_triggered?: number;
+  rev_pending_expired?: number;
+  rev_conflict_block?: number;
+  rev_trend_boost?: number;
 }
 
 interface BacktestResult {
@@ -92,6 +99,8 @@ interface BacktestResult {
   final_equity: number;
   total_bars: number;
   stats: BacktestStats;
+  reversal_stats?: BacktestStats | null;
+  trend_stats?: BacktestStats | null;
   trades: BacktestTrade[];
   equity_curve: EquityPoint[];
   param_stats?: ParamStats;
@@ -849,6 +858,21 @@ const ParamActivity: React.FC<{ ps: ParamStats; cfg?: Record<string, boolean> }>
         { key: 'pb_filled_zone',   label: 'Fill di zona (pullback raggiunto prima del timeout)', count: ps.pb_filled_zone ?? 0,   pct: (ps.pb_activated ?? 0) > 0 ? pct(ps.pb_filled_zone ?? 0, ps.pb_activated!) : 0, note: (ps.pb_activated ?? 0) > 0 ? `${pct(ps.pb_filled_zone ?? 0, ps.pb_activated!)}% delle attivazioni` : undefined },
         { key: 'pb_filled_fallback',label: 'Fill fallback (timeout, prezzo ancora vicino)',    count: ps.pb_filled_fallback ?? 0,pct: (ps.pb_activated ?? 0) > 0 ? pct(ps.pb_filled_fallback ?? 0, ps.pb_activated!) : 0, note: (ps.pb_activated ?? 0) > 0 ? `${pct(ps.pb_filled_fallback ?? 0, ps.pb_activated!)}% delle attivazioni` : undefined },
         { key: 'pb_decayed',       label: 'Segnale decaduto (prezzo fuori range o timeout)',   count: ps.pb_decayed ?? 0,       pct: (ps.pb_activated ?? 0) > 0 ? pct(ps.pb_decayed ?? 0, ps.pb_activated!) : 0, note: (ps.pb_activated ?? 0) > 0 ? `${pct(ps.pb_decayed ?? 0, ps.pb_activated!)}% delle attivazioni` : undefined },
+      ],
+    }] : []),
+    // Reversal: shown only when enabled or when any signal was detected
+    ...((isOn('rev_signals') || (ps.rev_signals ?? 0) > 0) ? [{
+      title: 'Reversal Zone Detector',
+      color: 'border-violet-200 dark:border-violet-500/20',
+      dot: 'bg-violet-500',
+      rows: [
+        { key: 'rev_signals',      label: 'Segnali reversal rilevati (score ≥ soglia, dir ≠ None)', count: ps.rev_signals ?? 0, pct: ps.bars_evaluated > 0 ? pct(ps.rev_signals ?? 0, ps.bars_evaluated) : 0, note: ps.bars_evaluated > 0 ? `${pct(ps.rev_signals ?? 0, ps.bars_evaluated)}% delle barre` : undefined },
+        { key: 'rev_conflict_block',label: 'Conflict block (segnale opposto al trend → bloccato)',  count: ps.rev_conflict_block ?? 0, pct: ps.bars_evaluated > 0 ? pct(ps.rev_conflict_block ?? 0, ps.bars_evaluated) : 0, note: ps.bars_evaluated > 0 ? `${pct(ps.rev_conflict_block ?? 0, ps.bars_evaluated)}% delle barre` : undefined },
+        ...((ps.rev_pending_set ?? 0) > 0 || isOn('rev_pending_set') ? [
+          { key: 'rev_pending_set',      label: 'Pending creati (limit-retest mode)',                              count: ps.rev_pending_set ?? 0,      pct: (ps.rev_signals ?? 0) > 0 ? pct(ps.rev_pending_set ?? 0, ps.rev_signals!) : 0,      note: (ps.rev_signals ?? 0) > 0 ? `${pct(ps.rev_pending_set ?? 0, ps.rev_signals!)}% dei segnali` : undefined },
+          { key: 'rev_pending_triggered',label: 'Pending triggerati (retest raggiunto → trade aperto)',            count: ps.rev_pending_triggered ?? 0, pct: (ps.rev_pending_set ?? 0) > 0 ? pct(ps.rev_pending_triggered ?? 0, ps.rev_pending_set!) : 0, note: (ps.rev_pending_set ?? 0) > 0 ? `${pct(ps.rev_pending_triggered ?? 0, ps.rev_pending_set!)}% dei pending` : undefined },
+          { key: 'rev_pending_expired',  label: 'Pending scaduti (retest non raggiunto nel periodo)',              count: ps.rev_pending_expired ?? 0,   pct: (ps.rev_pending_set ?? 0) > 0 ? pct(ps.rev_pending_expired ?? 0, ps.rev_pending_set!) : 0,  note: (ps.rev_pending_set ?? 0) > 0 ? `${pct(ps.rev_pending_expired ?? 0, ps.rev_pending_set!)}% dei pending` : undefined },
+        ] : []),
       ],
     }] : []),
   ];
@@ -1686,6 +1710,19 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   const [pullbackZoneAtr,       setPullbackZoneAtr]       = useState('0.3');
   const [pullbackWindowH,       setPullbackWindowH]       = useState('3');
   const [pullbackFallbackAtr,   setPullbackFallbackAtr]   = useState('0.5');
+  // Reversal Zone Detector
+  const [reversalEnabled,       setReversalEnabled]       = useState(false);
+  const [reversalScoreThresh,   setReversalScoreThresh]   = useState('0.34');   // recal on BTC 4H 3y (2023-26): P99=0.40, max=0.53; 0.38 fired only 1.0% of bars
+  const [reversalMinComponents, setReversalMinComponents] = useState('3');      // was 4; only 2% of bars ever reach 4 active components
+  const [reversalSizeFactor,    setReversalSizeFactor]    = useState('0.50');   // conservative until validated
+  const [reversalSlAtr,         setReversalSlAtr]         = useState('1.2');
+  const [reversalTpAtr,         setReversalTpAtr]         = useState('2.0');    // 2.0×ATR achievable in 2-3 bars
+  const [reversalRrMin,         setReversalRrMin]         = useState('1.5');    // wick_pct=0.25 gives avg R:R 1.88
+  const [reversalMaxHold,       setReversalMaxHold]       = useState('4');      // BTC reversal: resolve <16h
+  const [reversalEntryMode,     setReversalEntryMode]     = useState<'limit_retest' | 'close'>('close');  // 'close' for backtest diagnosability; switch to limit_retest after validating signals
+  const [reversalRetestWickPct, setReversalRetestWickPct] = useState('0.25');   // R:R 1.88 avg (vs 1.49 at 0.50)
+  const [reversalExpiry,        setReversalExpiry]        = useState('3');      // 12h window instead of 8h
+  const [reversalConflictBlock, setReversalConflictBlock] = useState(true);
   const [compareMode,         setCompareMode]         = useState(false);
 
   // ── Regime quick-selector ────────────────────────────────────────────────────
@@ -1825,6 +1862,19 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     if (p.pullback_zone_atr          !== undefined) setPullbackZoneAtr(String(p.pullback_zone_atr));
     if (p.pullback_window_h          !== undefined) setPullbackWindowH(String(p.pullback_window_h));
     if (p.pullback_fallback_atr      !== undefined) setPullbackFallbackAtr(String(p.pullback_fallback_atr));
+    // Reversal Zone Detector
+    if (p.reversal_mode_enabled        !== undefined) setReversalEnabled(!!p.reversal_mode_enabled);
+    if (p.reversal_score_threshold     !== undefined) setReversalScoreThresh(String(p.reversal_score_threshold));
+    if (p.reversal_min_components      !== undefined) setReversalMinComponents(String(p.reversal_min_components));
+    if (p.reversal_size_factor         !== undefined) setReversalSizeFactor(String(p.reversal_size_factor));
+    if (p.reversal_sl_atr_mult         !== undefined) setReversalSlAtr(String(p.reversal_sl_atr_mult));
+    if (p.reversal_tp_atr_mult         !== undefined) setReversalTpAtr(String(p.reversal_tp_atr_mult));
+    if (p.reversal_rr_min              !== undefined) setReversalRrMin(String(p.reversal_rr_min));
+    if (p.reversal_max_hold_bars       !== undefined) setReversalMaxHold(String(p.reversal_max_hold_bars));
+    if (p.reversal_entry_mode          !== undefined) setReversalEntryMode(p.reversal_entry_mode as 'limit_retest' | 'close');
+    if (p.reversal_retest_wick_pct     !== undefined) setReversalRetestWickPct(String(p.reversal_retest_wick_pct));
+    if (p.reversal_retest_expiry_bars  !== undefined) setReversalExpiry(String(p.reversal_retest_expiry_bars));
+    if (p.reversal_conflict_block      !== undefined) setReversalConflictBlock(!!p.reversal_conflict_block);
   }, []);
 
   useEffect(() => {
@@ -2071,6 +2121,21 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     pullback_zone_atr:             parseFloat(pullbackZoneAtr),
     pullback_window_h:             parseInt(pullbackWindowH),
     pullback_fallback_atr:         parseFloat(pullbackFallbackAtr),
+    // Reversal Zone Detector
+    reversal_mode_enabled:         reversalEnabled,
+    reversal_score_threshold:      parseFloat(reversalScoreThresh),
+    reversal_min_components:       parseInt(reversalMinComponents),
+    reversal_component_min_score:  0.40,   // Pydantic default — not exposed in UI
+    reversal_size_factor:          parseFloat(reversalSizeFactor),
+    reversal_sl_atr_mult:          parseFloat(reversalSlAtr),
+    reversal_tp_atr_mult:          parseFloat(reversalTpAtr),
+    reversal_rr_min:               parseFloat(reversalRrMin),
+    reversal_max_hold_bars:        parseInt(reversalMaxHold),
+    reversal_entry_mode:           reversalEntryMode,
+    reversal_retest_wick_pct:      parseFloat(reversalRetestWickPct),
+    reversal_retest_expiry_bars:   parseInt(reversalExpiry),
+    reversal_conflict_block:       reversalConflictBlock,
+    reversal_trend_hold_only:      true,
   });
 
   const downloadConfig = () => {
@@ -2141,6 +2206,15 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
       '',
       '━━━ PULLBACK ENTRY ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
       `Pullback Entry:         ${pullbackEnabled ? 'ATTIVO' : 'DISATTIVATO'}`,
+      `Reversal Detector:      ${reversalEnabled ? 'ATTIVO' : 'DISATTIVATO'}`,
+      ...(reversalEnabled ? [
+        `  Entry mode:           ${reversalEntryMode === 'limit_retest' ? `Limit Retest (wick ${Math.round(parseFloat(reversalRetestWickPct)*100)}%, scade ${reversalExpiry} barre)` : 'Market Close (immediato)'}`,
+        `  Score ≥:              ${reversalScoreThresh} · Min ${reversalMinComponents}/7 componenti`,
+        `  SL / TP:              ${reversalSlAtr}×ATR / ${reversalTpAtr}×ATR · R:R min ${reversalRrMin}:1`,
+        `  Size factor:          ${Math.round(parseFloat(reversalSizeFactor)*100)}% · Max hold ${reversalMaxHold} barre (${parseInt(reversalMaxHold)*4}h)`,
+        `  Conflict block:       ${reversalConflictBlock ? 'ON (blocca se trend opposto)' : 'OFF'}`,
+        `  IV Bias:              Neutro in backtest (iv_7d_percentile=50 fisso — dati Deribit non disponibili storicamente)`,
+      ] : []),
       ...(pullbackEnabled ? [
         `  Soglia impulso corpo: ${pullbackImpulseAtr}×ATR (abs(close-open) ≥ soglia per attivare)`,
         `  Profondità pullback:  ${pullbackZoneAtr}×ATR (ritracciamento target dalla chiusura 4H)`,
@@ -3096,6 +3170,76 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                   </div>
                 )}
 
+                {/* Reversal vs Trend Split Stats */}
+                {(result.reversal_stats || result.trend_stats) && (() => {
+                  const rev = result.reversal_stats;
+                  const tr  = result.trend_stats;
+                  const revTrades = rev?.total_trades ?? 0;
+                  const trTrades  = tr?.total_trades  ?? 0;
+                  if (revTrades === 0 && trTrades === 0) return null;
+                  const StatMini: React.FC<{ label: string; value: string; accent?: string }> = ({ label, value, accent }) => (
+                    <div className="flex flex-col gap-0.5">
+                      <span className="text-[9px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest">{label}</span>
+                      <span className={`text-sm font-black ${accent ?? 'text-slate-900 dark:text-white'}`}>{value}</span>
+                    </div>
+                  );
+                  return (
+                    <div className="elegant-card bg-white dark:bg-[#151E32] overflow-hidden">
+                      <div className="px-6 py-4 border-b border-slate-100 dark:border-white/5 bg-slate-50/50 dark:bg-white/[0.02]">
+                        <h3 className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest flex items-center gap-2">
+                          <span className="w-1.5 h-1.5 rounded-full bg-violet-500" />
+                          Reversal vs Trend-Following — Breakdown Trade
+                        </h3>
+                        <p className="text-[10px] text-slate-400 dark:text-slate-500 mt-1">Statistiche separate per origine del segnale. Require reversal_mode_enabled=True.</p>
+                      </div>
+                      <div className="p-6 grid grid-cols-2 gap-6">
+                        {revTrades > 0 && (
+                          <div className="space-y-3">
+                            <div className="flex items-center gap-2 mb-2">
+                              <span className="w-2 h-2 rounded-full bg-violet-500" />
+                              <span className="text-[10px] font-bold text-violet-600 dark:text-violet-400 uppercase tracking-widest">Reversal ({revTrades} trade)</span>
+                            </div>
+                            <StatMini label="Win Rate"       value={`${((rev!.win_rate ?? 0) * 100).toFixed(0)}%`} accent={(rev!.win_rate ?? 0) >= 0.5 ? 'text-emerald-500' : 'text-red-400'} />
+                            <StatMini label="Avg Win"        value={`+${((rev!.avg_win_pct ?? 0) * 100).toFixed(2)}%`} accent="text-emerald-500" />
+                            <StatMini label="Avg Loss"       value={`${((rev!.avg_loss_pct ?? 0) * 100).toFixed(2)}%`} accent="text-red-400" />
+                            <StatMini label="P&L Totale"     value={`$${(rev!.total_pnl_usd ?? 0).toFixed(0)}`} accent={(rev!.total_pnl_usd ?? 0) >= 0 ? 'text-emerald-500' : 'text-red-400'} />
+                            <StatMini label="Avg Hold"       value={`${(rev!.avg_holding_h ?? 0).toFixed(1)}h`} />
+                          </div>
+                        )}
+                        {trTrades > 0 && (
+                          <div className="space-y-3">
+                            <div className="flex items-center gap-2 mb-2">
+                              <span className="w-2 h-2 rounded-full bg-indigo-500" />
+                              <span className="text-[10px] font-bold text-indigo-600 dark:text-indigo-400 uppercase tracking-widest">Trend-Following ({trTrades} trade)</span>
+                            </div>
+                            <StatMini label="Win Rate"       value={`${((tr!.win_rate ?? 0) * 100).toFixed(0)}%`} accent={(tr!.win_rate ?? 0) >= 0.5 ? 'text-emerald-500' : 'text-red-400'} />
+                            <StatMini label="Avg Win"        value={`+${((tr!.avg_win_pct ?? 0) * 100).toFixed(2)}%`} accent="text-emerald-500" />
+                            <StatMini label="Avg Loss"       value={`${((tr!.avg_loss_pct ?? 0) * 100).toFixed(2)}%`} accent="text-red-400" />
+                            <StatMini label="P&L Totale"     value={`$${(tr!.total_pnl_usd ?? 0).toFixed(0)}`} accent={(tr!.total_pnl_usd ?? 0) >= 0 ? 'text-emerald-500' : 'text-red-400'} />
+                            <StatMini label="Avg Hold"       value={`${(tr!.avg_holding_h ?? 0).toFixed(1)}h`} />
+                          </div>
+                        )}
+                        {revTrades === 0 && (
+                          <div className="col-span-2 flex items-center gap-3 py-3">
+                            <div className="w-8 h-8 rounded-full bg-violet-50 dark:bg-violet-500/10 flex items-center justify-center flex-shrink-0">
+                              <svg className="w-4 h-4 text-violet-400" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                                <circle cx="12" cy="12" r="10"/><path d="M12 8v4m0 4h.01"/>
+                              </svg>
+                            </div>
+                            <div>
+                              <p className="text-xs font-bold text-slate-700 dark:text-slate-300">Nessun trade reversal nel periodo</p>
+                              <p className="text-[10px] text-slate-400 dark:text-slate-500 mt-0.5">
+                                Controlla Attività Parametri: <strong>rev_signals</strong> mostra quanti segnali sono stati rilevati.
+                                Se 0 = soglia troppo alta. Se segnali ma 0 trade = pending scaduti (usa modalità <strong>Market Close</strong> per diagnosticare).
+                              </p>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })()}
+
                 {/* Parameter Activity Report */}
                 {result.param_stats && <ParamActivity ps={result.param_stats} cfg={result.param_config} />}
               </>
@@ -3348,6 +3492,114 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                           unit="×ATR"
                         />
                       </Tooltip>
+                    </div>
+                  )}
+                </div>
+              </section>
+
+              {/* ── Reversal Zone Detector ─────────────────────────────────────── */}
+              <section className="space-y-5">
+                <h4 className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest flex items-center gap-2">
+                  <span className="w-1.5 h-1.5 rounded-full bg-violet-500" />
+                  Reversal Zone Detector
+                </h4>
+                <div className="space-y-4 bg-slate-50 dark:bg-white/[0.02] p-4 rounded-2xl border border-slate-100 dark:border-white/5">
+                  <Toggle
+                    label="Reversal Zone Detector"
+                    desc="Identifica top/bottom con 7 componenti pesati (SMC, momentum, exhaustion, volume, regime, funding, candle). Entra solo quando il trend dice no-trade. SL/TP e max_hold separati dal trend-following."
+                    checked={reversalEnabled}
+                    onChange={setReversalEnabled}
+                  />
+                  {reversalEnabled && (
+                    <div className="space-y-4 pt-1">
+                      <div className="space-y-2">
+                        <label className="text-[10px] font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-widest">Modalità Entry</label>
+                        <div className="flex gap-2">
+                          {(['limit_retest', 'close'] as const).map(m => (
+                            <button key={m} onClick={() => setReversalEntryMode(m)}
+                              className={`flex-1 py-1.5 px-2 rounded-lg text-[10px] font-bold border transition-all ${reversalEntryMode === m ? 'bg-violet-100 dark:bg-violet-500/20 text-violet-600 dark:text-violet-400 border-violet-300 dark:border-violet-500/40' : 'bg-white dark:bg-white/5 text-slate-500 border-slate-200 dark:border-white/10'}`}>
+                              {m === 'limit_retest' ? 'Limit Retest (↑ R:R)' : 'Market Close'}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                      <Tooltip text="Score 0–1 aggregato dai 7 componenti. Default 0.34 (calibrato su BTC 4H 3 anni: P99=0.40, max=0.53). Valori alti = meno trade, più selettivi." pos="top" width="wide">
+                        <NumInput
+                          label="Score Minimo"
+                          value={reversalScoreThresh}
+                          onChange={setReversalScoreThresh}
+                          step="0.01" min="0.25" max="0.70"
+                        />
+                      </Tooltip>
+                      <Tooltip text="Componenti con score > 0.5 che devono essere attivi contemporaneamente. Default 3/7 (solo il 2% delle barre raggiunge 4 componenti)." pos="top" width="wide">
+                        <NumInput
+                          label="Componenti Minime (su 7)"
+                          value={reversalMinComponents}
+                          onChange={setReversalMinComponents}
+                          step="1" min="2" max="7"
+                        />
+                      </Tooltip>
+                      <Tooltip text="Percentuale della size normale per i trade reversal. Default 50% — conservativo finché non validato." pos="top" width="wide">
+                        <NumInput
+                          label="Size Factor"
+                          value={reversalSizeFactor}
+                          onChange={setReversalSizeFactor}
+                          step="0.05" min="0.20" max="1.00"
+                        />
+                      </Tooltip>
+                      <div className="grid grid-cols-2 gap-3">
+                        <Tooltip text="SL più stretto del trend-following. Default: 1.2 ATR (vs 2.0 ATR trend)." pos="top">
+                          <NumInput label="SL (×ATR)" value={reversalSlAtr} onChange={setReversalSlAtr} step="0.1" min="0.5" max="3.0" unit="×ATR" />
+                        </Tooltip>
+                        <Tooltip text="TP ancorato alla close della candela segnale + N×ATR. Default: 2.5 ATR." pos="top">
+                          <NumInput label="TP (×ATR)" value={reversalTpAtr} onChange={setReversalTpAtr} step="0.1" min="1.0" max="6.0" unit="×ATR" />
+                        </Tooltip>
+                      </div>
+                      <Tooltip text="Se il setup non raggiunge questo R:R, il trade viene skippato. In limit_retest mode calibra insieme a wick_pct." pos="top" width="wide">
+                        <NumInput
+                          label="R:R Minimo"
+                          value={reversalRrMin}
+                          onChange={setReversalRrMin}
+                          step="0.1" min="1.0" max="4.0"
+                          unit=":1"
+                        />
+                      </Tooltip>
+                      <Tooltip text="Barre 4H massime per ogni trade reversal. Sempre attivo (non condizionale). Default: 6 barre = 24h." pos="top" width="wide">
+                        <NumInput
+                          label="Max Hold (barre 4H)"
+                          value={reversalMaxHold}
+                          onChange={setReversalMaxHold}
+                          step="1" min="2" max="20"
+                          unit="bars"
+                        />
+                      </Tooltip>
+                      {reversalEntryMode === 'limit_retest' && (
+                        <>
+                          <Tooltip text="Posizione nel wick: 0% = estremo del wick (R:R massimo), 50% = metà wick. Default: 0.50" pos="top" width="wide">
+                            <NumInput
+                              label="Posizione nel Wick"
+                              value={reversalRetestWickPct}
+                              onChange={setReversalRetestWickPct}
+                              step="0.05" min="0.0" max="1.0"
+                            />
+                          </Tooltip>
+                          <Tooltip text="Barre 4H di attesa prima che il pending scada. Default: 2 = 8h di finestra." pos="top" width="wide">
+                            <NumInput
+                              label="Scadenza Pending (barre)"
+                              value={reversalExpiry}
+                              onChange={setReversalExpiry}
+                              step="1" min="1" max="6"
+                              unit="bars"
+                            />
+                          </Tooltip>
+                        </>
+                      )}
+                      <Toggle
+                        label="Conflict Block"
+                        desc="Se trend e reversal sono in direzioni opposte, blocca entrambi. Raccomandato ON."
+                        checked={reversalConflictBlock}
+                        onChange={setReversalConflictBlock}
+                      />
                     </div>
                   )}
                 </div>

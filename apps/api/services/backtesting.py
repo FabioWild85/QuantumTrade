@@ -16,7 +16,7 @@ import pandas as pd
 
 from services.hyperliquid_data import HyperliquidData
 from services.smc import build_all_features
-from services.decision import DecisionEngine, compute_qt_score
+from services.decision import DecisionEngine, DecisionResult, compute_qt_score
 from services.risk import RiskManager, apply_structural_sl, apply_fvg_sl, apply_swing_sl
 from services.trainer import load_correct_model
 
@@ -130,6 +130,23 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
     pullback_zone_atr         = getattr(cfg, "pullback_zone_atr",         0.3)
     pullback_window_h         = getattr(cfg, "pullback_window_h",         3)
     pullback_fallback_atr     = getattr(cfg, "pullback_fallback_atr",     0.5)
+    # Reversal Zone Detector
+    reversal_mode_enabled        = getattr(cfg, "reversal_mode_enabled",        False)
+    # Fallbacks MUST match the BotConfig pydantic defaults (apps/api/main.py).
+    # The old 0.72 fallback was above the empirical max reversal score (~0.52),
+    # so any cfg missing this attr made reversals mathematically impossible.
+    reversal_score_threshold     = getattr(cfg, "reversal_score_threshold",     0.34)
+    reversal_min_components      = getattr(cfg, "reversal_min_components",      3)
+    reversal_size_factor         = getattr(cfg, "reversal_size_factor",         0.50)
+    reversal_sl_atr_mult         = getattr(cfg, "reversal_sl_atr_mult",         1.2)
+    reversal_tp_atr_mult         = getattr(cfg, "reversal_tp_atr_mult",         2.0)
+    reversal_rr_min              = getattr(cfg, "reversal_rr_min",              1.5)
+    reversal_conflict_block      = getattr(cfg, "reversal_conflict_block",      True)
+    reversal_trend_hold_only     = getattr(cfg, "reversal_trend_hold_only",     True)
+    reversal_max_hold_bars_val   = getattr(cfg, "reversal_max_hold_bars",       4)
+    reversal_entry_mode          = getattr(cfg, "reversal_entry_mode",          "limit_retest")
+    reversal_retest_wick_pct     = getattr(cfg, "reversal_retest_wick_pct",     0.25)
+    reversal_retest_expiry_bars  = getattr(cfg, "reversal_retest_expiry_bars",  3)
     fng_extreme_fear_thr  = getattr(cfg, "fng_extreme_fear_thr",  20.0)
     fng_fear_thr          = getattr(cfg, "fng_fear_thr",          35.0)
     fng_greed_thr         = getattr(cfg, "fng_greed_thr",         65.0)
@@ -210,6 +227,7 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
         df_ohlcv, df_fund, df_oi, df_liq,
         df_binance=df_binance,
         binance_cvd_enabled=binance_cvd_enabled,
+        reversal_mode_enabled=reversal_mode_enabled,
     )
 
     # ── 2b. Validate F&G date format against the actual feature index ────────
@@ -303,9 +321,16 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
     equity        = capital
     position      = None   # {side, entry, sl, tp, size_usd, bar_idx, partial_done, entry_atr}
     pending_pb    = None   # pending pullback dict when pullback_entry_enabled
+    pending_rev   = None   # pending reversal dict when reversal_entry_mode == "limit_retest"
     trades        = []
     equity_curve  = [{"bar": 0, "equity": equity}]
     funding_col   = "funding" in df_feat.columns
+
+    # Reversal detector — instantiated once, reused across all bars
+    _bt_rev_detector = None
+    if reversal_mode_enabled:
+        from services.reversal_detector import ReversalZoneDetector, build_pending_reversal
+        _bt_rev_detector = ReversalZoneDetector()
 
     # ── Parameter activity counters ───────────────────────────────────────────
     param_stats: dict = {
@@ -355,6 +380,13 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
         "pb_filled_zone":           0,
         "pb_filled_fallback":       0,
         "pb_decayed":               0,
+        # Reversal Zone Detector
+        "rev_signals":              0,
+        "rev_pending_set":          0,
+        "rev_pending_triggered":    0,
+        "rev_pending_expired":      0,
+        "rev_conflict_block":       0,
+        "rev_trend_boost":          0,
     }
 
     # Enhanced regime detection — mirrors live behavior (every 4 bars, cached between).
@@ -371,6 +403,48 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
             raise RuntimeError("backtest_cancelled")
         row = df_feat.iloc[i]
         features = row.to_dict()
+
+        # ── Pending reversal: check limit-retest fill/expiry ────────────────────
+        if pending_rev is not None and position is None:
+            _bar_high = float(row.get("high", row["close"]))
+            _bar_low  = float(row.get("low",  row["close"]))
+            _rp       = pending_rev
+            if i >= _rp["expiry_bar"]:
+                param_stats["rev_pending_expired"] += 1
+                pending_rev = None
+            else:
+                _rev_triggered = (
+                    (_rp["direction"] == "long"  and _bar_low  <= _rp["entry_limit"]) or
+                    (_rp["direction"] == "short" and _bar_high >= _rp["entry_limit"])
+                )
+                if _rev_triggered:
+                    param_stats["rev_pending_triggered"] += 1
+                    _rev_entry_px = _rp["entry_limit"]
+                    _rev_size_usd = _rp["size_usd"]
+                    fee_entry_rev = _rev_size_usd * HL_TAKER_FEE
+                    equity -= fee_entry_rev
+                    position = {
+                        "side":               _rp["direction"],
+                        "entry":              _rev_entry_px,
+                        "sl":                 _rp["sl"],
+                        "tp":                 _rp["tp"],
+                        "size_usd":           _rev_size_usd,
+                        "bar_idx":            i,
+                        "entry_atr":          _rp["atr_at_signal"],
+                        "partial_done":       False,
+                        "sl_trailing_active": False,
+                        "high_water":         _rev_entry_px,
+                        "be_sl_applied":      False,
+                        "lgbm_strikes":       0,
+                        "fee_entry":          fee_entry_rev,
+                        "funding_paid":       0.0,
+                        "entry_mode":         "reversal_retest",
+                        "origin":             "reversal",
+                        "is_reversal":        True,
+                        "rev_sl_atr_mult":    reversal_sl_atr_mult,
+                        "rev_max_hold":       reversal_max_hold_bars_val,
+                    }
+                    pending_rev = None
 
         # ── Pending pullback: check fill/decay BEFORE funding and position mgmt ──
         if pending_pb is not None and position is None:
@@ -520,9 +594,10 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
             entry_atr   = position["entry_atr"]
 
             # ── Trailing SL: dynamic trail once activated (high water mark) ──
-            # Use current ATR (adaptive, matches live engine) and high/low for tracking.
+            # Reversal trades use rev_sl_atr_mult as trail distance (mirrors live engine).
             if trailing_sl_enabled:
-                trail_dist = trailing_sl_activation * atr  # current ATR, not entry_atr
+                _trail_mult = position.get("rev_sl_atr_mult", trailing_sl_activation) if position.get("is_reversal") else trailing_sl_activation
+                trail_dist  = _trail_mult * atr  # current ATR, not entry_atr
                 if not position.get("sl_trailing_active"):
                     moved_enough = (side == "long"  and curr_high >= entry + trail_dist) or \
                                    (side == "short" and curr_low  <= entry - trail_dist)
@@ -585,6 +660,7 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                         "fee_entry": round(entry_fee_used, 2),
                         "funding_paid": round(funding_used, 2),
                         "reason": "partial_tp", "holding_bars": i - position["bar_idx"], "bar": i,
+                        "origin": position.get("origin", "trend"),
                     })
                     equity_curve.append({"bar": i, "equity": round(equity, 2)})
 
@@ -592,7 +668,8 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
             already_closed = False
 
             # ── LightGBM mid-trade exit (consecutive-bar confirmation) ─────────
-            if lgbm_exit_enabled and bars_held >= lgbm_exit_min_hold_bars:
+            # Skip lgbm_exit for reversal trades — LGBM is trend-following and would exit early
+            if lgbm_exit_enabled and bars_held >= lgbm_exit_min_hold_bars and not position.get("is_reversal"):
                 row_x          = X_all.iloc[[i]]
                 lgbm_p_current = float(lgbm_model.predict_proba(row_x)[0, 1])
                 if enhanced_exit_enabled and use_chronos:
@@ -625,13 +702,20 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                         "reason":      "lgbm_exit",
                         "holding_bars": bars_held,
                         "bar":         i,
+                        "origin":      position.get("origin", "trend"),
                     })
                     equity_curve.append({"bar": i, "equity": round(equity, 2)})
                     position       = None
                     already_closed = True
 
             # ── Max hold bars: time-based force exit ──────────────────────────
-            if not already_closed and max_hold_bars_enabled and bars_held >= max_hold_bars_val:
+            # Reversal trades: always enforce rev_max_hold; trend trades: only if max_hold_bars_enabled.
+            # Guard: a previous exit (lgbm_exit) may have set position=None / already_closed=True —
+            # never access position.get() before this check or it crashes with NoneType.get.
+            _is_rev_pos = position.get("is_reversal", False) if (position and not already_closed) else False
+            _max_hold_limit_bt = position.get("rev_max_hold", reversal_max_hold_bars_val) if _is_rev_pos else max_hold_bars_val
+            _max_hold_active_bt = _is_rev_pos or max_hold_bars_enabled
+            if not already_closed and position is not None and _max_hold_active_bt and bars_held >= _max_hold_limit_bt:
                 param_stats["pm_max_hold"] += 1
                 pnl_pct_m  = (close_price - entry) / entry * 100 if side == "long" \
                              else (entry - close_price) / entry * 100
@@ -649,6 +733,7 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                     "reason":      "max_hold",
                     "holding_bars": bars_held,
                     "bar":         i,
+                    "origin":      position.get("origin", "trend"),
                 })
                 equity_curve.append({"bar": i, "equity": round(equity, 2)})
                 position       = None
@@ -690,6 +775,7 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                     "reason":     reason,
                     "holding_bars": i - position["bar_idx"],
                     "bar":        i,
+                    "origin":     position.get("origin", "trend"),
                 })
                 equity_curve.append({"bar": i, "equity": round(equity, 2)})
                 position = None
@@ -719,6 +805,15 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                     cvd_series=cvd_so_far,
                     use_calibration=getattr(cfg, "use_chronos_calibration", False),
                 )
+                # Guard: forecast() should always return a dict, but if a model/inference
+                # edge case returns None, fall back to the neutral prior instead of crashing
+                # decide() with "'NoneType' object has no attribute 'get'".
+                if c2_out is None:
+                    log.warning("Chronos forecast returned None at bar %d — using neutral prior", i)
+                    c2_out = {
+                        "c2_dir_prob": 0.5, "c2_p10": cur_px, "c2_p50": cur_px, "c2_p90": cur_px,
+                        "c2_uncertainty": 0.0, "c2_vol_prob": 0.0, "c2_cont_prob": 1.0, "c2_p50_vs_atr": 0.0,
+                    }
             else:
                 c2_out = {
                     "c2_dir_prob":    0.5,
@@ -759,6 +854,46 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                 avg_funding=avg_funding_bt,
                 covariates=covars_bt,
             )
+
+            # ── Reversal Zone Detection (mirrors live _cycle logic) ───────────
+            _rev_res = None  # reset each bar; used by build_pending_reversal below
+            if _bt_rev_detector is not None and pending_rev is None:
+                try:
+                    _rev_slice = df_feat.iloc[:i + 1]
+                    _rev_res   = _bt_rev_detector.score(_rev_slice, _bt_regime_sig, cfg)
+                    # Routing: same 3-case logic as execution._cycle()
+                    if (
+                        _rev_res.direction is not None
+                        and _rev_res.score >= reversal_score_threshold
+                        and _rev_res.component_count >= reversal_min_components
+                    ):
+                        _trend_action = result.action
+                        if _trend_action == "no_trade":
+                            # Case 1: trend hold → reversal takes control
+                            result = DecisionResult(
+                                action               = _rev_res.direction,
+                                confidence           = _rev_res.score,
+                                reasoning            = ["[REVERSAL] " + r for r in _rev_res.reasoning],
+                                features_snapshot    = result.features_snapshot,
+                                directional_prob     = _rev_res.score,
+                                forecast_p10         = result.forecast_p10,
+                                forecast_p50         = result.forecast_p50,
+                                forecast_p90         = result.forecast_p90,
+                                forecast_uncertainty = 0.0,
+                                size_factor          = reversal_size_factor,
+                                _is_reversal         = True,
+                            )
+                            param_stats["rev_signals"] += 1
+                        elif _trend_action == _rev_res.direction and not reversal_trend_hold_only:
+                            # Case 2: boost
+                            result.confidence = min(1.0, result.confidence + 0.05)
+                            param_stats["rev_trend_boost"] += 1
+                        elif _trend_action != _rev_res.direction and reversal_conflict_block:
+                            # Case 3: conflict block
+                            result.action = "no_trade"
+                            param_stats["rev_conflict_block"] += 1
+                except Exception as _rev_exc:
+                    log.debug("Reversal detector failed at bar %d: %s", i, _rev_exc)
 
             # ── Parameter activity tracking — parse reasoning string ──────────
             # Gate loop: gates are mutually exclusive — at most one per evaluation.
@@ -812,6 +947,16 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                 _p10_available = use_chronos
                 # Pass c2 quantiles when EITHER adaptive SL/TP or P10 floor needs them
                 _needs_quantiles = _use_dynamic or (p10_sl_floor_enabled and _p10_available)
+
+                # For reversal trades in "close" mode, override risk multipliers to match live engine.
+                # Live uses _rev_cfg with reversal_sl_atr_mult/reversal_tp_atr_mult; backtest must too.
+                _is_rev_now = getattr(result, "_is_reversal", False)
+                _orig_risk_sl = risk.sl_atr_mult
+                _orig_risk_tp = risk.tp_atr_mult
+                if _is_rev_now:
+                    risk.sl_atr_mult = reversal_sl_atr_mult
+                    risk.tp_atr_mult = reversal_tp_atr_mult
+
                 params = risk.calculate_trade_params(
                     side=result.action,
                     entry_price=close_price,
@@ -838,6 +983,11 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                     swing_high_px=float(v) if (v := result.features_snapshot.get("swing_high_px")) is not None and pd.notna(v) and float(v) > 0 else None,
                     swing_low_px=float(v) if (v := result.features_snapshot.get("swing_low_px")) is not None and pd.notna(v) and float(v) > 0 else None,
                 )
+                # Restore original risk multipliers after reversal override
+                if _is_rev_now:
+                    risk.sl_atr_mult = _orig_risk_sl
+                    risk.tp_atr_mult = _orig_risk_tp
+
                 # Structural SL: mirror live execution — place SL behind OB when within 2%.
                 if structural_sl_enabled:
                     _sl_applied, _ = apply_structural_sl(
@@ -865,7 +1015,8 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                     param_stats["tp_ob"] += 1
                 effective_size_usd = params.size_usd * result.size_factor
                 # ── Pullback Entry simulation ─────────────────────────────────
-                if pullback_entry_enabled:
+                # Skip pullback for reversal trades: they have their own entry logic (pending_rev).
+                if pullback_entry_enabled and not getattr(result, "_is_reversal", False):
                     # Impulso = corpo candela (abs(close-open)), NON range totale (high-low).
                     # Il range include doji e shadow che non indicano un vero impulso direzionale.
                     _open_bt = float(row.get("open", close_price))
@@ -914,7 +1065,25 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                         }
                         continue  # skip immediate entry — wait for pullback
 
+                # ── Reversal entry: limit-retest mode ─────────────────────────
+                if getattr(result, "_is_reversal", False) and reversal_entry_mode == "limit_retest":
+                    _rev_candle = df_feat.iloc[i].to_dict()
+                    _rev_pending = build_pending_reversal(
+                        direction       = result.action,
+                        candle          = _rev_candle,
+                        reversal_result = _rev_res,   # snapshot del segnale per logging/debug
+                        cfg             = cfg,
+                        atr             = atr,
+                        bar_idx         = i,
+                    )
+                    if _rev_pending:
+                        _rev_pending["size_usd"] = effective_size_usd
+                        pending_rev = _rev_pending
+                        param_stats["rev_pending_set"] += 1
+                    continue  # wait for retest
+
                 # Immediate entry (pullback not enabled or impulse below threshold)
+                _is_rev_entry = getattr(result, "_is_reversal", False)
                 fee_entry = effective_size_usd * HL_TAKER_FEE
                 equity   -= fee_entry
                 position  = {
@@ -932,7 +1101,11 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                     "lgbm_strikes":      0,
                     "fee_entry":         fee_entry,
                     "funding_paid":      0.0,
-                    "entry_mode":        "immediate",
+                    "entry_mode":        "reversal_close" if _is_rev_entry else "immediate",
+                    "origin":            "reversal" if _is_rev_entry else "trend",
+                    "is_reversal":       _is_rev_entry,
+                    "rev_sl_atr_mult":   reversal_sl_atr_mult if _is_rev_entry else sl_atr_mult,
+                    "rev_max_hold":      reversal_max_hold_bars_val,
                 }
 
     # ── 6. Close any open position at last price ──────────────────────────────
@@ -958,6 +1131,7 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
             "funding_paid": round(funding_used, 2),
             "reason": "end_of_period", "holding_bars": len(df_feat) - position["bar_idx"],
             "bar": len(df_feat) - 1,
+            "origin": position.get("origin", "trend"),
         })
         equity_curve.append({"bar": len(df_feat) - 1, "equity": round(equity, 2)})
 
@@ -1007,9 +1181,22 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
         "pb_filled_zone":         pullback_entry_enabled,
         "pb_filled_fallback":     pullback_entry_enabled,
         "pb_decayed":             pullback_entry_enabled,
+        # Reversal Zone Detector
+        "rev_signals":            reversal_mode_enabled,
+        "rev_pending_set":        reversal_mode_enabled and reversal_entry_mode == "limit_retest",
+        "rev_pending_triggered":  reversal_mode_enabled and reversal_entry_mode == "limit_retest",
+        "rev_pending_expired":    reversal_mode_enabled and reversal_entry_mode == "limit_retest",
+        "rev_conflict_block":     reversal_mode_enabled and reversal_conflict_block,
+        "rev_trend_boost":        reversal_mode_enabled and not reversal_trend_hold_only,
         # Data sources (no runtime counter — on/off only)
         "data_binance_cvd":       binance_cvd_enabled,
     }
+
+    # ── Reversal stats (separati da trend stats) ─────────────────────────────
+    rev_trades   = [t for t in trades if t.get("origin") == "reversal"]
+    trend_trades = [t for t in trades if t.get("origin") != "reversal"]
+    reversal_stats = _calculate_stats(rev_trades,   equity_curve, capital) if rev_trades   else None
+    trend_stats    = _calculate_stats(trend_trades, equity_curve, capital) if trend_trades else None
 
     result = {
         "symbol":          symbol,
@@ -1019,6 +1206,8 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
         "final_equity":    round(equity, 2),
         "total_bars":      len(df_feat),
         "stats":           stats,
+        "reversal_stats":  reversal_stats,
+        "trend_stats":     trend_stats,
         "trades":          trades,
         "equity_curve":    equity_curve,
         "param_stats":     param_stats,

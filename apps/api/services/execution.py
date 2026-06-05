@@ -6,6 +6,7 @@ LightGBM is retrained automatically every 120 cycles (~30 days).
 """
 
 import asyncio
+import copy
 import logging
 import math
 import os
@@ -19,12 +20,12 @@ import pandas as pd
 
 from services.hl_websocket import HLWebSocket
 from services.hyperliquid_data import HyperliquidData
-from services.smc import build_all_features, ALL_FEATURES
+from services.smc import build_all_features, ALL_FEATURES, build_4h_context_for_1h
 from services.chronos_model import ChronosForecaster
 from services.decision import DecisionEngine, DecisionResult, compute_qt_score
 from services.risk import RiskManager, apply_structural_sl, apply_fvg_sl, apply_swing_sl
 from services.notifications import TelegramNotifier
-from services.trainer import LGBMTrainer, load_model, load_correct_model, load_1h_model, _retrain_lock
+from services.trainer import LGBMTrainer, load_model, load_correct_model, load_1h_model, _retrain_lock, _retrain_1h_lock
 from services.covariates import update_covariates, get_latest_covariates
 from services.supabase_client import get_supabase
 from services.regime_detector import RegimeDetector, RegimeSignal
@@ -204,6 +205,49 @@ class BotConfig:
         self.pullback_zone_atr         = kw.get("pullback_zone_atr",         0.3)
         self.pullback_window_h         = kw.get("pullback_window_h",         3)
         self.pullback_fallback_atr     = kw.get("pullback_fallback_atr",     0.5)
+        # ── Reversal Zone Detector ────────────────────────────────────────────
+        # Defaults recalibrated on BTC 4H 3y (2023-06 → 2026-06, 6575 bars) + HL 2y:
+        # - score_threshold 0.34: raw weighted score caps at ~0.53 (P99=0.40); 0.38 fired
+        #   only 1.0-1.2% of bars. min_components 4→3 since <2.3% of bars reach 4 active.
+        # - funding_extreme_thr 0.000028: P90 of funding_cum48 / 48 (default 0.00025 was 9× too high)
+        # - wick_threshold 0.50: 7.4% → 14.6% of bars (still selective)
+        # - limit_retest + wick_pct 0.25: avg R:R 1.88 (close-mode avg R:R = 1.01, never passes rr_min)
+        self.reversal_mode_enabled        = kw.get("reversal_mode_enabled",        False)
+        self.reversal_score_threshold     = kw.get("reversal_score_threshold",     0.34)   # recal BTC 4H 3y: 0.38 fired 1.0% of bars, P99=0.40
+        self.reversal_min_components      = kw.get("reversal_min_components",      3)      # was 4; only 2% of bars reach 4 active components
+        self.reversal_component_min_score = kw.get("reversal_component_min_score", 0.40)   # was 0.50
+        self.reversal_size_factor         = kw.get("reversal_size_factor",         0.50)   # was 0.70; conservative until validated
+        self.reversal_sl_atr_mult         = kw.get("reversal_sl_atr_mult",         1.2)
+        self.reversal_tp_atr_mult         = kw.get("reversal_tp_atr_mult",         2.0)    # was 2.5; 2.0 ATR ≈ 2.4% achievable in 2-3 bars
+        self.reversal_rr_min              = kw.get("reversal_rr_min",              1.5)    # was 1.8; wick_pct=0.25 gives avg R:R 1.88
+        self.reversal_conflict_block      = kw.get("reversal_conflict_block",      True)
+        self.reversal_trend_hold_only     = kw.get("reversal_trend_hold_only",     True)
+        self.reversal_max_hold_bars       = kw.get("reversal_max_hold_bars",       4)      # was 6; BTC reversals resolve in <16h or fail
+        # Sotto-componenti
+        self.reversal_ob_dist_max         = kw.get("reversal_ob_dist_max",         2.0)
+        self.reversal_consec_bars_min     = kw.get("reversal_consec_bars_min",     5)
+        self.reversal_adx_peak_min        = kw.get("reversal_adx_peak_min",        35.0)   # was 32; >32 fires 33.7% of bars (too common)
+        self.reversal_ema50_dist_extreme  = kw.get("reversal_ema50_dist_extreme",  3.0)
+        self.reversal_ret48_extreme       = kw.get("reversal_ret48_extreme",       0.08)
+        self.reversal_transition_risk_min = kw.get("reversal_transition_risk_min", 0.55)
+        self.reversal_bars_in_regime_min  = kw.get("reversal_bars_in_regime_min",  40)
+        self.reversal_funding_extreme_thr = kw.get("reversal_funding_extreme_thr", 0.000028)  # was 0.00025; P90/48 on actual BTC data
+        self.reversal_absorption_z        = kw.get("reversal_absorption_z",        1.8)
+        self.reversal_wick_threshold      = kw.get("reversal_wick_threshold",      0.50)   # was 0.60; 7.4% → 14.6% of bars
+        self.reversal_vol_climax_z        = kw.get("reversal_vol_climax_z",        2.0)
+        self.reversal_stoch_ob            = kw.get("reversal_stoch_ob",            0.65)
+        self.reversal_stoch_os            = kw.get("reversal_stoch_os",            0.35)
+        self.reversal_rsi_div_threshold   = kw.get("reversal_rsi_div_threshold",   0.03)
+        # Amplificatori Daily
+        self.reversal_daily_rsi_extreme_high = kw.get("reversal_daily_rsi_extreme_high", 75.0)
+        self.reversal_daily_rsi_extreme_low  = kw.get("reversal_daily_rsi_extreme_low",  25.0)
+        self.reversal_daily_ema_dist_extreme = kw.get("reversal_daily_ema_dist_extreme",   4.0)
+        # Amplificatore IV
+        self.reversal_iv_exhaustion_high  = kw.get("reversal_iv_exhaustion_high",  80.0)
+        # Pending reversal / limit retest
+        self.reversal_entry_mode          = kw.get("reversal_entry_mode",          "limit_retest")
+        self.reversal_retest_wick_pct     = kw.get("reversal_retest_wick_pct",     0.25)   # was 0.50; R:R 1.88 vs 1.49 at 0.50
+        self.reversal_retest_expiry_bars  = kw.get("reversal_retest_expiry_bars",  3)      # was 2; 12h window instead of 8h
 
     def model_dump(self) -> dict:
         return self.__dict__
@@ -241,6 +285,8 @@ class ExecutionEngine:
         # State
         self._position: Optional[dict]         = None   # active position dict
         self._pending_pullback: Optional[PendingPullback] = None  # pending pullback signal
+        self._reversal_pending: Optional[dict] = None   # pending reversal (limit-retest mode)
+        self._last_reversal_result = None                # cached for /reversal/current endpoint
         self._equity: float             = 10_000.0  # paper equity (USD)
         self._cycle_count: int          = 0
         self._consecutive_errors: int   = 0
@@ -478,6 +524,12 @@ class ExecutionEngine:
             self._task.cancel()
         await self._ws.stop()
 
+        # Cancel pending reversal state
+        if self._reversal_pending is not None:
+            log.info("Kill switch: cancelling pending reversal (%s)", self._reversal_pending["direction"])
+            self._reversal_pending = None
+            self._persist_reversal_pending(None)
+
         # Cancel any active GTC limit order and pending pullback signal
         if self._pending_pullback is not None:
             pb = self._pending_pullback
@@ -674,6 +726,17 @@ class ExecutionEngine:
                         self._position["trailing_sl_dist"] = (
                             self.config.trailing_sl_activation * _atr
                         ) if self.config.trailing_sl_enabled else None
+
+                # 3. Restore pending reversal state
+                saved_rev = (cfg_row.data[0].get("params") or {}).get("_reversal_pending")
+                if saved_rev and not self._position:
+                    self._reversal_pending = saved_rev
+                    log.info(
+                        "Reversal pending restored: dir=%s entry=%.2f expiry_bar=%d",
+                        saved_rev.get("direction", "?"),
+                        saved_rev.get("entry_limit", 0.0),
+                        saved_rev.get("expiry_bar", 0),
+                    )
         except Exception as exc:
             log.warning("Could not restore paper state: %s", exc)
 
@@ -733,6 +796,62 @@ class ExecutionEngine:
         except Exception as exc:
             log.warning("Could not persist position state: %s", exc)
 
+    def _persist_reversal_pending(self, pending: Optional[dict]):
+        """
+        Salva/cancella _reversal_pending su Supabase.
+        Chiamato ogni volta che lo stato cambia (set, triggered, expired, cancelled).
+        _persist_position_state() non può essere usato — ha un early-return su not self._position.
+        """
+        try:
+            db = get_supabase()
+            row = db.table("bot_configs").select("params").eq("name", "default").execute()
+            existing = (row.data[0].get("params") or {}) if row.data else {}
+            # ReversalResult non è JSON-serializzabile: salva solo i campi primitivi
+            if pending is not None:
+                _p = copy.copy(pending)
+                _p.pop("reversal_result", None)
+                existing["_reversal_pending"] = _p
+            else:
+                existing.pop("_reversal_pending", None)
+            db.table("bot_configs").update({"params": existing}).eq("name", "default").execute()
+        except Exception as exc:
+            log.warning("Could not persist reversal pending state: %s", exc)
+
+    async def _open_reversal_pending_position(self, pending: dict):
+        """
+        Apre la posizione reversal con i parametri calcolati al momento del segnale.
+        Chiamato quando il prezzo raggiunge entry_limit (paper watchdog o cycle live).
+        """
+        _rev_cfg = copy.copy(self.config)
+        _rev_cfg.sl_atr_mult = self.config.reversal_sl_atr_mult
+        _rev_cfg.tp_atr_mult = self.config.reversal_tp_atr_mult
+
+        _rev_result = pending.get("reversal_result")
+        _mock_result = DecisionResult(
+            action               = pending["direction"],
+            confidence           = _rev_result.score if _rev_result else 0.72,
+            reasoning            = (["[REVERSAL RETEST TRIGGERED]"] + (_rev_result.reasoning if _rev_result else [])),
+            features_snapshot    = {},
+            directional_prob     = _rev_result.score if _rev_result else 0.72,
+            forecast_p10         = 0.0,
+            forecast_p50         = 0.0,
+            forecast_p90         = 0.0,
+            forecast_uncertainty = 0.0,
+            size_factor          = pending["size_factor"],
+            _is_reversal         = True,
+        )
+        # Usa entry_limit come prezzo di esecuzione (il prezzo al retest, non il mark corrente)
+        _mock_snap = {"mark_price": pending["entry_limit"]}
+        await self._open_position(
+            _mock_result,
+            snap         = _mock_snap,
+            atr          = pending["atr_at_signal"],
+            inference_id = None,
+            cfg          = _rev_cfg,
+            sl_override  = pending["sl"],
+            tp_override  = pending["tp"],
+        )
+
     async def get_status(self) -> dict:
         regime_data = None
         if self._regime_signal is not None:
@@ -760,6 +879,7 @@ class ExecutionEngine:
             "model_loaded":             self._lgbm_model is not None,
             "lgbm_1h_loaded":           self._lgbm_1h is not None,
             "retrain_in_progress":      _retrain_lock.locked(),
+            "retrain_1h_in_progress":   _retrain_1h_lock.locked(),
             "retrain_due":              self._retrain_due,
             "last_retrain":             self._last_retrain_metrics,
             "last_cycle_signals":       self._last_cycle_signals,
@@ -870,15 +990,45 @@ class ExecutionEngine:
         log.info("Paper watchdog started (poll every %ds)", POLL_S)
         while self.running:
             await asyncio.sleep(POLL_S)
-            if not self.running or not self._position:
-                self._ws.consume_period_extremes()  # drain so extremes don't accumulate
-                continue
 
-            # Consume the lowest/highest price seen since the last poll.
-            # These are updated by every markPx (activeAssetCtx) and every trade tick,
-            # catching wicks that the instantaneous mark snapshot would miss.
+            # Always consume period extremes so they don't accumulate between polls
             period_low, period_high = self._ws.consume_period_extremes()
             mark = self._ws.latest_mark
+
+            if not self.running:
+                continue
+
+            check_high = period_high if period_high else (mark or 0.0)
+            check_low  = period_low  if period_low  else (mark or 0.0)
+
+            # ── Pending reversal trigger (paper mode, intracandle) ────────────
+            # Runs here, using already-consumed period extremes — no double-consume.
+            if self._reversal_pending and not self._position:
+                _rp = self._reversal_pending
+                if self._cycle_count >= _rp["expiry_bar"]:
+                    log.info(
+                        "Reversal pending EXPIRED (paper, cycle %d, dir=%s)",
+                        self._cycle_count, _rp["direction"],
+                    )
+                    self._reversal_pending = None
+                    self._persist_reversal_pending(None)
+                elif check_low > 0 and check_high > 0:
+                    _triggered = (
+                        (_rp["direction"] == "long"  and check_low  <= _rp["entry_limit"]) or
+                        (_rp["direction"] == "short" and check_high >= _rp["entry_limit"])
+                    )
+                    if _triggered:
+                        log.info(
+                            "Reversal pending TRIGGERED (paper): dir=%s entry=%.2f sl=%.2f tp=%.2f",
+                            _rp["direction"], _rp["entry_limit"], _rp["sl"], _rp["tp"],
+                        )
+                        self._reversal_pending = None
+                        self._persist_reversal_pending(None)
+                        asyncio.create_task(self._open_reversal_pending_position(_rp))
+                continue  # nessuna posizione — skip SL/TP check
+
+            if not self._position:
+                continue
             if not mark or mark <= 0:
                 continue
 
@@ -890,8 +1040,6 @@ class ExecutionEngine:
 
             # Use the worst-case price for each direction:
             # SL for shorts is above (use period_high), TP for shorts is below (use period_low).
-            check_high = period_high if period_high else mark
-            check_low  = period_low  if period_low  else mark
 
             # ── Partial TP (intracandle, mirrors live bracket order behavior) ──
             if (self.config.partial_tp_enabled
@@ -1195,6 +1343,26 @@ class ExecutionEngine:
             latest["transition_risk"]   = self._regime_signal.transition_risk
             latest["bars_in_regime"]    = float(self._regime_signal.bars_in_regime)
 
+        # ── Reversal Zone Detection ───────────────────────────────────────────
+        _reversal_result = None
+        if getattr(self.config, "reversal_mode_enabled", False) and not self._position:
+            try:
+                from services.reversal_detector import ReversalZoneDetector
+                _reversal_result = ReversalZoneDetector().score(
+                    df_feat, self._regime_signal, self.config
+                )
+                latest["reversal_score"]     = _reversal_result.score
+                latest["reversal_dir_long"]  = 1.0 if _reversal_result.direction == "long"  else 0.0
+                latest["reversal_dir_short"] = 1.0 if _reversal_result.direction == "short" else 0.0
+                self._last_reversal_result   = _reversal_result  # per endpoint /reversal/current
+                log.debug(
+                    "Reversal score=%.3f dir=%s components=%d",
+                    _reversal_result.score, _reversal_result.direction,
+                    _reversal_result.component_count,
+                )
+            except Exception as _rev_exc:
+                log.warning("Reversal detector failed (non-blocking): %s", _rev_exc)
+
         cfg = self.config
 
         # Dual ATR: ATR_21 for SL when enabled (smoother, less affected by single-candle spikes).
@@ -1299,7 +1467,10 @@ class ExecutionEngine:
                 df_1h_fund = await self._hl.get_funding_history(SYMBOL, hours=640)
                 df_1h_feat = build_all_features(
                     df_1h_raw, df_1h_fund, pd.DataFrame(), pd.DataFrame()
-                ).iloc[64:]  # skip indicator warm-up rows
+                )
+                # Add 4H context features used by the enhanced 1H gate model.
+                # Must be applied before slicing so the resampler has enough bars.
+                df_1h_feat = build_4h_context_for_1h(df_1h_feat).iloc[64:]
 
                 lgbm_1h_prob   = self._get_lgbm_1h_prob(df_1h_feat)
                 min_agr         = cfg.lgbm_1h_min_agreement
@@ -1387,6 +1558,106 @@ class ExecutionEngine:
             asyncio.create_task(self._notifier.send_macro_pause_end(self._macro_pause_active))
             self._macro_pause_active = None
 
+        # ── Reversal: cancella pending se una posizione trend è appena aperta ──
+        if self._position and self._reversal_pending:
+            log.info("Reversal pending CANCELLED: trend position opened")
+            self._reversal_pending = None
+            self._persist_reversal_pending(None)
+
+        # ── Reversal: cancella pending su macro pause ─────────────────────────
+        # Nota: self._macro_pause_active è già settato dentro il blocco macro sopra,
+        # quindi la condizione viene semplicemente: se c'è un macro event e un pending.
+        if _macro_event and self._reversal_pending:
+            log.info("Reversal pending CANCELLED: macro pause (%s)", _macro_event)
+            self._reversal_pending = None
+            self._persist_reversal_pending(None)
+
+        # ── Reversal: check pending trigger in live mode (al ciclo 4H) ────────
+        if self._reversal_pending and not self._position and self.mode == "live":
+            _rp = self._reversal_pending
+            if self._cycle_count >= _rp["expiry_bar"]:
+                log.info("Reversal pending EXPIRED (live, cycle %d)", self._cycle_count)
+                self._reversal_pending = None
+                self._persist_reversal_pending(None)
+            else:
+                _mark = self._ws.latest_mark
+                if _mark:
+                    _triggered = (
+                        (_rp["direction"] == "long"  and _mark <= _rp["entry_limit"]) or
+                        (_rp["direction"] == "short" and _mark >= _rp["entry_limit"])
+                    )
+                    if _triggered:
+                        log.info(
+                            "Reversal pending TRIGGERED (live): dir=%s entry=%.2f",
+                            _rp["direction"], _rp["entry_limit"],
+                        )
+                        self._reversal_pending = None
+                        self._persist_reversal_pending(None)
+                        await self._open_reversal_pending_position(_rp)
+
+        # ── Signal routing: trend vs reversal ─────────────────────────────────
+        _final_result = result  # default: usa il segnale trend-following
+        if (
+            _reversal_result is not None
+            and _reversal_result.direction is not None
+            and _reversal_result.score >= self.config.reversal_score_threshold
+            and _reversal_result.component_count >= self.config.reversal_min_components
+            and not self._position
+        ):
+            _trend_action = result.action
+
+            # Caso 1: trend = no_trade/hold → reversal prende il controllo
+            if _trend_action == "no_trade":
+                _final_result = DecisionResult(
+                    action               = _reversal_result.direction,
+                    confidence           = _reversal_result.score,
+                    reasoning            = ["[REVERSAL] " + r for r in _reversal_result.reasoning],
+                    features_snapshot    = result.features_snapshot,
+                    directional_prob     = _reversal_result.score,
+                    forecast_p10         = result.forecast_p10,
+                    forecast_p50         = result.forecast_p50,
+                    forecast_p90         = result.forecast_p90,
+                    forecast_uncertainty = 0.0,
+                    size_factor          = self.config.reversal_size_factor,
+                    _is_reversal         = True,
+                )
+                log.info(
+                    "Reversal signal active: %s (score=%.3f components=%d)",
+                    _reversal_result.direction.upper(),
+                    _reversal_result.score, _reversal_result.component_count,
+                )
+
+            # Caso 2: trend e reversal concordano → boost confidence (solo se hold_only=False)
+            elif (
+                _trend_action == _reversal_result.direction
+                and not getattr(self.config, "reversal_trend_hold_only", True)
+            ):
+                _boost = min(1.0, result.confidence + 0.05)
+                _final_result = copy.copy(result)
+                _final_result.confidence = _boost
+                _final_result.reasoning  = list(result.reasoning) + [
+                    f"[REVERSAL BOOST] score={_reversal_result.score:.2f}"
+                ]
+
+            # Caso 3: trend e reversal in conflitto → blocca se configurato
+            elif (
+                _trend_action != _reversal_result.direction
+                and _trend_action != "no_trade"
+                and getattr(self.config, "reversal_conflict_block", True)
+            ):
+                _final_result = copy.copy(result)
+                _final_result.action   = "no_trade"
+                _final_result.reasoning = list(result.reasoning) + [
+                    f"[REVERSAL CONFLICT BLOCK] trend={_trend_action} vs reversal={_reversal_result.direction}"
+                ]
+                log.info(
+                    "Reversal conflict block: trend=%s reversal=%s",
+                    _trend_action, _reversal_result.direction,
+                )
+
+        # Usa _final_result al posto di result per tutto ciò che segue
+        result = _final_result
+
         # ── Pullback entry: check pending signal every cycle ─────────────────────
         # Called before the new-position block so that a pullback fill sets
         # self._position = ... and the block below correctly skips opening a second trade.
@@ -1395,38 +1666,66 @@ class ExecutionEngine:
             await self._check_pullback_entry(_pb_price, snap, atr)
 
         if result.action != "no_trade" and allowed and self._position is None:
-            # Check if pullback mode should activate for this signal
-            _pb_enabled = getattr(self.config, "pullback_entry_enabled", False)
-            if _pb_enabled and self._pending_pullback is not None:
-                # Already in pullback wait mode — skip new signal
-                log.info("Pullback wait active (%s) — new %s signal queued but skipped",
-                         self._pending_pullback.direction, result.action)
-            elif _pb_enabled:
-                # Impulso misurato sul CORPO (abs(close - open)), NON sul range totale (high - low).
-                # Il range include shadow e doji che non rappresentano un vero impulso direzionale.
-                _close_px = float(latest.get("close") or snap["mark_price"])
-                _open_px  = float(latest.get("open")  or _close_px)
-                _atr_v    = atr or snap["mark_price"] * 0.01
-                _impulse  = abs(_close_px - _open_px) / _atr_v if _atr_v > 0 else 0.0
-                if _impulse >= getattr(self.config, "pullback_impulse_atr_mult", 1.5):
-                    self._pending_pullback = await self._create_pending_pullback(
-                        result, latest, _atr_v, snap
+            # ── Reversal entry: limit-retest mode sets pending instead of opening immediately ──
+            if getattr(result, "_is_reversal", False):
+                _rev_cfg = copy.copy(self.config)
+                if getattr(self.config, "reversal_entry_mode", "limit_retest") == "limit_retest":
+                    from services.reversal_detector import build_pending_reversal
+                    _atr_v = atr or snap["mark_price"] * 0.01
+                    _pending = build_pending_reversal(
+                        direction        = result.action,
+                        candle           = latest,
+                        reversal_result  = _reversal_result,
+                        cfg              = self.config,
+                        atr              = _atr_v,
+                        bar_idx          = self._cycle_count,
                     )
-                    log.info(
-                        "Pullback mode activated: %s body_ratio=%.2f ≥ %.2f "
-                        "(body=%.0f open=%.0f close=%.0f) | "
-                        "zone=%.2f fallback=%.2f expires=%s",
-                        result.action, _impulse,
-                        getattr(self.config, "pullback_impulse_atr_mult", 1.5),
-                        abs(_close_px - _open_px), _open_px, _close_px,
-                        self._pending_pullback.pullback_zone,
-                        self._pending_pullback.fallback_limit,
-                        self._pending_pullback.expires_at.strftime("%H:%M UTC"),
-                    )
+                    if _pending:
+                        self._reversal_pending = _pending
+                        self._persist_reversal_pending(_pending)
+                        log.info(
+                            "Reversal PENDING set: dir=%s entry=%.2f sl=%.2f tp=%.2f expiry_bar=%d",
+                            _pending["direction"], _pending["entry_limit"],
+                            _pending["sl"], _pending["tp"], _pending["expiry_bar"],
+                        )
+                    else:
+                        log.info("Reversal signal skipped: R:R gate failed (entry_mode=limit_retest)")
+                else:
+                    # "close" mode: apri subito a mercato con parametri reversal
+                    _rev_cfg.sl_atr_mult = self.config.reversal_sl_atr_mult
+                    _rev_cfg.tp_atr_mult = self.config.reversal_tp_atr_mult
+                    await self._open_position(result, snap, atr, inference_id, cfg=_rev_cfg)
+
+            else:
+                # ── Trend/pullback entry (comportamento originale) ─────────────────
+                _pb_enabled = getattr(self.config, "pullback_entry_enabled", False)
+                if _pb_enabled and self._pending_pullback is not None:
+                    log.info("Pullback wait active (%s) — new %s signal queued but skipped",
+                             self._pending_pullback.direction, result.action)
+                elif _pb_enabled:
+                    _close_px = float(latest.get("close") or snap["mark_price"])
+                    _open_px  = float(latest.get("open")  or _close_px)
+                    _atr_v    = atr or snap["mark_price"] * 0.01
+                    _impulse  = abs(_close_px - _open_px) / _atr_v if _atr_v > 0 else 0.0
+                    if _impulse >= getattr(self.config, "pullback_impulse_atr_mult", 1.5):
+                        self._pending_pullback = await self._create_pending_pullback(
+                            result, latest, _atr_v, snap
+                        )
+                        log.info(
+                            "Pullback mode activated: %s body_ratio=%.2f ≥ %.2f "
+                            "(body=%.0f open=%.0f close=%.0f) | "
+                            "zone=%.2f fallback=%.2f expires=%s",
+                            result.action, _impulse,
+                            getattr(self.config, "pullback_impulse_atr_mult", 1.5),
+                            abs(_close_px - _open_px), _open_px, _close_px,
+                            self._pending_pullback.pullback_zone,
+                            self._pending_pullback.fallback_limit,
+                            self._pending_pullback.expires_at.strftime("%H:%M UTC"),
+                        )
+                    else:
+                        await self._open_position(result, snap, atr, inference_id, atr_sl=atr_sl)
                 else:
                     await self._open_position(result, snap, atr, inference_id, atr_sl=atr_sl)
-            else:
-                await self._open_position(result, snap, atr, inference_id, atr_sl=atr_sl)
         elif not allowed:
             log.info("Trade blocked: %s", block_reason)
         elif result.action != "no_trade" and self._position is not None:
@@ -1625,6 +1924,7 @@ class ExecutionEngine:
                 use_chronos_calibration=self.config.use_chronos_calibration,
                 use_1h_lgbm_gate=self.config.use_1h_lgbm_gate,
                 binance_cvd_enabled=self.config.binance_cvd_enabled,
+                reversal_mode_enabled=getattr(self.config, "reversal_mode_enabled", False),
             )
             if metrics.get("status") == "ok":
                 await self._reload_model_after_retrain(metrics, trigger="auto")
@@ -1693,6 +1993,7 @@ class ExecutionEngine:
                 use_chronos_calibration=self.config.use_chronos_calibration,
                 use_1h_lgbm_gate=self.config.use_1h_lgbm_gate,
                 binance_cvd_enabled=self.config.binance_cvd_enabled,
+                reversal_mode_enabled=getattr(self.config, "reversal_mode_enabled", False),
             )
             if metrics.get("status") == "ok":
                 await self._reload_model_after_retrain(metrics, trigger="drift")
@@ -1732,6 +2033,7 @@ class ExecutionEngine:
             use_optuna=use_optuna,
             optuna_n_trials=optuna_n_trials,
             binance_cvd_enabled=self.config.binance_cvd_enabled,
+            reversal_mode_enabled=getattr(self.config, "reversal_mode_enabled", False),
         )
         if metrics.get("status") == "ok":
             await self._reload_model_after_retrain(metrics, trigger="manual" if not from_date else "deep")
@@ -1742,68 +2044,93 @@ class ExecutionEngine:
     async def _open_position(
         self,
         result: DecisionResult,
-        snap: dict,
+        snap: Optional[dict],
         atr: Optional[float],
-        inference_id: str,
+        inference_id: Optional[str],
         cfg: Optional[BotConfig] = None,
         atr_sl: Optional[float] = None,
+        sl_override: Optional[float] = None,
+        tp_override: Optional[float] = None,
     ):
         # cfg holds the effective config for this trade (may include regime overrides).
         # _manage_position continues to read self.config throughout the trade lifetime.
         cfg   = cfg or self.config
-        price = snap["mark_price"]
+        price = (snap or {}).get("mark_price") or (self._ws.latest_mark or 0.0)
         atr   = atr or price * 0.01  # fallback 1% ATR
 
-        _use_dynamic   = cfg.dynamic_sl_tp_enabled and self.config.chronos_enabled
-        _p10_available = self.config.chronos_enabled and result.forecast_p10 > 0
-        # Pass c2 quantiles when EITHER adaptive SL/TP or P10 floor needs them
-        _needs_quantiles = _use_dynamic or (cfg.p10_sl_floor_enabled and _p10_available)
+        # When sl_override/tp_override are provided (pending reversal fill), bypass all
+        # dynamic SL/TP calculation — the structural levels were fixed at signal time.
+        _has_overrides = sl_override is not None and tp_override is not None
 
-        # Temporarily apply cfg overrides to the risk manager for this trade calculation.
-        # async is cooperative — no concurrent access risk within this coroutine.
-        _orig_sl  = self._risk.sl_atr_mult
-        _orig_tp  = self._risk.tp_atr_mult
-        _orig_sz  = self._risk.position_size_pct
-        self._risk.sl_atr_mult       = cfg.sl_atr_mult
-        self._risk.tp_atr_mult       = cfg.tp_atr_mult
-        self._risk.position_size_pct = cfg.position_size_pct
+        if _has_overrides:
+            # Build TradeParams from override values (reversal pending fill).
+            # SL/TP are structural prices fixed at signal time — not ATR-derived.
+            from services.risk import TradeParams
+            _sl_dist   = abs(price - sl_override)
+            _tp_dist   = abs(tp_override - price)
+            _rr        = _tp_dist / _sl_dist if _sl_dist > 0 else 0.0
+            _size_usd  = self._risk.position_size_pct / 100.0 * self._equity * result.size_factor
+            _size_ctr  = _size_usd / price if price > 0 else 0.001
+            params     = TradeParams(
+                side           = result.action,
+                entry_price    = price,
+                stop_loss      = sl_override,
+                take_profit    = tp_override,
+                size_usd       = _size_usd,
+                size_contracts = _size_ctr,
+                rr_ratio       = round(_rr, 2),
+                atr            = atr,
+            )
+        else:
+            _use_dynamic   = cfg.dynamic_sl_tp_enabled and self.config.chronos_enabled
+            _p10_available = self.config.chronos_enabled and (result.forecast_p10 or 0) > 0
+            _needs_quantiles = _use_dynamic or (cfg.p10_sl_floor_enabled and _p10_available)
 
-        params = self._risk.calculate_trade_params(
-            side=result.action,
-            entry_price=price,
-            atr=atr,
-            equity_usd=self._equity,
-            sl_atr=atr_sl,
-            c2_p10=result.forecast_p10 if _needs_quantiles else None,
-            c2_p90=result.forecast_p90 if _needs_quantiles else None,
-            c2_uncertainty=result.forecast_uncertainty if (_use_dynamic and result.forecast_uncertainty > 0) else None,
-            dynamic_sl_tp_enabled=_use_dynamic,
-            dynamic_sl_tp_blend=cfg.dynamic_sl_tp_blend,
-            recalibrated_uncertainty_thresholds=getattr(cfg, "recalibrated_uncertainty_thresholds", True),
-            p10_sl_floor_enabled=cfg.p10_sl_floor_enabled and _p10_available,
-            ob_tp_enabled=getattr(cfg, "ob_tp_enabled", False),
-            ob_tp_blend=getattr(cfg, "ob_tp_blend", 1.0),
-            ob_bear_top_px=self._safe_float(result.features_snapshot.get("ob_bear_top_px")),
-            ob_bull_bot_px=self._safe_float(result.features_snapshot.get("ob_bull_bot_px")),
-            fvg_tp_enabled=getattr(cfg, "fvg_tp_enabled", False),
-            fvg_tp_blend=getattr(cfg, "fvg_tp_blend", 1.0),
-            fvg_bear_bot_px=self._safe_float(result.features_snapshot.get("fvg_bear_bot_px")),
-            fvg_bull_top_px=self._safe_float(result.features_snapshot.get("fvg_bull_top_px")),
-            swing_tp_enabled=getattr(cfg, "swing_tp_enabled", False),
-            swing_tp_blend=getattr(cfg, "swing_tp_blend", 1.0),
-            swing_high_px=self._safe_float(result.features_snapshot.get("swing_high_px")),
-            swing_low_px=self._safe_float(result.features_snapshot.get("swing_low_px")),
-        )
+            # Temporarily apply cfg overrides to the risk manager for this trade calculation.
+            # async is cooperative — no concurrent access risk within this coroutine.
+            _orig_sl  = self._risk.sl_atr_mult
+            _orig_tp  = self._risk.tp_atr_mult
+            _orig_sz  = self._risk.position_size_pct
+            self._risk.sl_atr_mult       = cfg.sl_atr_mult
+            self._risk.tp_atr_mult       = cfg.tp_atr_mult
+            self._risk.position_size_pct = cfg.position_size_pct
 
-        # Restore original risk manager state
-        self._risk.sl_atr_mult       = _orig_sl
-        self._risk.tp_atr_mult       = _orig_tp
-        self._risk.position_size_pct = _orig_sz
+            params = self._risk.calculate_trade_params(
+                side=result.action,
+                entry_price=price,
+                atr=atr,
+                equity_usd=self._equity,
+                sl_atr=atr_sl,
+                c2_p10=result.forecast_p10 if _needs_quantiles else None,
+                c2_p90=result.forecast_p90 if _needs_quantiles else None,
+                c2_uncertainty=result.forecast_uncertainty if (_use_dynamic and result.forecast_uncertainty > 0) else None,
+                dynamic_sl_tp_enabled=_use_dynamic,
+                dynamic_sl_tp_blend=cfg.dynamic_sl_tp_blend,
+                recalibrated_uncertainty_thresholds=getattr(cfg, "recalibrated_uncertainty_thresholds", True),
+                p10_sl_floor_enabled=cfg.p10_sl_floor_enabled and _p10_available,
+                ob_tp_enabled=getattr(cfg, "ob_tp_enabled", False),
+                ob_tp_blend=getattr(cfg, "ob_tp_blend", 1.0),
+                ob_bear_top_px=self._safe_float((result.features_snapshot or {}).get("ob_bear_top_px")),
+                ob_bull_bot_px=self._safe_float((result.features_snapshot or {}).get("ob_bull_bot_px")),
+                fvg_tp_enabled=getattr(cfg, "fvg_tp_enabled", False),
+                fvg_tp_blend=getattr(cfg, "fvg_tp_blend", 1.0),
+                fvg_bear_bot_px=self._safe_float((result.features_snapshot or {}).get("fvg_bear_bot_px")),
+                fvg_bull_top_px=self._safe_float((result.features_snapshot or {}).get("fvg_bull_top_px")),
+                swing_tp_enabled=getattr(cfg, "swing_tp_enabled", False),
+                swing_tp_blend=getattr(cfg, "swing_tp_blend", 1.0),
+                swing_high_px=self._safe_float((result.features_snapshot or {}).get("swing_high_px")),
+                swing_low_px=self._safe_float((result.features_snapshot or {}).get("swing_low_px")),
+            )
+
+            # Restore original risk manager state
+            self._risk.sl_atr_mult       = _orig_sl
+            self._risk.tp_atr_mult       = _orig_tp
+            self._risk.position_size_pct = _orig_sz
 
         # ── Structural SL override (OB-aware) ─────────────────────────────────
-        # Delegates to apply_structural_sl() in risk.py — shared with backtesting
-        # so live and backtest SL placement are always consistent.
-        if cfg.structural_sl_enabled:
+        # Skipped when sl_override/tp_override are provided (reversal pending fill) —
+        # the structural levels were fixed at signal time and must not be overwritten.
+        if cfg.structural_sl_enabled and not _has_overrides:
             _ob_applied, _ob_msg = apply_structural_sl(
                 params, result.features_snapshot, price,
                 ob_buffer_pct=getattr(cfg, "ob_buffer_pct", 0.3),
@@ -1813,9 +2140,9 @@ class ExecutionEngine:
                 log.info("StructuralSL [%s]: %s", result.action, _ob_msg)
                 result.reasoning.append(_ob_msg)
 
-        if getattr(cfg, "fvg_sl_enabled", False):
+        if getattr(cfg, "fvg_sl_enabled", False) and not _has_overrides:
             _fvg_applied, _fvg_msg = apply_fvg_sl(
-                params, result.features_snapshot, price,
+                params, result.features_snapshot or {}, price,
                 ob_buffer_pct=getattr(cfg, "ob_buffer_pct", 0.3),
                 ob_buffer_min_atr=getattr(cfg, "ob_buffer_min_atr", 0.0),
             )
@@ -1823,9 +2150,9 @@ class ExecutionEngine:
                 log.info("FVG_SL [%s]: %s", result.action, _fvg_msg)
                 result.reasoning.append(_fvg_msg)
 
-        if getattr(cfg, "swing_sl_enabled", False):
+        if getattr(cfg, "swing_sl_enabled", False) and not _has_overrides:
             _sw_applied, _sw_msg = apply_swing_sl(
-                params, result.features_snapshot, price,
+                params, result.features_snapshot or {}, price,
             )
             if _sw_applied:
                 log.info("SwingSL [%s]: %s", result.action, _sw_msg)
@@ -1912,6 +2239,10 @@ class ExecutionEngine:
             "trailing_sl_dist":              (self.config.trailing_sl_activation * _atr) if self.config.trailing_sl_enabled else None,
             # Live: tracks the active SL trigger cloid so we can cancel it when trailing moves the SL
             "current_sl_cloid":              _sl_cloid,
+            # Reversal metadata (stored so _manage_position can use correct multipliers)
+            "is_reversal":     getattr(result, "_is_reversal", False),
+            "rev_sl_atr_mult": getattr(cfg, "reversal_sl_atr_mult", self.config.sl_atr_mult),
+            "rev_max_hold":    getattr(cfg, "reversal_max_hold_bars", getattr(self.config, "max_hold_bars", 48)),
         }
 
         # Persist paper position immediately so it survives a restart
@@ -1989,9 +2320,15 @@ class ExecutionEngine:
         entry   = self._position["entry_price"]
         atr_val = float(df_feat.iloc[-1].get("atr_14") or current_price * 0.01)
 
+        # Reversal-specific multipliers (stored in position dict at open time)
+        _is_rev      = self._position.get("is_reversal", False)
+        _rev_sl_mult = self._position.get("rev_sl_atr_mult", self.config.sl_atr_mult)
+        _rev_max_h   = self._position.get("rev_max_hold",   getattr(self.config, "max_hold_bars", 48))
+
         # ── 1. Trailing SL update (always first, before any exit) ─────────────
         if self.config.trailing_sl_enabled:
-            trail_dist = self.config.trailing_sl_activation * atr_val
+            _trail_mult = _rev_sl_mult if _is_rev else self.config.trailing_sl_activation
+            trail_dist  = _trail_mult * atr_val
             if not self._position.get("sl_trailing_active"):
                 moved = (side == "long"  and current_price >= entry + trail_dist) or \
                         (side == "short" and current_price <= entry - trail_dist)
@@ -2160,8 +2497,12 @@ class ExecutionEngine:
                 ))
 
         # ── 4. LightGBM mid-trade exit ────────────────────────────────────────
+        # Skipped for reversal trades: LGBM is trained on trend-following data and
+        # will systematically produce low confidence on counter-trend positions,
+        # causing premature exits.
         if (self.config.lgbm_exit_enabled and self._lgbm_model is not None
-                and self._position["bars_held"] >= self.config.lgbm_exit_min_hold_bars):
+                and self._position["bars_held"] >= self.config.lgbm_exit_min_hold_bars
+                and not _is_rev):
             lgbm_p   = self._get_lgbm_prob(df_feat)
             entry_px = self._position["entry_price"]
 
@@ -2194,9 +2535,11 @@ class ExecutionEngine:
                 return
 
         # ── 5. Max hold bars: time-based exit ─────────────────────────────────
-        if (self.config.max_hold_bars_enabled
-                and self._position["bars_held"] >= self.config.max_hold_bars):
-            log.info("Max hold bars reached (%d) — closing position", self.config.max_hold_bars)
+        # Reversal trades use rev_max_hold (shorter, default 6 bars = 24h)
+        _max_hold_limit = _rev_max_h if _is_rev else getattr(self.config, "max_hold_bars", 48)
+        _max_hold_active = _is_rev or self.config.max_hold_bars_enabled
+        if (_max_hold_active and self._position["bars_held"] >= _max_hold_limit):
+            log.info("Max hold bars reached (%d, reversal=%s) — closing position", _max_hold_limit, _is_rev)
             await self._close_position(current_price, "max_hold_bars")
             return
 
