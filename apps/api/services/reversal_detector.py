@@ -95,66 +95,104 @@ class ReversalZoneDetector:
 
     def _momentum_bear(self, f: dict) -> float:
         hits = 0.0
-        if float(f.get("rsi_div_bear") or 0.0) == 1.0:
+
+        # 4H divergences — local signal (weight 1.0 each)
+        if float(f.get("rsi_div_bear")  or 0.0) == 1.0:
             hits += 1.0
         if float(f.get("macd_div_bear") or 0.0) == 1.0:
             hits += 1.0
-        cvd_div = float(f.get("delta_price_div") or 0.0)
-        if cvd_div < -0.5:
+        if float(f.get("delta_price_div") or 0.0) < -0.5:
             hits += 1.0
-        score = hits / 3.0
-        if hits == 3.0:
-            score = min(1.0, score * 1.3)
-        return score
+
+        # Daily divergences — structural signal (weight 1.5 each, more reliable)
+        # They capture exhaustion of multi-day directional moves (the primary use case).
+        d_rsi_div  = float(f.get("d_rsi_div_bear")  or 0.0) == 1.0
+        d_macd_div = float(f.get("d_macd_div_bear") or 0.0) == 1.0
+        if d_rsi_div:
+            hits += 1.5
+        if d_macd_div:
+            hits += 1.5
+
+        # Normalise over max possible score (3×1.0 + 2×1.5 = 6.0)
+        score = hits / 6.0
+
+        # Dual-timeframe confluence boost: both daily AND 4H RSI divergence active
+        # simultaneously — the rarest and most reliable setup for this use case.
+        if d_rsi_div and float(f.get("rsi_div_bear") or 0.0) == 1.0:
+            score = min(1.0, score + 0.20)
+
+        return min(1.0, score)
 
     def _momentum_bull(self, f: dict) -> float:
         hits = 0.0
-        if float(f.get("rsi_div_bull") or 0.0) == 1.0:
+
+        # 4H divergences
+        if float(f.get("rsi_div_bull")   or 0.0) == 1.0:
             hits += 1.0
-        if float(f.get("macd_div_bull") or 0.0) == 1.0:
+        if float(f.get("macd_div_bull")  or 0.0) == 1.0:
             hits += 1.0
-        cvd_div = float(f.get("delta_price_div") or 0.0)
-        if cvd_div > 0.5:
+        if float(f.get("delta_price_div") or 0.0) > 0.5:
             hits += 1.0
-        score = hits / 3.0
-        if hits == 3.0:
-            score = min(1.0, score * 1.3)
-        return score
+
+        # Daily divergences
+        d_rsi_div  = float(f.get("d_rsi_div_bull")  or 0.0) == 1.0
+        d_macd_div = float(f.get("d_macd_div_bull") or 0.0) == 1.0
+        if d_rsi_div:
+            hits += 1.5
+        if d_macd_div:
+            hits += 1.5
+
+        score = hits / 6.0
+
+        # Dual-timeframe confluence boost
+        if d_rsi_div and float(f.get("rsi_div_bull") or 0.0) == 1.0:
+            score = min(1.0, score + 0.20)
+
+        return min(1.0, score)
 
     def _exhaustion(self, f: dict, cfg, direction: str = "bear") -> float:
-        hits = 0.0
-        count = 4
+        hits  = 0.0
+        count = 5  # added RSI 4H extreme as a 5th sub-check
 
-        consec = float(f.get("consec_bars") or 0.0)
-        adx    = float(f.get("adx_14")      or 0.0)
-        adx_l3 = float(f.get("adx_14_lag3") or adx)  # may not exist; fallback = current
+        consec  = float(f.get("consec_bars") or 0.0)
+        adx     = float(f.get("adx_14")      or 0.0)
+        adx_l3  = float(f.get("adx_14_lag3") or adx)
         em_dist = abs(float(f.get("ema50_dist") or 0.0))
-        ret48  = float(f.get("ret_48") or 0.0)
+        ret48   = float(f.get("ret_48") or 0.0)
+        rsi_4h  = float(f.get("rsi_14") or 50.0)
 
         if abs(consec) >= getattr(cfg, "reversal_consec_bars_min", 5):
             hits += 1.0
+
         adx_peak = getattr(cfg, "reversal_adx_peak_min", 32.0)
         if adx >= adx_peak:
-            adx_score = 1.0 if adx < adx_l3 else 0.5  # declining ADX = stronger signal
-            hits += adx_score
+            hits += 1.0 if adx < adx_l3 else 0.5  # declining ADX = stronger signal
+
         if em_dist > getattr(cfg, "reversal_ema50_dist_extreme", 3.0):
             hits += 1.0
+
         ret_thr = getattr(cfg, "reversal_ret48_extreme", 0.08)
         if abs(ret48) > ret_thr:
             hits += 1.0
 
+        # RSI 4H extreme gate: for the use case (end of a strong directional move),
+        # RSI must be actually overextended. Without this, exhaustion can fire mid-move.
+        if direction == "bear" and rsi_4h > 65.0:
+            hits += 1.0
+        elif direction == "bull" and rsi_4h < 35.0:
+            hits += 1.0
+
         base_score = hits / count
 
-        # IV amplifier: high IV = market expects explosive moves = exhaustion cross-asset signal.
-        # Direction-agnostic: high IV amplifies both bear and bull exhaustion equally.
+        # ── Amplifiers (additive boosts, capped at 1.0) ─────────────────────────
+
+        # IV: high implied volatility = market prices explosive moves = exhaustion signal
         iv_pct = float(f.get("iv_7d_percentile") or 50.0)
         if iv_pct > getattr(cfg, "reversal_iv_exhaustion_high", 80.0):
             base_score = min(1.0, base_score + 0.15)
 
-        # Daily RSI extreme amplifier — DIRECTIONAL.
-        # RSI overbought (>75) confirms a top (bear reversal). RSI oversold (<25) confirms a bottom (bull reversal).
-        # Applying the wrong extreme would boost a signal with contradictory evidence.
-        d_rsi = float(f.get("d_rsi") or 50.0)
+        # Daily RSI extreme — directional: overbought confirms top, oversold confirms bottom
+        d_rsi      = float(f.get("d_rsi") or 50.0)
         d_rsi_high = getattr(cfg, "reversal_daily_rsi_extreme_high", 75.0)
         d_rsi_low  = getattr(cfg, "reversal_daily_rsi_extreme_low",  25.0)
         if direction == "bear" and d_rsi > d_rsi_high:
@@ -162,7 +200,7 @@ class ReversalZoneDetector:
         elif direction == "bull" and d_rsi < d_rsi_low:
             base_score = min(1.0, base_score + 0.20)
 
-        # Daily EMA distance amplifier: direction-agnostic (overextension in both directions is relevant).
+        # Daily EMA distance — direction-agnostic overextension confirmation
         d_ema_dist = abs(float(f.get("d_ema20_dist") or 0.0))
         if d_ema_dist > getattr(cfg, "reversal_daily_ema_dist_extreme", 4.0):
             base_score = min(1.0, base_score + 0.15)
@@ -185,7 +223,7 @@ class ReversalZoneDetector:
         return hits / count
 
     def _volume_bull(self, f: dict, cfg) -> float:
-        hits = 0.0
+        hits  = 0.0
         count = 3
 
         if float(f.get("vol_climax_bull") or 0.0) == 1.0:
@@ -193,8 +231,11 @@ class ReversalZoneDetector:
         vol_z = float(f.get("vol_z_50") or 0.0)
         if vol_z > getattr(cfg, "reversal_vol_climax_z", 2.0):
             hits += 1.0
-        liq_long_z = float(f.get("liq_long_z") or 0.0)
-        if liq_long_z > 1.5:
+        # Replaced liq_long_z (unreliable HL data with gaps) with absorption_z:
+        # high absorption on a bottom = large volume enters but price doesn't fall further
+        # = institutional accumulation, same logic as bear side.
+        absorption_z = float(f.get("absorption_z") or 0.0)
+        if absorption_z > getattr(cfg, "reversal_absorption_z", 1.8):
             hits += 1.0
 
         return hits / count

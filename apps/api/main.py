@@ -302,11 +302,11 @@ class BotConfig(BaseModel):
     reversal_max_hold_bars:       int   = Field(4,        ge=2,    le=20)     # was 6; BTC reversals resolve in <16h
     reversal_ob_dist_max:         float = Field(2.0,      ge=0.50, le=5.00)
     reversal_consec_bars_min:     int   = Field(5,        ge=3,    le=10)
-    reversal_adx_peak_min:        float = Field(35.0,     ge=20.0, le=50.0)   # was 32; >32 fires 33.7% of bars
+    reversal_adx_peak_min:        float = Field(30.0,     ge=20.0, le=50.0)   # lowered from 35: ADX>35 too rare on BTC 4H for short-term moves
     reversal_ema50_dist_extreme:  float = Field(3.0,      ge=1.50, le=6.00)
-    reversal_ret48_extreme:       float = Field(0.08,     ge=0.03, le=0.20)
+    reversal_ret48_extreme:       float = Field(0.06,     ge=0.03, le=0.20)   # lowered from 0.08: 6% in 8 days is already significant on BTC
     reversal_transition_risk_min: float = Field(0.55,     ge=0.30, le=0.90)
-    reversal_bars_in_regime_min:  int   = Field(40,       ge=10,   le=100)
+    reversal_bars_in_regime_min:  int   = Field(20,       ge=5,    le=100)    # lowered from 40: targets 2-5 day moves, not macro regimes
     reversal_funding_extreme_thr: float = Field(0.000028, ge=0.000005, le=0.00050)  # was 0.00025; P90/48 on real BTC data
     reversal_absorption_z:        float = Field(1.8,      ge=1.00, le=4.00)
     reversal_wick_threshold:      float = Field(0.50,     ge=0.30, le=0.85)   # was 0.60; 7.4% → 14.6% of bars
@@ -1413,6 +1413,7 @@ async def reversal_current():
             "result":           result_data,
             "pending":          pending_data,
             "updated_at":       datetime.now(timezone.utc).isoformat(),
+            "position_open":    engine._position is not None,
         }
     except Exception as exc:
         raise HTTPException(500, str(exc))

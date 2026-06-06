@@ -247,9 +247,10 @@ def build_order_block_features(
 
 def build_mtf_features(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Resample 4h → 1D, compute daily EMA20, ADX14, RSI14.
-    Forward-fill daily values onto 4h index (no lookahead bias).
-    The daily trend context is the single most important predictor (phase4: 20.1% importance).
+    Resample 4h → 1D, compute daily EMA20, ADX14, RSI14, MACD.
+    Also computes RSI and MACD divergences on the daily timeframe.
+    Forward-fill all daily values onto 4h index (no lookahead bias).
+    Daily divergences are more reliable than 4H ones for catching end-of-move setups.
     """
     d = df.copy()
 
@@ -261,6 +262,7 @@ def build_mtf_features(df: pd.DataFrame) -> pd.DataFrame:
     daily["d_adx"]       = ta.trend.ADXIndicator(daily["high"], daily["low"], daily["close"], 14).adx()
     daily["d_rsi"]       = ta.momentum.RSIIndicator(daily["close"], 14).rsi()
     daily["d_atr_daily"] = ta.volatility.AverageTrueRange(daily["high"], daily["low"], daily["close"], 14).average_true_range()
+    daily["d_macd_hist"] = ta.trend.MACD(daily["close"]).macd_diff()
 
     daily["d_regime"] = np.where(
         (daily["close"] > daily["d_ema20"]) & (daily["d_adx"] > 20),  1,
@@ -268,11 +270,51 @@ def build_mtf_features(df: pd.DataFrame) -> pd.DataFrame:
     )
     daily["d_ema20_dist"] = (daily["close"] - daily["d_ema20"]) / (daily["d_atr_daily"] + 1e-9)
 
-    daily_aligned = daily[["d_ema20", "d_adx", "d_rsi", "d_regime", "d_ema20_dist"]].reindex(
-        d.index, method="ffill"
-    )
+    # ── Daily divergences — window 10 sessions (~2 weeks) ────────────────────────
+    # shift(1): confirmed by the previous bar — no lookahead on current session.
+    # Used by ReversalZoneDetector with higher weight than 4H divergences because
+    # they capture exhaustion of multi-day directional moves (the primary use case).
+    _dw = 10
+    _d_ph = daily["high"].rolling(_dw).max().shift(1)
+    _d_pl = daily["low"].rolling(_dw).min().shift(1)
+    _d_rh = daily["d_rsi"].rolling(_dw).max().shift(1)
+    _d_rl = daily["d_rsi"].rolling(_dw).min().shift(1)
+    _d_mh = daily["d_macd_hist"].rolling(_dw).max().shift(1)
+    _d_ml = daily["d_macd_hist"].rolling(_dw).min().shift(1)
+
+    # RSI bear divergence: price new daily high but RSI lower high (5% gap)
+    daily["d_rsi_div_bear"] = (
+        (daily["high"] > _d_ph) & (_d_ph.notna()) &
+        (daily["d_rsi"] < _d_rh * 0.95)  & (_d_rh.notna())
+    ).astype(float)
+
+    # RSI bull divergence: price new daily low but RSI higher low
+    daily["d_rsi_div_bull"] = (
+        (daily["low"] < _d_pl) & (_d_pl.notna()) &
+        (daily["d_rsi"] > _d_rl * 1.05)  & (_d_rl.notna())
+    ).astype(float)
+
+    # MACD bear divergence: price new high but MACD histogram lower high (20% gap, no sign req.)
+    daily["d_macd_div_bear"] = (
+        (daily["high"] > _d_ph) & (_d_ph.notna()) &
+        (daily["d_macd_hist"] < _d_mh * 0.80) & (_d_mh.notna())
+    ).astype(float)
+
+    # MACD bull divergence: price new low but MACD histogram higher low
+    daily["d_macd_div_bull"] = (
+        (daily["low"] < _d_pl) & (_d_pl.notna()) &
+        (daily["d_macd_hist"] > _d_ml * 0.80) & (_d_ml.notna())
+    ).astype(float)
+
+    # Forward-fill all daily columns onto 4H index
+    daily_cols = [
+        "d_ema20", "d_adx", "d_rsi", "d_regime", "d_ema20_dist",
+        "d_rsi_div_bear", "d_rsi_div_bull",
+        "d_macd_div_bear", "d_macd_div_bull",
+    ]
+    daily_aligned = daily[daily_cols].reindex(d.index, method="ffill")
     for col in daily_aligned.columns:
-        d[col] = daily_aligned[col]
+        d[col] = daily_aligned[col].fillna(0.0)
 
     bos_up   = d["close"] > d["close"].rolling(20).max().shift(1)
     bos_down = d["close"] < d["close"].rolling(20).min().shift(1)
@@ -438,34 +480,40 @@ def build_all_features(
 
     # ── Reversal Zone Detector features (only when reversal_mode_enabled) ────
     if reversal_mode_enabled:
-        # RSI divergence
-        _rsi_win       = 10
-        _ph_roll       = d["high"].rolling(_rsi_win).max()
-        _rsi_h_roll    = d["rsi_14"].rolling(_rsi_win).max()
+        # ── RSI divergence (4H) — window 20 bars = 80h ≈ 3.3 days ───────────────
+        # shift(1) ensures divergence is confirmed by the previous bar, not the
+        # current one that created the new high/low (no lookahead on current candle).
+        # 5% gap threshold is more conservative than the former 3% to reduce noise.
+        _rsi_win    = 20
+        _ph_roll    = d["high"].rolling(_rsi_win).max().shift(1)
+        _rsi_h_roll = d["rsi_14"].rolling(_rsi_win).max().shift(1)
         d["rsi_div_bear"] = (
-            (d["high"] >= _ph_roll) & (d["rsi_14"] < _rsi_h_roll * 0.97)
+            (d["high"] > _ph_roll) & _ph_roll.notna() &
+            (d["rsi_14"] < _rsi_h_roll * 0.95)
         ).astype(float)
-        _pl_roll       = d["low"].rolling(_rsi_win).min()
-        _rsi_l_roll    = d["rsi_14"].rolling(_rsi_win).min()
+        _pl_roll    = d["low"].rolling(_rsi_win).min().shift(1)
+        _rsi_l_roll = d["rsi_14"].rolling(_rsi_win).min().shift(1)
         d["rsi_div_bull"] = (
-            (d["low"] <= _pl_roll) & (d["rsi_14"] > _rsi_l_roll * 1.03)
+            (d["low"] < _pl_roll) & _pl_roll.notna() &
+            (d["rsi_14"] > _rsi_l_roll * 1.05)
         ).astype(float)
 
-        # MACD divergence
-        _macd_win      = 10
-        _price_hh_r    = d["high"].rolling(_macd_win).max()
-        _macd_hh_r     = d["macd_hist"].rolling(_macd_win).max()
+        # ── MACD divergence (4H) — same 20-bar window ────────────────────────────
+        # Removed the (macd_hist < 0) requirement for bear: classic bear divergences
+        # form when the histogram makes a lower high while BOTH values are positive.
+        # Requiring negative histogram meant detecting the divergence too late.
+        _macd_win   = 20
+        _price_hh_r = d["high"].rolling(_macd_win).max().shift(1)
+        _macd_hh_r  = d["macd_hist"].rolling(_macd_win).max().shift(1)
         d["macd_div_bear"] = (
-            (d["high"] >= _price_hh_r) &
-            (d["macd_hist"] < _macd_hh_r * 0.90) &
-            (d["macd_hist"] < 0)
+            (d["high"] > _price_hh_r) & _price_hh_r.notna() &
+            (d["macd_hist"] < _macd_hh_r * 0.85)
         ).astype(float)
-        _price_ll_r    = d["low"].rolling(_macd_win).min()
-        _macd_ll_r     = d["macd_hist"].rolling(_macd_win).min()
+        _price_ll_r = d["low"].rolling(_macd_win).min().shift(1)
+        _macd_ll_r  = d["macd_hist"].rolling(_macd_win).min().shift(1)
         d["macd_div_bull"] = (
-            (d["low"] <= _price_ll_r) &
-            (d["macd_hist"] > _macd_ll_r * 0.90) &
-            (d["macd_hist"] > 0)
+            (d["low"] < _price_ll_r) & _price_ll_r.notna() &
+            (d["macd_hist"] > _macd_ll_r * 0.85)
         ).astype(float)
 
         # Volume climax Z-score
@@ -521,7 +569,11 @@ FEATURE_GROUPS = {
     "cvd_x": ["binance_cvd_slope", "binance_absorption_z", "cross_cvd_div"],
     "ob":  ["ob_bull_dist", "ob_bear_dist", "ob_bull_age", "ob_bear_age",
              "ob_bull_inside", "ob_bear_inside", "ob_bull_active", "ob_bear_active"],
-    "mtf": ["d_ema20_dist", "d_adx", "d_rsi", "d_regime", "mtf_aligned"],
+    "mtf": [
+        "d_ema20_dist", "d_adx", "d_rsi", "d_regime", "mtf_aligned",
+        "d_rsi_div_bear", "d_rsi_div_bull",
+        "d_macd_div_bear", "d_macd_div_bull",
+    ],
     "smc": ["fvg_bull", "fvg_bear", "sweep"],
     "funding": ["funding", "funding_ma24", "funding_z", "funding_std12", "funding_cum48", "premium_z"],
     "oi":  ["oi_raw", "oi_ma_ratio", "oi_delta", "oi_delta_z", "oi_ma24"],

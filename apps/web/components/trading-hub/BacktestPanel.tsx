@@ -1723,6 +1723,9 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   const [reversalRetestWickPct, setReversalRetestWickPct] = useState('0.25');   // R:R 1.88 avg (vs 1.49 at 0.50)
   const [reversalExpiry,        setReversalExpiry]        = useState('3');      // 12h window instead of 8h
   const [reversalConflictBlock, setReversalConflictBlock] = useState(true);
+  const [reversalAdxPeakMin,    setReversalAdxPeakMin]    = useState('30');
+  const [reversalRet48Extreme,  setReversalRet48Extreme]  = useState('6');   // shown as % in UI
+  const [reversalBarsInRegime,  setReversalBarsInRegime]  = useState('20');
   const [compareMode,         setCompareMode]         = useState(false);
 
   // ── Regime quick-selector ────────────────────────────────────────────────────
@@ -1875,6 +1878,9 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     if (p.reversal_retest_wick_pct     !== undefined) setReversalRetestWickPct(String(p.reversal_retest_wick_pct));
     if (p.reversal_retest_expiry_bars  !== undefined) setReversalExpiry(String(p.reversal_retest_expiry_bars));
     if (p.reversal_conflict_block      !== undefined) setReversalConflictBlock(!!p.reversal_conflict_block);
+    if (p.reversal_adx_peak_min        !== undefined) setReversalAdxPeakMin(String(p.reversal_adx_peak_min));
+    if (p.reversal_ret48_extreme       !== undefined) setReversalRet48Extreme(String(Math.round(p.reversal_ret48_extreme * 100)));
+    if (p.reversal_bars_in_regime_min  !== undefined) setReversalBarsInRegime(String(p.reversal_bars_in_regime_min));
   }, []);
 
   useEffect(() => {
@@ -2043,7 +2049,7 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     lgbm_exit_confirm_bars:   parseInt(lgbmConfirm),
     enhanced_exit_enabled:    withAdvanced && lgbmExit && enhancedExit,
     // Advanced signal controls (always active — drawer only)
-    chronos_enabled:               false,
+    chronos_enabled:               useChronos,
     chronos_weight:                parseFloat(advChronosWeight),
     adx_gate_enabled:              advAdxEnabled,
     sweep_gate_enabled:            advSweepEnabled,
@@ -2136,6 +2142,9 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     reversal_retest_expiry_bars:   parseInt(reversalExpiry),
     reversal_conflict_block:       reversalConflictBlock,
     reversal_trend_hold_only:      true,
+    reversal_adx_peak_min:         parseFloat(reversalAdxPeakMin),
+    reversal_ret48_extreme:        parseFloat(reversalRet48Extreme) / 100,
+    reversal_bars_in_regime_min:   parseInt(reversalBarsInRegime),
   });
 
   const downloadConfig = () => {
@@ -3199,9 +3208,9 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                               <span className="w-2 h-2 rounded-full bg-violet-500" />
                               <span className="text-[10px] font-bold text-violet-600 dark:text-violet-400 uppercase tracking-widest">Reversal ({revTrades} trade)</span>
                             </div>
-                            <StatMini label="Win Rate"       value={`${((rev!.win_rate ?? 0) * 100).toFixed(0)}%`} accent={(rev!.win_rate ?? 0) >= 0.5 ? 'text-emerald-500' : 'text-red-400'} />
-                            <StatMini label="Avg Win"        value={`+${((rev!.avg_win_pct ?? 0) * 100).toFixed(2)}%`} accent="text-emerald-500" />
-                            <StatMini label="Avg Loss"       value={`${((rev!.avg_loss_pct ?? 0) * 100).toFixed(2)}%`} accent="text-red-400" />
+                            <StatMini label="Win Rate"       value={`${(rev!.win_rate ?? 0).toFixed(1)}%`} accent={(rev!.win_rate ?? 0) >= 50 ? 'text-emerald-500' : 'text-red-400'} />
+                            <StatMini label="Avg Win"        value={`+${(rev!.avg_win_pct ?? 0).toFixed(2)}%`} accent="text-emerald-500" />
+                            <StatMini label="Avg Loss"       value={`${(rev!.avg_loss_pct ?? 0).toFixed(2)}%`} accent="text-red-400" />
                             <StatMini label="P&L Totale"     value={`$${(rev!.total_pnl_usd ?? 0).toFixed(0)}`} accent={(rev!.total_pnl_usd ?? 0) >= 0 ? 'text-emerald-500' : 'text-red-400'} />
                             <StatMini label="Avg Hold"       value={`${(rev!.avg_holding_h ?? 0).toFixed(1)}h`} />
                           </div>
@@ -3212,9 +3221,9 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                               <span className="w-2 h-2 rounded-full bg-indigo-500" />
                               <span className="text-[10px] font-bold text-indigo-600 dark:text-indigo-400 uppercase tracking-widest">Trend-Following ({trTrades} trade)</span>
                             </div>
-                            <StatMini label="Win Rate"       value={`${((tr!.win_rate ?? 0) * 100).toFixed(0)}%`} accent={(tr!.win_rate ?? 0) >= 0.5 ? 'text-emerald-500' : 'text-red-400'} />
-                            <StatMini label="Avg Win"        value={`+${((tr!.avg_win_pct ?? 0) * 100).toFixed(2)}%`} accent="text-emerald-500" />
-                            <StatMini label="Avg Loss"       value={`${((tr!.avg_loss_pct ?? 0) * 100).toFixed(2)}%`} accent="text-red-400" />
+                            <StatMini label="Win Rate"       value={`${(tr!.win_rate ?? 0).toFixed(1)}%`} accent={(tr!.win_rate ?? 0) >= 50 ? 'text-emerald-500' : 'text-red-400'} />
+                            <StatMini label="Avg Win"        value={`+${(tr!.avg_win_pct ?? 0).toFixed(2)}%`} accent="text-emerald-500" />
+                            <StatMini label="Avg Loss"       value={`${(tr!.avg_loss_pct ?? 0).toFixed(2)}%`} accent="text-red-400" />
                             <StatMini label="P&L Totale"     value={`$${(tr!.total_pnl_usd ?? 0).toFixed(0)}`} accent={(tr!.total_pnl_usd ?? 0) >= 0 ? 'text-emerald-500' : 'text-red-400'} />
                             <StatMini label="Avg Hold"       value={`${(tr!.avg_holding_h ?? 0).toFixed(1)}h`} />
                           </div>
@@ -3594,6 +3603,42 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                           </Tooltip>
                         </>
                       )}
+                      {/* Exhaustion calibration */}
+                      <div className="space-y-3 p-3 rounded-xl bg-slate-100/60 dark:bg-white/[0.03] border border-slate-200 dark:border-white/8">
+                        <p className="text-[9px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest">Soglie Exhaustion</p>
+                        <p className="text-[9px] text-slate-400 dark:text-slate-500 leading-relaxed -mt-1">
+                          Calibrate per mosse di 2–5 giorni su BTC. Abbassare ADX e Ret48 per segnali più frequenti.
+                        </p>
+                        <div className="grid grid-cols-3 gap-2">
+                          <Tooltip text="ADX minimo per attivare exhaustion. 30 = mosse di medio termine. 35+ = solo trend molto forti." pos="top">
+                            <NumInput
+                              label="ADX Picco Min"
+                              value={reversalAdxPeakMin}
+                              onChange={setReversalAdxPeakMin}
+                              step="1" min="20" max="50"
+                            />
+                          </Tooltip>
+                          <Tooltip text="Return minimo su 48 barre (8gg) per classificare la mossa come estrema. Mostrato in %. 6% = soglia BTC moderato." pos="top">
+                            <NumInput
+                              label="Ret 48 Estremo (%)"
+                              value={reversalRet48Extreme}
+                              onChange={setReversalRet48Extreme}
+                              step="1" min="3" max="20"
+                              unit="%"
+                            />
+                          </Tooltip>
+                          <Tooltip text="Barre minime in regime prima che l'inversione sia probabile. 20 ≈ 3gg. 40+ = macro-trend." pos="top">
+                            <NumInput
+                              label="Barre Regime Min"
+                              value={reversalBarsInRegime}
+                              onChange={setReversalBarsInRegime}
+                              step="5" min="5" max="80"
+                              unit="bar"
+                            />
+                          </Tooltip>
+                        </div>
+                      </div>
+
                       <Toggle
                         label="Conflict Block"
                         desc="Se trend e reversal sono in direzioni opposte, blocca entrambi. Raccomandato ON."

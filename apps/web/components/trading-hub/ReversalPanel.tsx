@@ -36,6 +36,7 @@ interface ReversalCurrentResponse {
   result:           ReversalResult | null;
   pending:          ReversalPending | null;
   updated_at:       string;
+  position_open:    boolean;
 }
 
 interface HistoryEntry {
@@ -58,8 +59,8 @@ const COMPONENT_WEIGHTS: Record<keyof ReversalComponents, number> = {
 
 const COMPONENT_LABELS: Record<keyof ReversalComponents, string> = {
   structural: 'Structural (SMC)',
-  momentum:   'Momentum (Div)',
-  exhaustion: 'Exhaustion (ADX)',
+  momentum:   'Momentum (4H+Daily Div)',
+  exhaustion: 'Exhaustion (ADX+RSI)',
   volume:     'Volume (Climax)',
   regime:     'Regime (Risk)',
   funding:    'Funding Rate',
@@ -246,9 +247,13 @@ export const ReversalPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
               </div>
             ) : (
               <div className="flex items-center gap-3 py-2">
-                <div className="w-2.5 h-2.5 rounded-full bg-slate-300 dark:bg-slate-600" />
+                <div className={`w-2.5 h-2.5 rounded-full ${data.reversal_enabled ? 'bg-amber-400' : 'bg-slate-300 dark:bg-slate-600'}`} />
                 <p className="text-sm text-slate-500 dark:text-slate-400">
-                  {data.reversal_enabled ? 'In attesa del prossimo ciclo 4H' : 'Detector disabilitato'}
+                  {!data.reversal_enabled
+                    ? 'Detector disabilitato'
+                    : data.position_open
+                    ? 'Posizione aperta — analisi disponibile al ciclo 4H successivo'
+                    : 'In attesa del primo ciclo 4H dall\'avvio'}
                 </p>
               </div>
             )}

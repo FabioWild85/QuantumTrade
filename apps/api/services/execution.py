@@ -1344,8 +1344,12 @@ class ExecutionEngine:
             latest["bars_in_regime"]    = float(self._regime_signal.bars_in_regime)
 
         # ── Reversal Zone Detection ───────────────────────────────────────────
+        # Always runs when reversal_mode_enabled — regardless of open position.
+        # This keeps _last_reversal_result fresh for the /reversal/current endpoint
+        # and the ReversalPanel UI. Trade opening is gated separately (not self._position
+        # check stays in the signal routing block below).
         _reversal_result = None
-        if getattr(self.config, "reversal_mode_enabled", False) and not self._position:
+        if getattr(self.config, "reversal_mode_enabled", False):
             try:
                 from services.reversal_detector import ReversalZoneDetector
                 _reversal_result = ReversalZoneDetector().score(
@@ -1356,9 +1360,10 @@ class ExecutionEngine:
                 latest["reversal_dir_short"] = 1.0 if _reversal_result.direction == "short" else 0.0
                 self._last_reversal_result   = _reversal_result  # per endpoint /reversal/current
                 log.debug(
-                    "Reversal score=%.3f dir=%s components=%d",
+                    "Reversal score=%.3f dir=%s components=%d position=%s",
                     _reversal_result.score, _reversal_result.direction,
                     _reversal_result.component_count,
+                    "OPEN" if self._position else "none",
                 )
             except Exception as _rev_exc:
                 log.warning("Reversal detector failed (non-blocking): %s", _rev_exc)

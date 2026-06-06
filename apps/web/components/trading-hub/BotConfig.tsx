@@ -149,6 +149,12 @@ interface Config {
   reversal_entry_mode: 'close' | 'limit_retest';
   reversal_retest_wick_pct: number;
   reversal_retest_expiry_bars: number;
+  // Exhaustion calibration parameters
+  reversal_adx_peak_min: number;
+  reversal_ret48_extreme: number;
+  reversal_bars_in_regime_min: number;
+  reversal_consec_bars_min: number;
+  reversal_ema50_dist_extreme: number;
 }
 
 const DEFAULTS: Config = {
@@ -297,6 +303,11 @@ const DEFAULTS: Config = {
   reversal_entry_mode: 'limit_retest' as const,
   reversal_retest_wick_pct: 0.25,       // was 0.50; R:R avg 1.88 vs 1.49 at 0.50
   reversal_retest_expiry_bars: 3,       // was 2; 12h window instead of 8h
+  reversal_adx_peak_min: 30.0,          // lowered from 35: ADX>35 too rare on BTC 4H for short moves
+  reversal_ret48_extreme: 0.06,         // lowered from 0.08: 6% in 8 days is significant on BTC
+  reversal_bars_in_regime_min: 20,      // lowered from 40: targets 2-5 day moves, not macro regimes
+  reversal_consec_bars_min: 5,
+  reversal_ema50_dist_extreme: 3.0,
 };
 
 interface PruningMetrics {
@@ -337,7 +348,7 @@ interface CalibratorStats {
 }
 
 interface RetrainMetrics {
-  status: 'ok' | 'busy' | 'error';
+  status: 'ok' | 'busy' | 'error' | 'background';
   error?: string;
   trained_at?: string;
   elapsed_s?: number;
@@ -564,6 +575,38 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     loadModelRegistry();
   }, [apiBase]);
 
+  // Poll /retrain/status until the retrain completes, then update UI.
+  // Used when a 504 Gateway Timeout occurs (nginx timed out but backend is still running).
+  const pollRetrainCompletion = React.useCallback(async (knownTrainedAt: string | null) => {
+    const MAX_POLLS = 60;  // 60 × 30s = 30 min max wait
+    let polls = 0;
+    const interval = setInterval(async () => {
+      polls++;
+      if (polls > MAX_POLLS) {
+        clearInterval(interval);
+        setRetrainResult({ status: 'error', error: 'Timeout polling: il retrain non si è concluso entro 30 minuti.' });
+        setRetraining(false);
+        return;
+      }
+      try {
+        const r = await fetch(`${apiBase}/retrain/status`);
+        if (!r.ok) return;
+        const d = await r.json();
+        const last = d.last_retrain;
+        // Retrain completed when trained_at changes (new model) and status is ok
+        if (last?.status === 'ok' && last.trained_at !== knownTrainedAt) {
+          clearInterval(interval);
+          setRetrainResult(last);
+          setLastRetrain(last);
+          setModelLoaded(true);
+          loadFeatureImportance();
+          loadPruningStats();
+          setRetraining(false);
+        }
+      } catch { /* retry silently */ }
+    }, 30_000);
+  }, [apiBase, loadFeatureImportance, loadPruningStats]);
+
   const handleRetrain = async () => {
     const optunaNotes = config.use_optuna
       ? `\n\n⚠ Optuna attivo: durata stimata 3–8 minuti (${config.optuna_n_trials} trial).`
@@ -571,12 +614,22 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     if (!confirm(`Avvia retrain manuale di LightGBM?\n\nIl modello verrà ricalcolato sugli ultimi 500 candles (4h). Il processo dura 10–30 secondi.${optunaNotes}`)) return;
     setRetraining(true);
     setRetrainResult(null);
+    let prevTrainedAt: string | null = null;
+    try { prevTrainedAt = (await (await fetch(`${apiBase}/retrain/status`)).json()).last_retrain?.trained_at ?? null; } catch { /* ok */ }
+    let backgroundPolling = false;
     try {
       const r = await fetch(`${apiBase}/retrain`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ use_optuna: config.use_optuna, optuna_n_trials: config.optuna_n_trials }),
       });
+      if (r.status === 504) {
+        // nginx timed out but backend is still running — start background poll
+        backgroundPolling = true;
+        setRetrainResult({ status: 'background' });
+        pollRetrainCompletion(prevTrainedAt);
+        return;
+      }
       if (!r.ok) {
         const text = await r.text().catch(() => '');
         setRetrainResult({ status: 'error', error: `Server error ${r.status}: ${text.slice(0, 200)}` });
@@ -593,7 +646,7 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     } catch (e) {
       setRetrainResult({ status: 'error', error: String(e) });
     } finally {
-      setRetraining(false);
+      if (!backgroundPolling) setRetraining(false);
     }
   };
 
@@ -613,6 +666,9 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     )) return;
     setRetraining(true);
     setRetrainResult(null);
+    let prevTrainedAt: string | null = null;
+    try { prevTrainedAt = (await (await fetch(`${apiBase}/retrain/status`)).json()).last_retrain?.trained_at ?? null; } catch { /* ok */ }
+    let backgroundPolling = false;
     try {
       const r = await fetch(`${apiBase}/retrain`, {
         method: 'POST',
@@ -623,6 +679,12 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
           optuna_n_trials: config.optuna_n_trials,
         }),
       });
+      if (r.status === 504) {
+        backgroundPolling = true;
+        setRetrainResult({ status: 'background' });
+        pollRetrainCompletion(prevTrainedAt);
+        return;
+      }
       if (!r.ok) {
         const text = await r.text().catch(() => '');
         setRetrainResult({ status: 'error', error: `Server error ${r.status}: ${text.slice(0, 200)}` });
@@ -639,7 +701,7 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     } catch (e) {
       setRetrainResult({ status: 'error', error: String(e) });
     } finally {
-      setRetraining(false);
+      if (!backgroundPolling) setRetraining(false);
     }
   };
 
@@ -1603,6 +1665,47 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                 <p className="text-[9px] text-slate-400 dark:text-slate-500">Le inversioni si esauriscono in tempi più brevi del trend. Default 6 barre = 24h. Sempre attivo per i trade reversal.</p>
               </div>
 
+              {/* Exhaustion calibration — 3 parametri chiave per lo use case */}
+              <div className="flex flex-col gap-3 p-3 rounded-lg bg-slate-50 dark:bg-white/[0.03] border border-slate-200 dark:border-white/8">
+                <p className="text-[9px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest">Soglie Exhaustion</p>
+                <p className="text-[9px] text-slate-400 dark:text-slate-500 leading-relaxed -mt-1">
+                  Calibrano il componente che misura l'esaurimento della mossa. Ottimizzati per mosse di 2-5 giorni su BTC.
+                </p>
+                {/* ADX Peak Min */}
+                <div className="flex flex-col gap-1">
+                  <div className="flex justify-between items-center">
+                    <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">ADX Picco Min</span>
+                    <span className="text-[10px] font-bold text-violet-600 dark:text-violet-400">{config.reversal_adx_peak_min.toFixed(0)}</span>
+                  </div>
+                  <input type="range" min={20} max={50} step={1} value={config.reversal_adx_peak_min}
+                    onChange={e => setConfig(c => ({ ...c, reversal_adx_peak_min: parseFloat(e.target.value) }))}
+                    className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-violet-500" />
+                  <p className="text-[9px] text-slate-400 dark:text-slate-500">ADX minimo per attivare il check exhaustion. 30 cattura mosse di medio termine; 35+ solo trend molto forti.</p>
+                </div>
+                {/* Ret48 Extreme */}
+                <div className="flex flex-col gap-1">
+                  <div className="flex justify-between items-center">
+                    <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">Ret 48 barre estremo</span>
+                    <span className="text-[10px] font-bold text-violet-600 dark:text-violet-400">{(config.reversal_ret48_extreme * 100).toFixed(0)}%</span>
+                  </div>
+                  <input type="range" min={3} max={20} step={1} value={config.reversal_ret48_extreme * 100}
+                    onChange={e => setConfig(c => ({ ...c, reversal_ret48_extreme: parseFloat(e.target.value) / 100 }))}
+                    className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-violet-500" />
+                  <p className="text-[9px] text-slate-400 dark:text-slate-500">Return minimo sulle ultime 48 barre (8 giorni 4H) per classificare la mossa come "estrema". 6% = soglia per BTC moderato.</p>
+                </div>
+                {/* Bars in regime min */}
+                <div className="flex flex-col gap-1">
+                  <div className="flex justify-between items-center">
+                    <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">Barre Regime Min</span>
+                    <span className="text-[10px] font-bold text-violet-600 dark:text-violet-400">{config.reversal_bars_in_regime_min} bar = {(config.reversal_bars_in_regime_min * 4 / 24).toFixed(1)}gg</span>
+                  </div>
+                  <input type="range" min={5} max={80} step={5} value={config.reversal_bars_in_regime_min}
+                    onChange={e => setConfig(c => ({ ...c, reversal_bars_in_regime_min: parseInt(e.target.value) }))}
+                    className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-violet-500" />
+                  <p className="text-[9px] text-slate-400 dark:text-slate-500">Barre minime in un regime prima che l'inversione sia probabile. 20 = ~3 giorni (mosse brevi). 40+ = macro-trend.</p>
+                </div>
+              </div>
+
               {/* Limit retest params — solo se entry_mode == limit_retest */}
               {config.reversal_entry_mode === 'limit_retest' && (
                 <div className="flex flex-col gap-3 p-3 rounded-lg bg-violet-50 dark:bg-violet-500/5 border border-violet-100 dark:border-violet-500/15">
@@ -2264,6 +2367,8 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
           <div className={`flex items-start gap-3 rounded-xl px-4 py-3 mb-5 ${
             retrainResult.status === 'ok'
               ? 'bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/30'
+              : retrainResult.status === 'background'
+              ? 'bg-blue-50 dark:bg-blue-500/10 border border-blue-200 dark:border-blue-500/30'
               : 'bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/30'
           }`}>
             <div className="flex-1">
@@ -2284,6 +2389,22 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                     ))}
                   </div>
                 </>
+              ) : retrainResult.status === 'background' ? (
+                <div>
+                  <div className="flex items-center gap-2 mb-1">
+                    <svg className="w-3.5 h-3.5 text-blue-500 animate-spin flex-shrink-0" viewBox="0 0 24 24" fill="none">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4l3-3-3-3v4a8 8 0 00-8 8h4z"/>
+                    </svg>
+                    <p className="text-[11px] font-bold text-blue-700 dark:text-blue-400 uppercase tracking-wide">
+                      Retrain in corso sul server
+                    </p>
+                  </div>
+                  <p className="text-[10px] text-blue-600 dark:text-blue-400 leading-relaxed">
+                    Il modello sta girando in background (connessione HTTP scaduta dopo 30 min di nginx, ma il processo Python continua).
+                    La UI si aggiornerà automaticamente ogni 30 secondi quando il retrain sarà completato.
+                  </p>
+                </div>
               ) : retrainResult.status === 'busy' ? (
                 <p className="text-[11px] font-bold text-amber-700 dark:text-amber-400 uppercase tracking-wide">
                   Retrain già in corso — riprova tra qualche secondo
