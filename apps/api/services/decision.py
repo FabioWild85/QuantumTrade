@@ -89,6 +89,10 @@ class DecisionEngine:
         exhaustion_rsi_high:  float = 72.0,
         exhaustion_ret48_pct: float = 6.0,
         exhaustion_boost:     float = 0.06,
+        # ATR% Volatility Gate
+        atr_pct_gate_enabled: bool  = False,
+        atr_pct_min:          float = 0.008,
+        atr_pct_mode:         str   = "scale",
     ):
         self.directional_threshold       = directional_threshold
         self.adx_gate                    = adx_gate
@@ -140,6 +144,10 @@ class DecisionEngine:
         self.exhaustion_rsi_high   = exhaustion_rsi_high
         self.exhaustion_ret48_pct  = exhaustion_ret48_pct
         self.exhaustion_boost      = exhaustion_boost
+        # ATR% Volatility Gate
+        self.atr_pct_gate_enabled  = atr_pct_gate_enabled
+        self.atr_pct_min           = atr_pct_min
+        self.atr_pct_mode          = atr_pct_mode
 
     def decide(
         self,
@@ -203,6 +211,30 @@ class DecisionEngine:
         if self.adx_gate_enabled and adx < self.adx_gate:
             reasoning.append(f"GATE: ADX {adx:.1f} < {self.adx_gate} — market compressing, no-trade")
             return self._no_trade(reasoning, dir_prob, p10, p50, p90, features, c2_uncertainty)
+
+        # ── Gating Level 1b: ATR% Volatility Gate ────────────────────────────
+        # Protects against low-volatility environments where round-trip fees (~0.09%)
+        # consume a disproportionate share of expected wins. ATR% = ATR_14 / price.
+        # Empirical threshold: 0.8% on BTC 4H (below this: win_rate ~20%, DD ~12%).
+        # "block" mode: immediate no_trade. "scale" mode: size reduced proportionally,
+        # floored at ×0.10 so the bot never freezes entirely in scale mode.
+        _atr_size_mult = 1.0
+        if self.atr_pct_gate_enabled and current_price > 0:
+            _atr_14  = float(features.get("atr_14") or 0.0)
+            _atr_pct = _atr_14 / current_price
+            if _atr_pct < self.atr_pct_min:
+                if self.atr_pct_mode == "block":
+                    reasoning.append(
+                        f"GATE: ATR_PCT {_atr_pct*100:.2f}% < {self.atr_pct_min*100:.2f}% "
+                        f"— low-volatility regime, fee drag exceeds expected profit"
+                    )
+                    return self._no_trade(reasoning, dir_prob, p10, p50, p90, features, c2_uncertainty)
+                else:  # scale
+                    _atr_size_mult = max(0.10, _atr_pct / self.atr_pct_min)
+                    reasoning.append(
+                        f"ATR_PCT_SCALE: {_atr_pct*100:.2f}% / {self.atr_pct_min*100:.2f}% "
+                        f"→ size×{_atr_size_mult:.2f} (low-volatility, fee protection)"
+                    )
 
         # ── Gating Level 2: Liquidity sweep (potential reversal) ─────────────
         # In directional mode: pass through and defer the direction check until
@@ -538,7 +570,7 @@ class DecisionEngine:
                 reasoning.append(f"NOTE: C2 median ({p50:.1f}) below entry — minor bearish bias in forecast")
 
             is_counter_trend = (bias_regime == -1)
-            sf = (counter_trend_size_factor if is_counter_trend else 1.0) * iv_sf
+            sf = (counter_trend_size_factor if is_counter_trend else 1.0) * iv_sf * _atr_size_mult
             thr_used = threshold_long
             reasoning.append(
                 f"LONG: P(up)={ensemble_prob:.3f} > {thr_used:.2f}, C2_p50={p50:.1f}"
@@ -606,7 +638,7 @@ class DecisionEngine:
                 reasoning.append(f"NOTE: C2 median ({p50:.1f}) above entry — minor bullish bias in forecast")
 
             is_counter_trend = (bias_regime == 1)
-            sf = (counter_trend_size_factor if is_counter_trend else 1.0) * iv_sf
+            sf = (counter_trend_size_factor if is_counter_trend else 1.0) * iv_sf * _atr_size_mult
             thr_used = threshold_short
             reasoning.append(
                 f"SHORT: P(down)={short_prob:.3f} > {thr_used:.2f}, C2_p50={p50:.1f}"

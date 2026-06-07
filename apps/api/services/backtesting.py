@@ -124,6 +124,10 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
     exhaustion_rsi_high   = getattr(cfg, "exhaustion_rsi_high",   72.0)
     exhaustion_ret48_pct  = getattr(cfg, "exhaustion_ret48_pct",   6.0)
     exhaustion_boost      = getattr(cfg, "exhaustion_boost",       0.06)
+    # ATR% Volatility Gate
+    atr_pct_gate_enabled  = getattr(cfg, "atr_pct_gate_enabled",  False)
+    atr_pct_min           = getattr(cfg, "atr_pct_min",           0.008)
+    atr_pct_mode          = getattr(cfg, "atr_pct_mode",          "scale")
     # Pullback Entry
     pullback_entry_enabled    = getattr(cfg, "pullback_entry_enabled",    False)
     pullback_impulse_atr_mult = getattr(cfg, "pullback_impulse_atr_mult", 1.5)
@@ -147,6 +151,7 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
     reversal_entry_mode          = getattr(cfg, "reversal_entry_mode",          "limit_retest")
     reversal_retest_wick_pct     = getattr(cfg, "reversal_retest_wick_pct",     0.25)
     reversal_retest_expiry_bars  = getattr(cfg, "reversal_retest_expiry_bars",  3)
+    reversal_guard_only          = getattr(cfg, "reversal_guard_only",          False)
     fng_extreme_fear_thr  = getattr(cfg, "fng_extreme_fear_thr",  20.0)
     fng_fear_thr          = getattr(cfg, "fng_fear_thr",          35.0)
     fng_greed_thr         = getattr(cfg, "fng_greed_thr",         65.0)
@@ -302,6 +307,10 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
         exhaustion_rsi_high=exhaustion_rsi_high,
         exhaustion_ret48_pct=exhaustion_ret48_pct,
         exhaustion_boost=exhaustion_boost,
+        # ATR% Volatility Gate
+        atr_pct_gate_enabled=atr_pct_gate_enabled,
+        atr_pct_min=atr_pct_min,
+        atr_pct_mode=atr_pct_mode,
     )
     risk = RiskManager(
         sl_atr_mult=sl_atr_mult,
@@ -350,6 +359,7 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
         "gate_late_entry":          0,
         "gate_path_obstruction":    0,
         "gate_consec_bars":         0,
+        "gate_atr_pct":             0,
         # Bias / threshold modifiers
         "mod_mtf_alignment":        0,
         "mod_regime_bias":          0,
@@ -359,6 +369,7 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
         "mod_iv_size_reduction":    0,
         "mod_exhaustion_guard":     0,
         "mod_absorption_filter":    0,
+        "mod_atr_pct_scale":        0,
         "mod_sweep_conf_bonus":     0,
         # Entry — structural SL/TP overrides
         "sl_structural_ob":         0,
@@ -868,8 +879,8 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                         and _rev_res.component_count >= reversal_min_components
                     ):
                         _trend_action = result.action
-                        if _trend_action == "no_trade":
-                            # Case 1: trend hold → reversal takes control
+                        if _trend_action == "no_trade" and not reversal_guard_only:
+                            # Case 1: trend hold → reversal takes control (skipped in guard_only mode)
                             result = DecisionResult(
                                 action               = _rev_res.direction,
                                 confidence           = _rev_res.score,
@@ -884,12 +895,12 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                                 _is_reversal         = True,
                             )
                             param_stats["rev_signals"] += 1
-                        elif _trend_action == _rev_res.direction and not reversal_trend_hold_only:
-                            # Case 2: boost
+                        elif _trend_action == _rev_res.direction and not reversal_trend_hold_only and not reversal_guard_only:
+                            # Case 2: boost (skipped in guard_only mode)
                             result.confidence = min(1.0, result.confidence + 0.05)
                             param_stats["rev_trend_boost"] += 1
-                        elif _trend_action != _rev_res.direction and reversal_conflict_block:
-                            # Case 3: conflict block
+                        elif _trend_action != _rev_res.direction and _trend_action != "no_trade" and reversal_conflict_block:
+                            # Case 3: conflict block (always active when reversal_conflict_block=True)
                             result.action = "no_trade"
                             param_stats["rev_conflict_block"] += 1
                 except Exception as _rev_exc:
@@ -911,6 +922,7 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                 if "FILTER: LateEntry"       in _line: param_stats["gate_late_entry"]        += 1; break
                 if "FILTER: PathObstruction" in _line: param_stats["gate_path_obstruction"]  += 1; break
                 if "FILTER: ConsecBars"      in _line: param_stats["gate_consec_bars"]       += 1; break
+                if "GATE: ATR_PCT"           in _line: param_stats["gate_atr_pct"]           += 1; break
             # Modifier loop: per-evaluation flags avoid double-count from multi-line modifiers
             # (e.g. ExhaustionGuard adds up to 2 lines when both long and short conditions fire).
             _mods_seen: set = set()
@@ -927,6 +939,8 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                     param_stats["mod_exhaustion_guard"] += 1; _mods_seen.add("mod_exhaust")
                 if "AbsorptionFilter:" in _line and "mod_abs" not in _mods_seen:
                     param_stats["mod_absorption_filter"]+= 1; _mods_seen.add("mod_abs")
+                if "ATR_PCT_SCALE:"    in _line and "mod_atr" not in _mods_seen:
+                    param_stats["mod_atr_pct_scale"]    += 1; _mods_seen.add("mod_atr")
                 if "SweepConf:"       in _line and "mod_sweep" not in _mods_seen:
                     param_stats["mod_sweep_conf_bonus"] += 1; _mods_seen.add("mod_sweep")
             if result.action == "long":
@@ -1155,6 +1169,7 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
         "gate_late_entry":        late_entry_filter_enabled,
         "gate_path_obstruction":  path_obstruction_enabled,
         "gate_consec_bars":       consec_bars_filter_enabled,
+        "gate_atr_pct":           atr_pct_gate_enabled and atr_pct_mode == "block",
         # Modifiers
         "mod_mtf_alignment":      mtf_alignment_enabled,
         "mod_regime_bias":        regime_bias_enabled,
@@ -1164,6 +1179,7 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
         "mod_iv_size_reduction":  False,  # options IV not simulated in backtest
         "mod_exhaustion_guard":   exhaustion_guard_enabled,
         "mod_absorption_filter":  absorption_filter_enabled,
+        "mod_atr_pct_scale":      atr_pct_gate_enabled and atr_pct_mode == "scale",
         "mod_sweep_conf_bonus":   sweep_gate_directional,
         # Structural SL/TP
         "sl_structural_ob":       structural_sl_enabled,
@@ -1186,7 +1202,7 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
         "rev_pending_set":        reversal_mode_enabled and reversal_entry_mode == "limit_retest",
         "rev_pending_triggered":  reversal_mode_enabled and reversal_entry_mode == "limit_retest",
         "rev_pending_expired":    reversal_mode_enabled and reversal_entry_mode == "limit_retest",
-        "rev_conflict_block":     reversal_mode_enabled and reversal_conflict_block,
+        "rev_conflict_block":     reversal_mode_enabled,  # tracked whenever reversal is on, regardless of conflict_block toggle
         "rev_trend_boost":        reversal_mode_enabled and not reversal_trend_hold_only,
         # Data sources (no runtime counter — on/off only)
         "data_binance_cvd":       binance_cvd_enabled,

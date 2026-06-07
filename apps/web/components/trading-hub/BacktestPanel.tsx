@@ -52,6 +52,7 @@ interface ParamStats {
   gate_late_entry: number;
   gate_path_obstruction: number;
   gate_consec_bars: number;
+  gate_atr_pct: number;
   // bias/modifiers
   mod_mtf_alignment: number;
   mod_regime_bias: number;
@@ -61,6 +62,7 @@ interface ParamStats {
   mod_iv_size_reduction: number;
   mod_exhaustion_guard: number;
   mod_absorption_filter: number;
+  mod_atr_pct_scale: number;
   mod_sweep_conf_bonus: number;
   // structural SL/TP overrides
   sl_structural_ob: number;
@@ -797,6 +799,7 @@ const ParamActivity: React.FC<{ ps: ParamStats; cfg?: Record<string, boolean> }>
         { key: 'gate_late_entry',       label: 'Late Entry Filter (entry troppo lontana da OB)', count: ps.gate_late_entry,  pct: pct(ps.gate_late_entry) },
         { key: 'gate_path_obstruction', label: 'Path Obstruction (OB opposto blocca il percorso)', count: ps.gate_path_obstruction, pct: pct(ps.gate_path_obstruction) },
         { key: 'gate_consec_bars',      label: 'Consecutive Bars Filter (trend overextended)', count: ps.gate_consec_bars,  pct: pct(ps.gate_consec_bars) },
+        { key: 'gate_atr_pct',          label: 'ATR% Volatility Gate (bassa volatilità, fee drag)', count: ps.gate_atr_pct ?? 0, pct: pct(ps.gate_atr_pct ?? 0) },
       ],
     },
     {
@@ -810,7 +813,8 @@ const ParamActivity: React.FC<{ ps: ParamStats; cfg?: Record<string, boolean> }>
         { key: 'mod_funding_bias',       label: 'Funding Rate Bias (soglia adattata al funding)',  count: ps.mod_funding_bias,       pct: pct(ps.mod_funding_bias) },
         { key: 'mod_fng_bias',           label: 'Fear & Greed Bias (soglia contrarian)',            count: ps.mod_fng_bias,           pct: pct(ps.mod_fng_bias) },
         { key: 'mod_exhaustion_guard',   label: 'Exhaustion Guard (RSI estremo o ret_48 overextended)',     count: ps.mod_exhaustion_guard,   pct: pct(ps.mod_exhaustion_guard) },
-        { key: 'mod_absorption_filter',  label: 'Absorption Filter (volume anomalo, soglia +0.03)', count: ps.mod_absorption_filter, pct: pct(ps.mod_absorption_filter) },
+        { key: 'mod_absorption_filter',  label: 'Absorption Filter (volume anomalo, soglia +0.03)', count: ps.mod_absorption_filter,  pct: pct(ps.mod_absorption_filter) },
+        { key: 'mod_atr_pct_scale',      label: 'ATR% Scale (size ridotta per bassa volatilità)',   count: ps.mod_atr_pct_scale ?? 0, pct: pct(ps.mod_atr_pct_scale ?? 0), note: (ps.mod_atr_pct_scale ?? 0) > 0 ? `${pct(ps.mod_atr_pct_scale ?? 0)}% delle candele` : undefined },
         { key: 'mod_sweep_conf_bonus',   label: 'Sweep Confluenza direzionale (bonus -0.03)',       count: ps.mod_sweep_conf_bonus,   pct: pct(ps.mod_sweep_conf_bonus) },
       ],
     },
@@ -860,14 +864,14 @@ const ParamActivity: React.FC<{ ps: ParamStats; cfg?: Record<string, boolean> }>
         { key: 'pb_decayed',       label: 'Segnale decaduto (prezzo fuori range o timeout)',   count: ps.pb_decayed ?? 0,       pct: (ps.pb_activated ?? 0) > 0 ? pct(ps.pb_decayed ?? 0, ps.pb_activated!) : 0, note: (ps.pb_activated ?? 0) > 0 ? `${pct(ps.pb_decayed ?? 0, ps.pb_activated!)}% delle attivazioni` : undefined },
       ],
     }] : []),
-    // Reversal: shown only when enabled or when any signal was detected
-    ...((isOn('rev_signals') || (ps.rev_signals ?? 0) > 0) ? [{
+    // Reversal: shown when enabled OR when conflict blocks fired (guard_only case: rev_signals=0 but conflict_block>0)
+    ...((isOn('rev_signals') || isOn('rev_conflict_block') || (ps.rev_signals ?? 0) > 0 || (ps.rev_conflict_block ?? 0) > 0) ? [{
       title: 'Reversal Zone Detector',
       color: 'border-violet-200 dark:border-violet-500/20',
       dot: 'bg-violet-500',
       rows: [
-        { key: 'rev_signals',      label: 'Segnali reversal rilevati (score ≥ soglia, dir ≠ None)', count: ps.rev_signals ?? 0, pct: ps.bars_evaluated > 0 ? pct(ps.rev_signals ?? 0, ps.bars_evaluated) : 0, note: ps.bars_evaluated > 0 ? `${pct(ps.rev_signals ?? 0, ps.bars_evaluated)}% delle barre` : undefined },
-        { key: 'rev_conflict_block',label: 'Conflict block (segnale opposto al trend → bloccato)',  count: ps.rev_conflict_block ?? 0, pct: ps.bars_evaluated > 0 ? pct(ps.rev_conflict_block ?? 0, ps.bars_evaluated) : 0, note: ps.bars_evaluated > 0 ? `${pct(ps.rev_conflict_block ?? 0, ps.bars_evaluated)}% delle barre` : undefined },
+        { key: 'rev_signals',       alwaysShow: true, label: 'Trade reversal aperti (score ≥ soglia, guard_only=OFF)', count: ps.rev_signals ?? 0, pct: ps.bars_evaluated > 0 ? pct(ps.rev_signals ?? 0, ps.bars_evaluated) : 0, note: ps.bars_evaluated > 0 ? `${pct(ps.rev_signals ?? 0, ps.bars_evaluated)}% delle barre` : undefined },
+        { key: 'rev_conflict_block', alwaysShow: true, label: 'Trade trend bloccati dal Reversal (esaurimento rilevato)', count: ps.rev_conflict_block ?? 0, pct: ps.bars_evaluated > 0 ? pct(ps.rev_conflict_block ?? 0, ps.bars_evaluated) : 0, note: ps.bars_evaluated > 0 ? `${pct(ps.rev_conflict_block ?? 0, ps.bars_evaluated)}% delle barre` : undefined },
         ...((ps.rev_pending_set ?? 0) > 0 || isOn('rev_pending_set') ? [
           { key: 'rev_pending_set',      label: 'Pending creati (limit-retest mode)',                              count: ps.rev_pending_set ?? 0,      pct: (ps.rev_signals ?? 0) > 0 ? pct(ps.rev_pending_set ?? 0, ps.rev_signals!) : 0,      note: (ps.rev_signals ?? 0) > 0 ? `${pct(ps.rev_pending_set ?? 0, ps.rev_signals!)}% dei segnali` : undefined },
           { key: 'rev_pending_triggered',label: 'Pending triggerati (retest raggiunto → trade aperto)',            count: ps.rev_pending_triggered ?? 0, pct: (ps.rev_pending_set ?? 0) > 0 ? pct(ps.rev_pending_triggered ?? 0, ps.rev_pending_set!) : 0, note: (ps.rev_pending_set ?? 0) > 0 ? `${pct(ps.rev_pending_triggered ?? 0, ps.rev_pending_set!)}% dei pending` : undefined },
@@ -1722,10 +1726,16 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   const [reversalEntryMode,     setReversalEntryMode]     = useState<'limit_retest' | 'close'>('close');  // 'close' for backtest diagnosability; switch to limit_retest after validating signals
   const [reversalRetestWickPct, setReversalRetestWickPct] = useState('0.25');   // R:R 1.88 avg (vs 1.49 at 0.50)
   const [reversalExpiry,        setReversalExpiry]        = useState('3');      // 12h window instead of 8h
-  const [reversalConflictBlock, setReversalConflictBlock] = useState(true);
+  const [reversalConflictBlock,  setReversalConflictBlock]  = useState(true);
+  const [reversalTrendHoldOnly,  setReversalTrendHoldOnly]  = useState(true);
+  const [reversalGuardOnly,      setReversalGuardOnly]      = useState(false);
   const [reversalAdxPeakMin,    setReversalAdxPeakMin]    = useState('30');
   const [reversalRet48Extreme,  setReversalRet48Extreme]  = useState('6');   // shown as % in UI
   const [reversalBarsInRegime,  setReversalBarsInRegime]  = useState('20');
+  // ATR% Volatility Gate
+  const [atrPctGateEnabled, setAtrPctGateEnabled] = useState(false);
+  const [atrPctMin,         setAtrPctMin]         = useState('0.8');  // shown as % in UI
+  const [atrPctMode,        setAtrPctMode]         = useState<'block' | 'scale'>('scale');
   const [compareMode,         setCompareMode]         = useState(false);
 
   // ── Regime quick-selector ────────────────────────────────────────────────────
@@ -1878,9 +1888,14 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     if (p.reversal_retest_wick_pct     !== undefined) setReversalRetestWickPct(String(p.reversal_retest_wick_pct));
     if (p.reversal_retest_expiry_bars  !== undefined) setReversalExpiry(String(p.reversal_retest_expiry_bars));
     if (p.reversal_conflict_block      !== undefined) setReversalConflictBlock(!!p.reversal_conflict_block);
+    if (p.reversal_trend_hold_only     !== undefined) setReversalTrendHoldOnly(!!p.reversal_trend_hold_only);
+    if (p.reversal_guard_only          !== undefined) setReversalGuardOnly(!!p.reversal_guard_only);
     if (p.reversal_adx_peak_min        !== undefined) setReversalAdxPeakMin(String(p.reversal_adx_peak_min));
     if (p.reversal_ret48_extreme       !== undefined) setReversalRet48Extreme(String(Math.round(p.reversal_ret48_extreme * 100)));
     if (p.reversal_bars_in_regime_min  !== undefined) setReversalBarsInRegime(String(p.reversal_bars_in_regime_min));
+    if (p.atr_pct_gate_enabled         !== undefined) setAtrPctGateEnabled(!!p.atr_pct_gate_enabled);
+    if (p.atr_pct_min                  !== undefined) setAtrPctMin(String(Math.round(p.atr_pct_min * 1000) / 10));
+    if (p.atr_pct_mode                 !== undefined) setAtrPctMode(p.atr_pct_mode as 'block' | 'scale');
   }, []);
 
   useEffect(() => {
@@ -2141,10 +2156,14 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     reversal_retest_wick_pct:      parseFloat(reversalRetestWickPct),
     reversal_retest_expiry_bars:   parseInt(reversalExpiry),
     reversal_conflict_block:       reversalConflictBlock,
-    reversal_trend_hold_only:      true,
+    reversal_trend_hold_only:      reversalTrendHoldOnly,
+    reversal_guard_only:           reversalGuardOnly,
     reversal_adx_peak_min:         parseFloat(reversalAdxPeakMin),
     reversal_ret48_extreme:        parseFloat(reversalRet48Extreme) / 100,
     reversal_bars_in_regime_min:   parseInt(reversalBarsInRegime),
+    atr_pct_gate_enabled:          atrPctGateEnabled,
+    atr_pct_min:                   parseFloat(atrPctMin) / 100,
+    atr_pct_mode:                  atrPctMode,
   });
 
   const downloadConfig = () => {
@@ -2205,6 +2224,7 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
       `Late Entry Filter:      ${lateEntryFilter ? `ATTIVO — max OB dist ${lateEntryMaxObDist} ATR` : 'DISATTIVATO'}`,
       `Path Obstruction Gate:  ${pathObstruction ? `ATTIVO — max dist contrario ${pathObstMaxDist} ATR` : 'DISATTIVATO'}`,
       `Consecutive Bars Filter:${consecBarsFilter ? ` ATTIVO — max long ${consecBarsMaxLong} bar | max short ${consecBarsMaxShort} bar` : ' DISATTIVATO'}`,
+      `ATR% Volatility Gate:   ${atrPctGateEnabled ? `ATTIVO — soglia ${atrPctMin}% · modalità ${atrPctMode === 'block' ? 'Blocco Netto' : 'Riduzione Graduale'}` : 'DISATTIVATO'}`,
       '',
       '━━━ BIAS DI MERCATO ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
       `Funding Rate Bias:      ${fundingGate ? `ATTIVO — lookback ${fundingGateLookback} bar · high ${(parseFloat(fundingHighThr)*10000).toFixed(1)}bps · extreme ${(parseFloat(fundingExtremeThr)*10000).toFixed(1)}bps · Δ${fundingBiasDelta}` : 'DISATTIVATO'}`,
@@ -2222,6 +2242,7 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
         `  SL / TP:              ${reversalSlAtr}×ATR / ${reversalTpAtr}×ATR · R:R min ${reversalRrMin}:1`,
         `  Size factor:          ${Math.round(parseFloat(reversalSizeFactor)*100)}% · Max hold ${reversalMaxHold} barre (${parseInt(reversalMaxHold)*4}h)`,
         `  Conflict block:       ${reversalConflictBlock ? 'ON (blocca se trend opposto)' : 'OFF'}`,
+        `  Trend hold only:      ${reversalTrendHoldOnly ? 'ON' : 'OFF'} · Guard only: ${reversalGuardOnly ? 'ON (solo blocco)' : 'OFF'}`,
         `  IV Bias:              Neutro in backtest (iv_7d_percentile=50 fisso — dati Deribit non disponibili storicamente)`,
       ] : []),
       ...(pullbackEnabled ? [
@@ -3441,6 +3462,48 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                       </div>
                     )}
                   </div>
+                  {/* ATR% Volatility Gate */}
+                  <div className="space-y-3">
+                    <Toggle
+                      label="ATR% Volatility Gate"
+                      desc="Blocca o riduce la size quando ATR% (ATR_14/prezzo) scende sotto soglia. Protegge dal fee-drag nei range a bassa volatilità. Soglia empirica BTC 4H: 0.8%."
+                      checked={atrPctGateEnabled}
+                      onChange={setAtrPctGateEnabled}
+                    />
+                    {atrPctGateEnabled && (
+                      <div className="pl-1 flex flex-col gap-3">
+                        <Tooltip text="Soglia ATR% sotto cui il gate si attiva (ATR_14/close × 100). Default 0.8% calibrato su BTC 4H storico. A $100k: 0.8% = ATR < $800." pos="top" width="wide">
+                          <NumInput
+                            label="Soglia ATR% minima"
+                            value={atrPctMin}
+                            onChange={setAtrPctMin}
+                            step="0.1" min="0.3" max="3.0"
+                            unit="%"
+                          />
+                        </Tooltip>
+                        <div className="flex flex-col gap-1.5">
+                          <span className="text-[9px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest">Modalità di risposta</span>
+                          <div className="flex gap-2">
+                            {(['scale', 'block'] as const).map(m => (
+                              <button key={m} onClick={() => setAtrPctMode(m)}
+                                className={`flex-1 py-1.5 px-2 rounded-lg text-[10px] font-bold border transition-all ${atrPctMode === m
+                                  ? m === 'scale'
+                                    ? 'bg-amber-500 text-white border-amber-500'
+                                    : 'bg-red-500 text-white border-red-500'
+                                  : 'bg-white dark:bg-white/5 text-slate-500 border-slate-200 dark:border-white/10'}`}>
+                                {m === 'scale' ? '📉 Riduzione Graduale' : '🚫 Blocco Netto'}
+                              </button>
+                            ))}
+                          </div>
+                          <p className="text-[9px] text-slate-400 dark:text-slate-500 leading-relaxed">
+                            {atrPctMode === 'scale'
+                              ? 'Size ridotta linearmente (ATR_curr/soglia), floor ×0.10. Il bot non si blocca mai del tutto.'
+                              : 'Nessun trade quando ATR% < soglia. Uscita immediata come il gate ADX.'}
+                          </p>
+                        </div>
+                      </div>
+                    )}
+                  </div>
                   <Toggle
                     label="Binance Cross-Exchange CVD"
                     desc="Fetcha taker_buy_vol da Binance 4H per calcolare CVD reale (~60% del volume BTC perp). Aggiunge 3 feature: binance_cvd_slope, binance_absorption_z, cross_cvd_div. Utile solo dopo un retrain con questo toggle attivo."
@@ -3644,6 +3707,18 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                         desc="Se trend e reversal sono in direzioni opposte, blocca entrambi. Raccomandato ON."
                         checked={reversalConflictBlock}
                         onChange={setReversalConflictBlock}
+                      />
+                      <Toggle
+                        label="Solo su Trend Hold"
+                        desc="ON = reversal apre solo quando trend dice no-trade. OFF = apre anche quando trend concorda (boost). Raccomandato ON."
+                        checked={reversalTrendHoldOnly}
+                        onChange={setReversalTrendHoldOnly}
+                      />
+                      <Toggle
+                        label="Guard Only (solo blocco)"
+                        desc="ON = nessun trade contro-trend; il detector blocca solo i trade trend in zona di esaurimento. OFF = comportamento completo."
+                        checked={reversalGuardOnly}
+                        onChange={setReversalGuardOnly}
                       />
                     </div>
                   )}

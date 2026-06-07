@@ -199,6 +199,10 @@ class BotConfig:
         self.exhaustion_rsi_high   = kw.get("exhaustion_rsi_high",   72.0)
         self.exhaustion_ret48_pct  = kw.get("exhaustion_ret48_pct",   6.0)
         self.exhaustion_boost      = kw.get("exhaustion_boost",       0.06)
+        # ATR% Volatility Gate
+        self.atr_pct_gate_enabled  = kw.get("atr_pct_gate_enabled",  False)
+        self.atr_pct_min           = kw.get("atr_pct_min",           0.008)
+        self.atr_pct_mode          = kw.get("atr_pct_mode",          "scale")
         # Pullback Entry — delayed entry on strong impulse candles
         self.pullback_entry_enabled    = kw.get("pullback_entry_enabled",    False)
         self.pullback_impulse_atr_mult = kw.get("pullback_impulse_atr_mult", 1.2)
@@ -248,6 +252,7 @@ class BotConfig:
         self.reversal_entry_mode          = kw.get("reversal_entry_mode",          "limit_retest")
         self.reversal_retest_wick_pct     = kw.get("reversal_retest_wick_pct",     0.25)   # was 0.50; R:R 1.88 vs 1.49 at 0.50
         self.reversal_retest_expiry_bars  = kw.get("reversal_retest_expiry_bars",  3)      # was 2; 12h window instead of 8h
+        self.reversal_guard_only          = kw.get("reversal_guard_only",          False)  # True → solo conflict-block, niente trade contro trend
 
     def model_dump(self) -> dict:
         return self.__dict__
@@ -1448,6 +1453,9 @@ class ExecutionEngine:
             exhaustion_rsi_high         = getattr(cfg, "exhaustion_rsi_high",   72.0),
             exhaustion_ret48_pct        = getattr(cfg, "exhaustion_ret48_pct",   6.0),
             exhaustion_boost            = getattr(cfg, "exhaustion_boost",       0.06),
+            atr_pct_gate_enabled        = getattr(cfg, "atr_pct_gate_enabled",  False),
+            atr_pct_min                 = getattr(cfg, "atr_pct_min",           0.008),
+            atr_pct_mode                = getattr(cfg, "atr_pct_mode",          "scale"),
         )
         result = decision_engine.decide(
             features=latest,
@@ -1611,8 +1619,10 @@ class ExecutionEngine:
         ):
             _trend_action = result.action
 
-            # Caso 1: trend = no_trade/hold → reversal prende il controllo
-            if _trend_action == "no_trade":
+            _guard_only = getattr(self.config, "reversal_guard_only", False)
+
+            # Caso 1: trend = no_trade/hold → reversal prende il controllo (skipped in guard_only)
+            if _trend_action == "no_trade" and not _guard_only:
                 _final_result = DecisionResult(
                     action               = _reversal_result.direction,
                     confidence           = _reversal_result.score,
@@ -1632,10 +1642,11 @@ class ExecutionEngine:
                     _reversal_result.score, _reversal_result.component_count,
                 )
 
-            # Caso 2: trend e reversal concordano → boost confidence (solo se hold_only=False)
+            # Caso 2: trend e reversal concordano → boost confidence (skipped in guard_only)
             elif (
                 _trend_action == _reversal_result.direction
                 and not getattr(self.config, "reversal_trend_hold_only", True)
+                and not _guard_only
             ):
                 _boost = min(1.0, result.confidence + 0.05)
                 _final_result = copy.copy(result)
@@ -1644,7 +1655,7 @@ class ExecutionEngine:
                     f"[REVERSAL BOOST] score={_reversal_result.score:.2f}"
                 ]
 
-            # Caso 3: trend e reversal in conflitto → blocca se configurato
+            # Caso 3: trend e reversal in conflitto → blocca se configurato (sempre attivo)
             elif (
                 _trend_action != _reversal_result.direction
                 and _trend_action != "no_trade"

@@ -96,12 +96,13 @@ function fmtPrice(p: number): string {
 // ── Main Component ────────────────────────────────────────────────────────────
 
 export const ReversalPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
-  const [data,        setData]        = useState<ReversalCurrentResponse | null>(null);
-  const [history,     setHistory]     = useState<HistoryEntry[]>([]);
-  const [loading,     setLoading]     = useState(true);
-  const [error,       setError]       = useState<string | null>(null);
-  const [showReason,  setShowReason]  = useState(false);
-  const [lastUpdated, setLastUpdated] = useState<string>('');
+  const [data,           setData]           = useState<ReversalCurrentResponse | null>(null);
+  const [history,        setHistory]        = useState<HistoryEntry[]>([]);
+  const [loading,        setLoading]        = useState(true);
+  const [error,          setError]          = useState<string | null>(null);
+  const [showReason,     setShowReason]     = useState(false);
+  const [lastUpdated,    setLastUpdated]    = useState<string>('');
+  const [scoreThreshold, setScoreThreshold] = useState<number>(0.34);
 
   const fetchCurrent = useCallback(async () => {
     try {
@@ -128,6 +129,10 @@ export const ReversalPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   }, [apiBase]);
 
   useEffect(() => {
+    // Fetch score threshold from bot config once on mount
+    fetch(`${apiBase}/bot`).then(r => r.json()).then(d => {
+      if (typeof d?.reversal_score_threshold === 'number') setScoreThreshold(d.reversal_score_threshold);
+    }).catch(() => {});
     fetchCurrent();
     fetchHistory();
     const t = setInterval(() => { fetchCurrent(); fetchHistory(); }, 30_000);
@@ -216,13 +221,13 @@ export const ReversalPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                   </div>
                   <div className="w-full h-2 bg-slate-100 dark:bg-white/5 rounded-full overflow-hidden">
                     <div
-                      className={`h-full rounded-full transition-all duration-700 ${rev.score >= 0.72 ? 'bg-violet-500' : rev.score >= 0.50 ? 'bg-amber-400' : 'bg-slate-300 dark:bg-slate-600'}`}
+                      className={`h-full rounded-full transition-all duration-700 ${rev.score >= scoreThreshold ? 'bg-violet-500' : rev.score >= scoreThreshold * 0.75 ? 'bg-amber-400' : 'bg-slate-300 dark:bg-slate-600'}`}
                       style={{ width: `${Math.min(100, rev.score * 100)}%` }}
                     />
                   </div>
                   <div className="flex justify-between text-[9px] text-slate-400 dark:text-slate-600 mt-0.5">
                     <span>0</span>
-                    <span className="text-violet-500">soglia 72%</span>
+                    <span className="text-violet-500" style={{ marginLeft: `${Math.min(90, scoreThreshold * 100)}%`, transform: 'translateX(-50%)' }}>soglia {Math.round(scoreThreshold * 100)}%</span>
                     <span>100%</span>
                   </div>
                 </div>

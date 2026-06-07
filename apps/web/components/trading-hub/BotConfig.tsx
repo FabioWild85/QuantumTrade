@@ -87,6 +87,10 @@ interface Config {
   exhaustion_rsi_high: number;
   exhaustion_ret48_pct: number;
   exhaustion_boost: number;
+  // ATR% Volatility Gate
+  atr_pct_gate_enabled: boolean;
+  atr_pct_min: number;
+  atr_pct_mode: 'block' | 'scale';
   // Pullback Entry
   pullback_entry_enabled: boolean;
   pullback_impulse_atr_mult: number;
@@ -145,6 +149,7 @@ interface Config {
   reversal_rr_min: number;
   reversal_conflict_block: boolean;
   reversal_trend_hold_only: boolean;
+  reversal_guard_only: boolean;
   reversal_max_hold_bars: number;
   reversal_entry_mode: 'close' | 'limit_retest';
   reversal_retest_wick_pct: number;
@@ -243,6 +248,10 @@ const DEFAULTS: Config = {
   exhaustion_rsi_high: 72,
   exhaustion_ret48_pct: 6.0,
   exhaustion_boost: 0.06,
+  // ATR% Volatility Gate
+  atr_pct_gate_enabled: false,
+  atr_pct_min: 0.008,
+  atr_pct_mode: 'scale' as const,
   // Pullback Entry
   pullback_entry_enabled: false,
   pullback_impulse_atr_mult: 1.2,
@@ -299,6 +308,7 @@ const DEFAULTS: Config = {
   reversal_rr_min: 1.5,                 // was 1.8; wick_pct=0.25 gives avg R:R 1.88
   reversal_conflict_block: true,
   reversal_trend_hold_only: true,
+  reversal_guard_only: false,
   reversal_max_hold_bars: 4,            // was 6; BTC reversals resolve in <16h or fail
   reversal_entry_mode: 'limit_retest' as const,
   reversal_retest_wick_pct: 0.25,       // was 0.50; R:R avg 1.88 vs 1.49 at 0.50
@@ -1755,6 +1765,17 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                   <div>
                     <p className="text-[10px] font-bold text-slate-700 dark:text-slate-300">Solo su Trend Hold</p>
                     <p className="text-[9px] text-slate-400 dark:text-slate-500">OFF = apre reversal anche quando trend concorda (boost). ON = reversal solo quando trend dice no-trade. Raccomandato ON.</p>
+                  </div>
+                </label>
+                <label className="flex items-center gap-3 cursor-pointer">
+                  <div className="relative">
+                    <input type="checkbox" className="sr-only" checked={config.reversal_guard_only} onChange={e => setConfig(c => ({ ...c, reversal_guard_only: e.target.checked }))} />
+                    <div className={`w-8 h-4 rounded-full transition-all duration-300 ${config.reversal_guard_only ? 'bg-violet-600' : 'bg-slate-200 dark:bg-white/10'}`} />
+                    <div className={`absolute top-0.5 left-0.5 w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.reversal_guard_only ? 'translate-x-4' : ''}`} />
+                  </div>
+                  <div>
+                    <p className="text-[10px] font-bold text-slate-700 dark:text-slate-300">Guard Only (solo blocco)</p>
+                    <p className="text-[9px] text-slate-400 dark:text-slate-500">ON = nessun trade contro-trend; il detector blocca solo i trade trend in zona di esaurimento. OFF = comportamento normale.</p>
                   </div>
                 </label>
               </div>
@@ -3871,6 +3892,81 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                   onChange={e => setConfig(c => ({ ...c, exhaustion_boost: parseFloat(e.target.value) }))}
                   className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-rose-500" />
                 <p className="text-[9px] text-slate-400 dark:text-slate-500">Quanto alzare la soglia direzionale quando la guard scatta. Es. 0.06 con threshold 0.62 → richiede 0.68 per entrare. Default: 0.06</p>
+              </div>
+            </div>
+          )}
+
+          {/* ATR% Volatility Gate */}
+          <Tooltip
+            text="Protegge dai regimi a bassa volatilità dove le fee (~0.09% round-trip) erodono i profitti attesi. ATR% = ATR_14/prezzo. Sotto soglia: 'Block' = no_trade immediato; 'Scale' = size ridotta linearmente (floor ×0.10). Soglia empirica BTC 4H: 0.8% (dal backtest post-FTX dic 2022: wr=20%, DD=11.6%)."
+            width="wide" pos="bottom"
+          >
+          <label className={`flex items-start gap-3 cursor-pointer group p-4 rounded-xl border transition-all duration-200 ${config.atr_pct_gate_enabled ? 'border-orange-200 dark:border-orange-500/30 bg-orange-50/40 dark:bg-orange-500/5' : 'border-slate-100 dark:border-white/5 hover:bg-slate-50 dark:hover:bg-white/[0.03]'}`}>
+            <div className="relative mt-0.5 flex-shrink-0">
+              <input type="checkbox" className="sr-only" checked={config.atr_pct_gate_enabled}
+                onChange={e => setConfig(c => ({ ...c, atr_pct_gate_enabled: e.target.checked }))} />
+              <div className={`w-9 h-[18px] rounded-full transition-all duration-300 ${config.atr_pct_gate_enabled ? 'bg-orange-500' : 'bg-slate-200 dark:bg-white/10'}`} />
+              <div className={`absolute top-[3px] left-[3px] w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.atr_pct_gate_enabled ? 'translate-x-[18px]' : ''}`} />
+            </div>
+            <div className="min-w-0">
+              <p className={`text-xs font-bold leading-tight transition-colors ${config.atr_pct_gate_enabled ? 'text-orange-600 dark:text-orange-400' : 'text-slate-700 dark:text-slate-300'}`}>
+                ATR% Volatility Gate
+                {config.atr_pct_gate_enabled && (
+                  <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-orange-100 dark:bg-orange-500/20 text-orange-600 dark:text-orange-400 uppercase tracking-wider">
+                    Attivo — soglia {(config.atr_pct_min * 100).toFixed(1)}% · {config.atr_pct_mode === 'block' ? 'Blocco' : 'Scale'}
+                  </span>
+                )}
+              </p>
+              <p className="text-[10px] text-slate-400 dark:text-slate-500 leading-snug mt-1">
+                {config.atr_pct_gate_enabled
+                  ? `Volatilità minima ${(config.atr_pct_min * 100).toFixed(2)}% — a $100k BTC: ATR < $${(config.atr_pct_min * 100000).toFixed(0)}`
+                  : 'Blocca o riduce size quando ATR% < soglia (fee drag > profitto atteso)'}
+              </p>
+            </div>
+          </label>
+          </Tooltip>
+
+          {config.atr_pct_gate_enabled && (
+            <div className="ml-2 pl-4 border-l-2 border-orange-200 dark:border-orange-500/30 space-y-4">
+              {/* Soglia ATR% */}
+              <div className="flex flex-col gap-1">
+                <div className="flex justify-between items-center">
+                  <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">Soglia ATR%</span>
+                  <span className="text-[10px] font-bold text-orange-600 dark:text-orange-400">{(config.atr_pct_min * 100).toFixed(2)}%</span>
+                </div>
+                <input type="range" min={0.003} max={0.030} step={0.001} value={config.atr_pct_min}
+                  onChange={e => setConfig(c => ({ ...c, atr_pct_min: parseFloat(e.target.value) }))}
+                  className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-orange-500" />
+                <div className="flex justify-between text-[9px] font-mono text-slate-400 dark:text-slate-500">
+                  <span>0.3%</span><span>0.8% (BTC empirico)</span><span>3.0%</span>
+                </div>
+                <p className="text-[9px] text-slate-400 dark:text-slate-500">
+                  A $100k: ATR &lt; ${(config.atr_pct_min * 100000).toFixed(0)} attiva il gate · a $65k: &lt; ${(config.atr_pct_min * 65000).toFixed(0)} · a $30k: &lt; ${(config.atr_pct_min * 30000).toFixed(0)}
+                </p>
+              </div>
+              {/* Modalità block vs scale */}
+              <div className="flex flex-col gap-1.5">
+                <span className="text-[9px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest">Modalità di risposta</span>
+                <div className="flex gap-2">
+                  {(['scale', 'block'] as const).map(mode => (
+                    <button key={mode}
+                      onClick={() => setConfig(c => ({ ...c, atr_pct_mode: mode }))}
+                      className={`flex-1 py-2 px-3 rounded-lg text-[10px] font-bold border transition-all ${
+                        config.atr_pct_mode === mode
+                          ? mode === 'scale'
+                            ? 'bg-amber-500 text-white border-amber-500'
+                            : 'bg-red-500 text-white border-red-500'
+                          : 'bg-white dark:bg-white/5 text-slate-600 dark:text-slate-400 border-slate-200 dark:border-white/10 hover:border-orange-300 dark:hover:border-orange-500/40'
+                      }`}>
+                      {mode === 'scale' ? '📉 Riduzione Graduale' : '🚫 Blocco Netto'}
+                    </button>
+                  ))}
+                </div>
+                <p className="text-[9px] text-slate-500 dark:text-slate-400 leading-relaxed">
+                  {config.atr_pct_mode === 'scale'
+                    ? `Size ridotta a ${(Math.max(0.10, (config.atr_pct_min * 0.75) / config.atr_pct_min) * 100).toFixed(0)}% quando ATR% scende al 75% della soglia. Floor minimo ×0.10 — il bot non si blocca mai del tutto.`
+                    : 'Nessun trade quando ATR% < soglia. Identico al gate ADX: uscita immediata.'}
+                </p>
               </div>
             </div>
           )}

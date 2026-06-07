@@ -522,11 +522,15 @@ def build_all_features(
             (d["volume"] - d["volume"].rolling(_vwin).mean()) /
             (d["volume"].rolling(_vwin).std() + 1e-9)
         )
+        # Selling climax (bear): volume spike at overbought RSI, bearish candle.
+        # Buying climax / capitolation (bull): volume spike at oversold RSI.
+        # The green-candle requirement is removed: real capitulation bottoms have RED candles
+        # (selling into the low) with extreme volume — the RSI<35 gate already filters direction.
         d["vol_climax_bear"] = (
             (d["vol_z_50"] > 2.0) & (d["rsi_14"] > 65) & (d["close"] < d["open"])
         ).astype(float)
         d["vol_climax_bull"] = (
-            (d["vol_z_50"] > 2.0) & (d["rsi_14"] < 35) & (d["close"] > d["open"])
+            (d["vol_z_50"] > 2.0) & (d["rsi_14"] < 35)
         ).astype(float)
 
         # Wick rejection ratio

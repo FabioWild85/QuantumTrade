@@ -282,6 +282,14 @@ class BotConfig(BaseModel):
     exhaustion_rsi_high:  float = Field(72.0, ge=55.0, le=85.0)
     exhaustion_ret48_pct: float = Field(6.0,  ge=2.0,  le=20.0)
     exhaustion_boost:     float = Field(0.06, ge=0.01, le=0.20)
+    # ATR% Volatility Gate — blocks/scales trades when ATR% < threshold (fee-drag protection)
+    atr_pct_gate_enabled: bool  = Field(False)
+    atr_pct_min:          float = Field(0.008, ge=0.001, le=0.030,
+                                        description="ATR_14/price threshold. Below this, "
+                                        "fee drag exceeds expected profit. Empirical BTC 4H: 0.8%.")
+    atr_pct_mode:         str   = Field("scale",
+                                        description='"block"=no_trade immediately | '
+                                        '"scale"=size reduced linearly (floor ×0.10)')
     # Pullback Entry — delayed entry on strong impulse candles
     pullback_entry_enabled:    bool  = Field(False)
     pullback_impulse_atr_mult: float = Field(1.2, ge=0.5, le=3.0)
@@ -321,6 +329,7 @@ class BotConfig(BaseModel):
     reversal_entry_mode:    Literal["close", "limit_retest"] = Field("limit_retest")
     reversal_retest_wick_pct:    float = Field(0.25,  ge=0.0,  le=1.0)  # was 0.50; R:R 1.88 vs 1.49 at 0.50
     reversal_retest_expiry_bars: int   = Field(3,     ge=1,    le=6)    # was 2; 12h window instead of 8h
+    reversal_guard_only:         bool  = Field(False)                   # True → solo conflict-block, niente trade contro trend
 
 
 class StartBotRequest(BaseModel):
