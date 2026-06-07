@@ -121,10 +121,15 @@ class ChronosForecaster:
         horizon: int = 3,
         atr: Optional[float] = None,
         seed: Optional[int] = None,           # kept for API compatibility — ignored (deterministic model)
-        volume_series:  Optional[np.ndarray] = None,
-        oi_series:      Optional[np.ndarray] = None,
-        funding_series: Optional[np.ndarray] = None,
-        cvd_series:     Optional[np.ndarray] = None,
+        volume_series:    Optional[np.ndarray] = None,
+        oi_series:        Optional[np.ndarray] = None,
+        funding_series:   Optional[np.ndarray] = None,
+        cvd_series:       Optional[np.ndarray] = None,
+        liq_series:       Optional[np.ndarray] = None,
+        premium_series:   Optional[np.ndarray] = None,
+        timestamps:       Optional["pd.DatetimeIndex"] = None,
+        interval_hours:   int = 4,
+        calendar_covariates: bool = False,
         use_calibration: bool = False,
     ) -> dict:
         """
@@ -133,10 +138,16 @@ class ChronosForecaster:
             horizon:        forecast steps (3 = 12 h on the 4 h timeframe).
             atr:            current ATR(14) for the p50_vs_atr feature.
             seed:           ignored — Chronos-2 is deterministic (quantile regression).
-            volume_series:  past volume aligned with close_series (optional).
-            oi_series:      past open-interest aligned with close_series (optional).
-            funding_series: past funding-rate aligned with close_series (optional).
-            cvd_series:     past cumulative-volume-delta aligned with close_series (optional).
+            volume_series:    past normalised volume ratio (vol/vol_ma20) aligned with close_series (optional).
+            oi_series:        past open-interest aligned with close_series (optional).
+            funding_series:   past funding-rate aligned with close_series (optional).
+            cvd_series:       past cumulative-volume-delta aligned with close_series (optional).
+            liq_series:       past liquidation ratio (liq_long/liq_total, 0–1) aligned with close_series (optional).
+            premium_series:   past spot-perp premium z-score aligned with close_series (optional).
+            timestamps:       DatetimeIndex (UTC) aligned with close_series, for calendar covariates.
+            interval_hours:   bar interval in hours, used to extrapolate future timestamps (4 on 4H).
+            calendar_covariates: if True, add hour-of-day + day-of-week (sin/cos) as past AND
+                                 future covariates — the only signal known ahead of time.
 
         Returns dict with keys:
             c2_dir_prob, c2_vol_prob, c2_p10, c2_p50, c2_p90,
@@ -162,6 +173,8 @@ class ChronosForecaster:
         oi   = _prep_covariate(oi_series)
         fund = _prep_covariate(funding_series)
         cvd  = _prep_covariate(cvd_series)
+        liq  = _prep_covariate(liq_series)
+        prem = _prep_covariate(premium_series)
 
         # ── 2. Assemble model input ─────────────────────────────────────────
         past_covariates: dict = {}
@@ -169,9 +182,50 @@ class ChronosForecaster:
         if oi   is not None: past_covariates["oi"]      = torch.from_numpy(oi)
         if fund is not None: past_covariates["funding"] = torch.from_numpy(fund)
         if cvd  is not None: past_covariates["cvd"]     = torch.from_numpy(cvd)
+        if liq  is not None: past_covariates["liq"]     = torch.from_numpy(liq)
+        if prem is not None: past_covariates["premium"] = torch.from_numpy(prem)
+
+        # ── 2b. Calendar covariates (hour-of-day + day-of-week, cyclic) ──────
+        # These are the only signal KNOWN in advance, so they go into BOTH
+        # past_covariates (length = ctx_len) and future_covariates (length =
+        # horizon). The future keys must be a subset of the past keys — they
+        # share the same names here, satisfying the Chronos-2 API constraint.
+        future_covariates: dict = {}
+        if calendar_covariates and timestamps is not None:
+            import pandas as pd
+            ts_full = pd.DatetimeIndex(timestamps)
+            if len(ts_full) >= ctx_len:
+                ts = ts_full[-ctx_len:]
+
+                def _cyc(values: np.ndarray, period: int):
+                    ang = 2.0 * np.pi * (values.astype(np.float32) / period)
+                    return np.sin(ang).astype(np.float32), np.cos(ang).astype(np.float32)
+
+                # PAST channels (length = ctx_len)
+                hod_sin, hod_cos = _cyc(ts.hour.values,      24)
+                dow_sin, dow_cos = _cyc(ts.dayofweek.values,  7)
+                past_covariates["hod_sin"] = torch.from_numpy(hod_sin)
+                past_covariates["hod_cos"] = torch.from_numpy(hod_cos)
+                past_covariates["dow_sin"] = torch.from_numpy(dow_sin)
+                past_covariates["dow_cos"] = torch.from_numpy(dow_cos)
+
+                # FUTURE channels (length = horizon) — extrapolate timestamps forward
+                last_ts   = ts[-1]
+                future_ts = pd.DatetimeIndex(
+                    [last_ts + pd.Timedelta(hours=interval_hours * (k + 1)) for k in range(horizon)]
+                )
+                f_hod_sin, f_hod_cos = _cyc(future_ts.hour.values,     24)
+                f_dow_sin, f_dow_cos = _cyc(future_ts.dayofweek.values, 7)
+                future_covariates["hod_sin"] = torch.from_numpy(f_hod_sin)
+                future_covariates["hod_cos"] = torch.from_numpy(f_hod_cos)
+                future_covariates["dow_sin"] = torch.from_numpy(f_dow_sin)
+                future_covariates["dow_cos"] = torch.from_numpy(f_dow_cos)
 
         if past_covariates:
-            model_input = [{"target": torch.from_numpy(ctx), "past_covariates": past_covariates}]
+            _item = {"target": torch.from_numpy(ctx), "past_covariates": past_covariates}
+            if future_covariates:
+                _item["future_covariates"] = future_covariates
+            model_input = [_item]
         else:
             model_input = [torch.from_numpy(ctx)]
 
@@ -234,7 +288,8 @@ class ChronosForecaster:
         }
 
         latency_ms = (time.perf_counter() - t0) * 1000
-        cov_used   = list(past_covariates.keys())
+        cov_used    = list(past_covariates.keys())
+        future_used = list(future_covariates.keys())
 
         # Isotonic calibration — applied after all features are computed
         cal_dir_prob = dir_prob
@@ -264,6 +319,7 @@ class ChronosForecaster:
             "fan":            fan,
             "latency_ms":     round(latency_ms, 1),
             "cov_used":       cov_used,
+            "future_used":    future_used,
         }
         # Preserve raw prob for logging when calibration is active
         if raw_dir_prob is not None:

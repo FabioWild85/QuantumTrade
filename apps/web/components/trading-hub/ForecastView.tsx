@@ -359,18 +359,28 @@ const FanChartSVG: React.FC<{
 // ── Covariates badge row ───────────────────────────────────────────────────────
 
 const COV_META: Record<string, { label: string; tooltip: string }> = {
-  volume:  { label: "Volume",  tooltip: "Volume 4h da Hyperliquid — segnala forza o debolezza del movimento di prezzo" },
-  funding: { label: "Funding", tooltip: "Tasso di funding 8h da Hyperliquid — indica sentiment e leva del mercato futures" },
-  oi:      { label: "OI",      tooltip: "Open Interest aggregato multi-exchange da Coinalyze — crescita = trend in forza, calo = distribuzione" },
-  cvd:     { label: "CVD",     tooltip: "Cumulative Volume Delta (approssimazione Haas) — misura pressione netta acquisti/vendite sulle candele 4h" },
+  volume:  { label: "Vol.Ratio", tooltip: "Volume normalizzato (vol/media-20 barre) — valore >1 = attività sopra media, <1 = mercato quieto. Più stabile del volume grezzo tra regimi diversi" },
+  funding: { label: "Funding",   tooltip: "Tasso di funding 8h — indica sentiment e leva del mercato futures. Positivo = mercato over-long, negativo = over-short" },
+  oi:      { label: "OI",        tooltip: "Open Interest aggregato multi-exchange da Coinalyze — crescita = trend in forza con nuova leva, calo = distribuzione e chiusure" },
+  cvd:     { label: "CVD",       tooltip: "Cumulative Volume Delta (approssimazione Haas) — misura pressione netta acquisti/vendite per candela 4h. Divergenza col prezzo = segnale di esaurimento" },
+  liq:     { label: "Liq",       tooltip: "Rapporto liquidazioni long/totale (0–1) da Coinalyze — >0.7 = capitolazione long (potenziale bottom), <0.3 = short squeeze (potenziale top)" },
+  premium: { label: "Premium",   tooltip: "Premium-z: z-score del basis spot-perp — proxy di posizionamento/flusso, complementare al funding (past covariate)" },
+  calendar:{ label: "Calendar",  tooltip: "Ora-del-giorno + giorno-della-settimana (encoding ciclico sin/cos) come future_covariate — l'unico segnale noto in anticipo: sessioni, weekend, settlement funding" },
+};
+
+// cov_used reports the calendar channels by their raw names (hod_sin/…); the badge
+// is keyed by 'calendar' and considered active when any calendar channel is present.
+const COV_ACTIVE_KEY: Record<string, string> = {
+  volume: 'volume', funding: 'funding', oi: 'oi', cvd: 'cvd', liq: 'liq',
+  premium: 'premium', calendar: 'hod_sin',
 };
 
 const CovariatesBadges: React.FC<{ covUsed: string[] }> = ({ covUsed }) => {
-  const all = ['volume', 'funding', 'oi', 'cvd'];
+  const all = ['volume', 'funding', 'oi', 'cvd', 'liq', 'premium', 'calendar'];
   return (
     <>
       {all.map(k => {
-        const active = covUsed.includes(k);
+        const active = covUsed.includes(COV_ACTIVE_KEY[k] ?? k);
         const meta   = COV_META[k];
         return (
           <Tooltip key={k} text={active ? meta.tooltip : `${meta.label} non disponibile — Chronos opera senza questo covariate`} pos="bottom" fit>

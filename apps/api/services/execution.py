@@ -203,6 +203,23 @@ class BotConfig:
         self.atr_pct_gate_enabled  = kw.get("atr_pct_gate_enabled",  False)
         self.atr_pct_min           = kw.get("atr_pct_min",           0.008)
         self.atr_pct_mode          = kw.get("atr_pct_mode",          "scale")
+        # Exhaustion Guard — proportional boost (Feature A)
+        self.exhaustion_prop_enabled = kw.get("exhaustion_prop_enabled", False)
+        self.exhaustion_prop_scale   = kw.get("exhaustion_prop_scale",   0.06)
+        # Daily RSI Gate (Feature B)
+        self.daily_rsi_gate_enabled  = kw.get("daily_rsi_gate_enabled",  False)
+        self.daily_rsi_short_block   = kw.get("daily_rsi_short_block",   18.0)
+        self.daily_rsi_long_block    = kw.get("daily_rsi_long_block",    82.0)
+        # Volume Climax Gate (Feature C)
+        self.vol_climax_gate_enabled = kw.get("vol_climax_gate_enabled", False)
+        self.vol_climax_gate_z       = kw.get("vol_climax_gate_z",       2.5)
+        self.vol_climax_gate_rsi     = kw.get("vol_climax_gate_rsi",     30.0)
+        # C2 Forecast Inversion Gate (Feature D)
+        self.c2_inversion_gate_enabled = kw.get("c2_inversion_gate_enabled", False)
+        self.c2_inversion_pct          = kw.get("c2_inversion_pct",          0.005)
+        # Exhaustion Max Hold (Feature E)
+        self.exhaustion_max_hold_enabled = kw.get("exhaustion_max_hold_enabled", False)
+        self.exhaustion_max_hold_bars    = kw.get("exhaustion_max_hold_bars",    2)
         # Pullback Entry — delayed entry on strong impulse candles
         self.pullback_entry_enabled    = kw.get("pullback_entry_enabled",    False)
         self.pullback_impulse_atr_mult = kw.get("pullback_impulse_atr_mult", 1.2)
@@ -1137,6 +1154,16 @@ class ExecutionEngine:
 
         # 2. Fetch OHLCV + market snapshot from REST (ground truth)
         df_4h   = await self._hl.get_ohlcv(SYMBOL, "4h", limit=512)
+        # Drop the still-forming candle so the decision bar is the last CLOSED 4H
+        # candle. HL's candleSnapshot includes the candle that just opened (only a
+        # few seconds of data); its near-zero accumulated volume corrupts every
+        # volume-derived feature (volume, vol_ratio, vol_z_50, absorption_z,
+        # vol_climax) on the exact bar used for the decision. Using the completed
+        # candle also restores parity with the backtest, which only ever evaluates
+        # closed candles. Entry/SL/TP prices come from the live mark_price (snap),
+        # so dropping the forming candle does not affect execution pricing.
+        if len(df_4h) >= 2:
+            df_4h = df_4h.iloc[:-1]
         snap    = await self._hl.get_market_snapshot(SYMBOL)
         df_fund = await self._hl.get_funding_history(SYMBOL, hours=200)
 
@@ -1304,10 +1331,20 @@ class ExecutionEngine:
                 df_feat["close"].values,
                 horizon=3,
                 atr=atr,
-                volume_series=   df_feat["volume"].values    if "volume"    in df_feat.columns else None,
+                volume_series=   (df_feat["vol_ratio"].values
+                                  if "vol_ratio"  in df_feat.columns else
+                                  df_feat["volume"].values
+                                  if "volume"     in df_feat.columns else None),
                 oi_series=       df_feat["oi_raw"].values    if "oi_raw"    in df_feat.columns else None,
                 funding_series=  df_feat["funding"].values   if "funding"   in df_feat.columns else None,
                 cvd_series=      df_feat["delta_raw"].values if "delta_raw" in df_feat.columns else None,
+                liq_series=      df_feat["liq_ratio"].values if "liq_ratio" in df_feat.columns else None,
+                premium_series=  (df_feat["premium_z"].values
+                                  if self.config.chronos_premium_covariate
+                                  and "premium_z" in df_feat.columns else None),
+                timestamps=      df_feat.index,
+                interval_hours=  4,
+                calendar_covariates= self.config.chronos_calendar_covariates,
                 use_calibration= self.config.use_chronos_calibration,
             )
         else:
@@ -1456,6 +1493,23 @@ class ExecutionEngine:
             atr_pct_gate_enabled        = getattr(cfg, "atr_pct_gate_enabled",  False),
             atr_pct_min                 = getattr(cfg, "atr_pct_min",           0.008),
             atr_pct_mode                = getattr(cfg, "atr_pct_mode",          "scale"),
+            # Feature A: proportional boost
+            exhaustion_prop_enabled     = getattr(cfg, "exhaustion_prop_enabled", False),
+            exhaustion_prop_scale       = getattr(cfg, "exhaustion_prop_scale",   0.06),
+            # Feature B: Daily RSI Gate
+            daily_rsi_gate_enabled      = getattr(cfg, "daily_rsi_gate_enabled",  False),
+            daily_rsi_short_block       = getattr(cfg, "daily_rsi_short_block",   18.0),
+            daily_rsi_long_block        = getattr(cfg, "daily_rsi_long_block",    82.0),
+            # Feature C: Volume Climax Gate
+            vol_climax_gate_enabled     = getattr(cfg, "vol_climax_gate_enabled", False),
+            vol_climax_gate_z           = getattr(cfg, "vol_climax_gate_z",       2.5),
+            vol_climax_gate_rsi         = getattr(cfg, "vol_climax_gate_rsi",     30.0),
+            # Feature D: C2 Inversion Gate
+            c2_inversion_gate_enabled   = getattr(cfg, "c2_inversion_gate_enabled", False),
+            c2_inversion_pct            = getattr(cfg, "c2_inversion_pct",          0.005),
+            # Feature E: Exhaustion Max Hold (DecisionResult flag only — consumed by open_position)
+            exhaustion_max_hold_enabled = getattr(cfg, "exhaustion_max_hold_enabled", False),
+            exhaustion_max_hold_bars    = getattr(cfg, "exhaustion_max_hold_bars",    2),
         )
         result = decision_engine.decide(
             features=latest,
@@ -1477,6 +1531,11 @@ class ExecutionEngine:
         ):
             try:
                 df_1h_raw  = await self._hl.get_ohlcv(SYMBOL, "1h", limit=640)
+                # Drop the forming 1H candle for the same reason as the 4H cycle:
+                # the just-opened candle has near-zero volume and corrupts the
+                # volume-derived features on the bar the 1H gate evaluates.
+                if len(df_1h_raw) >= 2:
+                    df_1h_raw = df_1h_raw.iloc[:-1]
                 df_1h_fund = await self._hl.get_funding_history(SYMBOL, hours=640)
                 df_1h_feat = build_all_features(
                     df_1h_raw, df_1h_fund, pd.DataFrame(), pd.DataFrame()
@@ -2259,6 +2318,13 @@ class ExecutionEngine:
             "is_reversal":     getattr(result, "_is_reversal", False),
             "rev_sl_atr_mult": getattr(cfg, "reversal_sl_atr_mult", self.config.sl_atr_mult),
             "rev_max_hold":    getattr(cfg, "reversal_max_hold_bars", getattr(self.config, "max_hold_bars", 48)),
+            # Feature E: Exhaustion Max Hold — shorter exit when ExhaustionGuard was active at entry
+            "exhaust_max_hold": (
+                getattr(cfg, "exhaustion_max_hold_bars", getattr(self.config, "exhaustion_max_hold_bars", 2))
+                if getattr(result, "_exhaustion_triggered", False)
+                   and getattr(cfg, "exhaustion_max_hold_enabled", getattr(self.config, "exhaustion_max_hold_enabled", False))
+                else None
+            ),
         }
 
         # Persist paper position immediately so it survives a restart
@@ -2551,12 +2617,21 @@ class ExecutionEngine:
                 return
 
         # ── 5. Max hold bars: time-based exit ─────────────────────────────────
-        # Reversal trades use rev_max_hold (shorter, default 6 bars = 24h)
-        _max_hold_limit = _rev_max_h if _is_rev else getattr(self.config, "max_hold_bars", 48)
-        _max_hold_active = _is_rev or self.config.max_hold_bars_enabled
+        # Priority: exhaust_max_hold (Feature E) > rev_max_hold (reversals) > max_hold_bars (trend).
+        _exhaust_max_h = self._position.get("exhaust_max_hold")  # None if not set
+        if _exhaust_max_h is not None:
+            _max_hold_limit  = _exhaust_max_h
+            _max_hold_active = True
+        elif _is_rev:
+            _max_hold_limit  = _rev_max_h
+            _max_hold_active = True
+        else:
+            _max_hold_limit  = getattr(self.config, "max_hold_bars", 48)
+            _max_hold_active = self.config.max_hold_bars_enabled
         if (_max_hold_active and self._position["bars_held"] >= _max_hold_limit):
-            log.info("Max hold bars reached (%d, reversal=%s) — closing position", _max_hold_limit, _is_rev)
-            await self._close_position(current_price, "max_hold_bars")
+            _hold_reason = "exhaust_max_hold" if _exhaust_max_h is not None else "max_hold_bars"
+            log.info("Max hold bars reached (%d, reason=%s, reversal=%s) — closing position", _max_hold_limit, _hold_reason, _is_rev)
+            await self._close_position(current_price, _hold_reason)
             return
 
         # ── 6. Standard SL / TP check ─────────────────────────────────────────

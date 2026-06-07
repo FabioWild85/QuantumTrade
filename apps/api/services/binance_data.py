@@ -1,7 +1,7 @@
 """
-Binance public REST — historical OHLCV.
+Binance public REST — historical OHLCV + funding rate.
 Used to extend the backtest window beyond Hyperliquid's ~1-year history.
-No API key required for OHLCV.
+No API key required for OHLCV or funding rate.
 """
 
 import logging
@@ -13,7 +13,8 @@ import pandas as pd
 
 log = logging.getLogger(__name__)
 
-BINANCE_BASE = "https://api.binance.com"
+BINANCE_BASE      = "https://api.binance.com"
+BINANCE_FAPI_BASE = "https://fapi.binance.com"
 _INTERVAL_MAP = {"1h": "1h", "4h": "4h", "1d": "1d"}
 
 # Binance symbol mapping (HL uses BTC, Binance uses BTCUSDT)
@@ -82,4 +83,61 @@ async def get_ohlcv_binance(
     df = pd.DataFrame(all_rows).set_index("open_time").sort_index()
     df = df[~df.index.duplicated(keep="last")]
     log.info("Binance OHLCV %s %s: %d candles (%s → %s)", symbol, interval, len(df), df.index[0].date(), df.index[-1].date())
+    return df
+
+
+async def get_funding_binance(
+    symbol: str = "BTC",
+    start_date: Optional[str] = None,   # "YYYY-MM-DD"
+    end_date: Optional[str] = None,
+) -> pd.DataFrame:
+    """
+    Fetch historical funding rates from Binance Futures (FAPI).
+    Available from ~Sept 2019 for BTCUSDT. No API key required.
+    Returns DataFrame with DatetimeTZDtype index (UTC) and columns [funding, premium].
+    Funding interval on Binance: every 8h (00:00, 08:00, 16:00 UTC).
+    """
+    from datetime import timedelta as _td
+    bn_symbol = _SYMBOL_MAP.get(symbol, symbol + "USDT")
+    # Add 1 day to end_ts so that funding records on end_date itself (08:00, 16:00 UTC)
+    # are included — Binance FAPI treats endTime as exclusive.
+    end_ts   = int((datetime.strptime(end_date,   "%Y-%m-%d").replace(tzinfo=timezone.utc) + _td(days=1)).timestamp() * 1000) if end_date   else int(datetime.now(timezone.utc).timestamp() * 1000)
+    start_ts = int(datetime.strptime(start_date, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp() * 1000) if start_date else end_ts - 30 * 86_400_000
+
+    FUNDING_INTERVAL_MS = 8 * 3_600_000  # 8h in ms
+    all_rows: list = []
+    cursor = start_ts
+
+    async with httpx.AsyncClient(base_url=BINANCE_FAPI_BASE, timeout=20.0) as client:
+        while cursor < end_ts:
+            resp = await client.get("/fapi/v1/fundingRate", params={
+                "symbol":    bn_symbol,
+                "startTime": cursor,
+                "endTime":   end_ts,
+                "limit":     1000,
+            })
+            resp.raise_for_status()
+            data = resp.json()
+            if not data:
+                break
+
+            for d in data:
+                all_rows.append({
+                    "time":    pd.Timestamp(int(d["fundingTime"]), unit="ms", tz="UTC"),
+                    "funding": float(d["fundingRate"]),
+                    "premium": 0.0,  # Binance doesn't expose premium separately
+                })
+
+            last_ts = int(data[-1]["fundingTime"])
+            if last_ts <= cursor:
+                break
+            cursor = last_ts + FUNDING_INTERVAL_MS
+
+    if not all_rows:
+        log.warning("Binance funding: no data for %s %s→%s", symbol, start_date, end_date)
+        return pd.DataFrame(columns=["funding", "premium"])
+
+    df = pd.DataFrame(all_rows).set_index("time").sort_index()
+    df = df[~df.index.duplicated(keep="last")]
+    log.info("Binance funding %s: %d records (%s → %s)", symbol, len(df), df.index[0].date(), df.index[-1].date())
     return df

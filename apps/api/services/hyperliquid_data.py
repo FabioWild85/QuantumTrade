@@ -100,16 +100,23 @@ class HyperliquidData:
     # ── Funding History ───────────────────────────────────────────────────────
 
     async def get_funding_history(
-        self, symbol: str = "BTC", hours: int = 48
+        self, symbol: str = "BTC", hours: int = 48,
+        start_time_ms: int | None = None,
+        end_time_ms: int | None = None,
     ) -> pd.DataFrame:
-        end_ts = int(datetime.now(timezone.utc).timestamp() * 1000)
-        start_ts = end_ts - hours * 3_600_000
+        if start_time_ms is None:
+            _now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+            start_time_ms = _now_ms - hours * 3_600_000
 
-        data = await self._post({
+        payload: dict = {
             "type": "fundingHistory",
             "coin": symbol,
-            "startTime": start_ts,
-        })
+            "startTime": start_time_ms,
+        }
+        if end_time_ms is not None:
+            payload["endTime"] = end_time_ms
+
+        data = await self._post(payload)
 
         rows = [
             {
@@ -119,6 +126,8 @@ class HyperliquidData:
             }
             for d in data
         ]
+        if not rows:
+            return pd.DataFrame(columns=["funding", "premium"])
         return pd.DataFrame(rows).set_index("time").sort_index()
 
     # ── OI History (REST) ────────────────────────────────────────────────────

@@ -128,6 +128,23 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
     atr_pct_gate_enabled  = getattr(cfg, "atr_pct_gate_enabled",  False)
     atr_pct_min           = getattr(cfg, "atr_pct_min",           0.008)
     atr_pct_mode          = getattr(cfg, "atr_pct_mode",          "scale")
+    # Feature A: Exhaustion Guard proportional boost
+    exhaustion_prop_enabled = getattr(cfg, "exhaustion_prop_enabled", False)
+    exhaustion_prop_scale   = getattr(cfg, "exhaustion_prop_scale",   0.06)
+    # Feature B: Daily RSI Gate
+    daily_rsi_gate_enabled  = getattr(cfg, "daily_rsi_gate_enabled",  False)
+    daily_rsi_short_block   = getattr(cfg, "daily_rsi_short_block",   18.0)
+    daily_rsi_long_block    = getattr(cfg, "daily_rsi_long_block",    82.0)
+    # Feature C: Volume Climax Gate
+    vol_climax_gate_enabled = getattr(cfg, "vol_climax_gate_enabled", False)
+    vol_climax_gate_z       = getattr(cfg, "vol_climax_gate_z",       2.5)
+    vol_climax_gate_rsi     = getattr(cfg, "vol_climax_gate_rsi",     30.0)
+    # Feature D: C2 Forecast Inversion Gate
+    c2_inversion_gate_enabled = getattr(cfg, "c2_inversion_gate_enabled", False)
+    c2_inversion_pct          = getattr(cfg, "c2_inversion_pct",          0.005)
+    # Feature E: Exhaustion Max Hold
+    exhaustion_max_hold_enabled = getattr(cfg, "exhaustion_max_hold_enabled", False)
+    exhaustion_max_hold_bars    = getattr(cfg, "exhaustion_max_hold_bars",    2)
     # Pullback Entry
     pullback_entry_enabled    = getattr(cfg, "pullback_entry_enabled",    False)
     pullback_impulse_atr_mult = getattr(cfg, "pullback_impulse_atr_mult", 1.5)
@@ -181,7 +198,24 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
     if len(df_ohlcv) < 100:
         return {"error": f"Dati insufficienti per il periodo {req.from_date}→{req.to_date}"}
 
-    df_fund = await hl.get_funding_history(symbol, hours=min(days * 24 + 200, 8760))
+    # Fetch funding history aligned to the backtest period.
+    # Mirror the OHLCV source decision: Binance for old periods, HL for recent ones.
+    _fund_buf_h = max(funding_gate_lookback * 4 + 24, 72)  # lookback buffer in hours
+    _fund_buf_dt = dt_from - timedelta(hours=_fund_buf_h)
+    if use_binance and dt_from < hl_cutoff:
+        from services.binance_data import get_funding_binance
+        df_fund = await get_funding_binance(
+            symbol,
+            start_date=_fund_buf_dt.strftime("%Y-%m-%d"),
+            end_date=req.to_date,
+        )
+        log.info("Using Binance funding: %d records", len(df_fund))
+    else:
+        _fund_start_ms = int(_fund_buf_dt.timestamp() * 1000)
+        _fund_end_ms   = int(dt_to.timestamp() * 1000)
+        df_fund = await hl.get_funding_history(
+            symbol, start_time_ms=_fund_start_ms, end_time_ms=_fund_end_ms
+        )
 
     # Try to enrich with real OI + liquidation data from Coinglass/Coinalyze
     try:
@@ -311,6 +345,23 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
         atr_pct_gate_enabled=atr_pct_gate_enabled,
         atr_pct_min=atr_pct_min,
         atr_pct_mode=atr_pct_mode,
+        # Feature A: Exhaustion Guard proportional boost
+        exhaustion_prop_enabled=exhaustion_prop_enabled,
+        exhaustion_prop_scale=exhaustion_prop_scale,
+        # Feature B: Daily RSI Gate
+        daily_rsi_gate_enabled=daily_rsi_gate_enabled,
+        daily_rsi_short_block=daily_rsi_short_block,
+        daily_rsi_long_block=daily_rsi_long_block,
+        # Feature C: Volume Climax Gate
+        vol_climax_gate_enabled=vol_climax_gate_enabled,
+        vol_climax_gate_z=vol_climax_gate_z,
+        vol_climax_gate_rsi=vol_climax_gate_rsi,
+        # Feature D: C2 Forecast Inversion Gate
+        c2_inversion_gate_enabled=c2_inversion_gate_enabled,
+        c2_inversion_pct=c2_inversion_pct,
+        # Feature E: used via _exhaustion_triggered flag on DecisionResult
+        exhaustion_max_hold_enabled=exhaustion_max_hold_enabled,
+        exhaustion_max_hold_bars=exhaustion_max_hold_bars,
     )
     risk = RiskManager(
         sl_atr_mult=sl_atr_mult,
@@ -360,6 +411,8 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
         "gate_path_obstruction":    0,
         "gate_consec_bars":         0,
         "gate_atr_pct":             0,
+        "gate_daily_rsi":           0,
+        "gate_vol_climax":          0,
         # Bias / threshold modifiers
         "mod_mtf_alignment":        0,
         "mod_regime_bias":          0,
@@ -371,6 +424,9 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
         "mod_absorption_filter":    0,
         "mod_atr_pct_scale":        0,
         "mod_sweep_conf_bonus":     0,
+        "mod_exhaustion_prop":      0,
+        "mod_c2_inversion":         0,
+        "pm_exhaust_max_hold":      0,
         # Entry — structural SL/TP overrides
         "sl_structural_ob":         0,
         "sl_fvg":                   0,
@@ -398,6 +454,7 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
         "rev_pending_expired":      0,
         "rev_conflict_block":       0,
         "rev_trend_boost":          0,
+        "rev_guard_triggered":      0,
     }
 
     # Enhanced regime detection — mirrors live behavior (every 4 bars, cached between).
@@ -720,14 +777,24 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                     already_closed = True
 
             # ── Max hold bars: time-based force exit ──────────────────────────
-            # Reversal trades: always enforce rev_max_hold; trend trades: only if max_hold_bars_enabled.
+            # Priority: exhaust_max_hold (Feature E) > rev_max_hold (reversals) > max_hold_bars (trend).
             # Guard: a previous exit (lgbm_exit) may have set position=None / already_closed=True —
             # never access position.get() before this check or it crashes with NoneType.get.
             _is_rev_pos = position.get("is_reversal", False) if (position and not already_closed) else False
-            _max_hold_limit_bt = position.get("rev_max_hold", reversal_max_hold_bars_val) if _is_rev_pos else max_hold_bars_val
-            _max_hold_active_bt = _is_rev_pos or max_hold_bars_enabled
+            _exhaust_max_h_bt = position.get("exhaust_max_hold") if (position and not already_closed) else None
+            if _exhaust_max_h_bt is not None:
+                _max_hold_limit_bt  = _exhaust_max_h_bt
+                _max_hold_active_bt = True
+            elif _is_rev_pos:
+                _max_hold_limit_bt  = position.get("rev_max_hold", reversal_max_hold_bars_val)
+                _max_hold_active_bt = True
+            else:
+                _max_hold_limit_bt  = max_hold_bars_val
+                _max_hold_active_bt = max_hold_bars_enabled
             if not already_closed and position is not None and _max_hold_active_bt and bars_held >= _max_hold_limit_bt:
                 param_stats["pm_max_hold"] += 1
+                if _exhaust_max_h_bt is not None:
+                    param_stats["pm_exhaust_max_hold"] += 1
                 pnl_pct_m  = (close_price - entry) / entry * 100 if side == "long" \
                              else (entry - close_price) / entry * 100
                 pnl_usd_m  = position["size_usd"] * pnl_pct_m / 100
@@ -803,17 +870,31 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
             # accidentally block trades when Chronos is disabled.
             # Deterministic seed = bar timestamp → same run always = same trades.
             if use_chronos and chronos_forecaster is not None:
-                close_so_far   = df_feat["close"].values[:i + 1]
-                volume_so_far  = df_feat["volume"].values[:i + 1]    if "volume"    in df_feat.columns else None
-                oi_so_far      = df_feat["oi_raw"].values[:i + 1]    if "oi_raw"    in df_feat.columns else None
-                funding_so_far = df_feat["funding"].values[:i + 1]   if "funding"   in df_feat.columns else None
-                cvd_so_far     = df_feat["delta_raw"].values[:i + 1] if "delta_raw" in df_feat.columns else None
+                close_so_far      = df_feat["close"].values[:i + 1]
+                # vol_ratio (volume/vol_ma20) is more stable across regimes than raw volume.
+                # Fall back to raw volume if the normalised column is absent.
+                volume_so_far     = (df_feat["vol_ratio"].values[:i + 1]
+                                     if "vol_ratio"  in df_feat.columns else
+                                     df_feat["volume"].values[:i + 1]
+                                     if "volume"     in df_feat.columns else None)
+                oi_so_far         = df_feat["oi_raw"].values[:i + 1]   if "oi_raw"    in df_feat.columns else None
+                funding_so_far    = df_feat["funding"].values[:i + 1]  if "funding"   in df_feat.columns else None
+                cvd_so_far        = df_feat["delta_raw"].values[:i + 1] if "delta_raw" in df_feat.columns else None
+                liq_so_far        = df_feat["liq_ratio"].values[:i + 1] if "liq_ratio" in df_feat.columns else None
+                premium_so_far    = (df_feat["premium_z"].values[:i + 1]
+                                     if getattr(cfg, "chronos_premium_covariate", False)
+                                     and "premium_z" in df_feat.columns else None)
                 c2_out = chronos_forecaster.forecast(
                     close_so_far, horizon=3, atr=atr,
                     volume_series=volume_so_far,
                     oi_series=oi_so_far,
                     funding_series=funding_so_far,
                     cvd_series=cvd_so_far,
+                    liq_series=liq_so_far,
+                    premium_series=premium_so_far,
+                    timestamps=    df_feat.index[:i + 1],
+                    interval_hours=4,
+                    calendar_covariates=getattr(cfg, "chronos_calendar_covariates", False),
                     use_calibration=getattr(cfg, "use_chronos_calibration", False),
                 )
                 # Guard: forecast() should always return a dict, but if a model/inference
@@ -878,6 +959,7 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                         and _rev_res.score >= reversal_score_threshold
                         and _rev_res.component_count >= reversal_min_components
                     ):
+                        param_stats["rev_guard_triggered"] += 1
                         _trend_action = result.action
                         if _trend_action == "no_trade" and not reversal_guard_only:
                             # Case 1: trend hold → reversal takes control (skipped in guard_only mode)
@@ -923,6 +1005,8 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                 if "FILTER: PathObstruction" in _line: param_stats["gate_path_obstruction"]  += 1; break
                 if "FILTER: ConsecBars"      in _line: param_stats["gate_consec_bars"]       += 1; break
                 if "GATE: ATR_PCT"           in _line: param_stats["gate_atr_pct"]           += 1; break
+                if "GATE: Daily RSI"         in _line: param_stats["gate_daily_rsi"]         += 1; break
+                if "GATE: VolClimax"         in _line: param_stats["gate_vol_climax"]         += 1; break
             # Modifier loop: per-evaluation flags avoid double-count from multi-line modifiers
             # (e.g. ExhaustionGuard adds up to 2 lines when both long and short conditions fire).
             _mods_seen: set = set()
@@ -943,6 +1027,10 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                     param_stats["mod_atr_pct_scale"]    += 1; _mods_seen.add("mod_atr")
                 if "SweepConf:"       in _line and "mod_sweep" not in _mods_seen:
                     param_stats["mod_sweep_conf_bonus"] += 1; _mods_seen.add("mod_sweep")
+                if "proporzionale"    in _line and "mod_exh_prop" not in _mods_seen:
+                    param_stats["mod_exhaustion_prop"]  += 1; _mods_seen.add("mod_exh_prop")
+                if "C2 InversionGate" in _line and "mod_c2_inv" not in _mods_seen:
+                    param_stats["mod_c2_inversion"]     += 1; _mods_seen.add("mod_c2_inv")
             if result.action == "long":
                 param_stats["signals_long"]  += 1
                 if result.size_factor < 0.99: param_stats["mod_counter_trend_size"] += 1
@@ -1098,6 +1186,7 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
 
                 # Immediate entry (pullback not enabled or impulse below threshold)
                 _is_rev_entry = getattr(result, "_is_reversal", False)
+                _exhaust_triggered = getattr(result, "_exhaustion_triggered", False)
                 fee_entry = effective_size_usd * HL_TAKER_FEE
                 equity   -= fee_entry
                 position  = {
@@ -1120,6 +1209,13 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                     "is_reversal":       _is_rev_entry,
                     "rev_sl_atr_mult":   reversal_sl_atr_mult if _is_rev_entry else sl_atr_mult,
                     "rev_max_hold":      reversal_max_hold_bars_val,
+                    # Feature E: Exhaustion Max Hold
+                    "exhaust_max_hold": (
+                        exhaustion_max_hold_bars
+                        if _exhaust_triggered and exhaustion_max_hold_enabled
+                        else None
+                    ),
+                    "is_exhaust_hold":   _exhaust_triggered and exhaustion_max_hold_enabled,
                 }
 
     # ── 6. Close any open position at last price ──────────────────────────────
@@ -1202,10 +1298,17 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
         "rev_pending_set":        reversal_mode_enabled and reversal_entry_mode == "limit_retest",
         "rev_pending_triggered":  reversal_mode_enabled and reversal_entry_mode == "limit_retest",
         "rev_pending_expired":    reversal_mode_enabled and reversal_entry_mode == "limit_retest",
-        "rev_conflict_block":     reversal_mode_enabled,  # tracked whenever reversal is on, regardless of conflict_block toggle
+        "rev_conflict_block":     reversal_mode_enabled,
         "rev_trend_boost":        reversal_mode_enabled and not reversal_trend_hold_only,
+        "rev_guard_triggered":    reversal_mode_enabled,
         # Data sources (no runtime counter — on/off only)
         "data_binance_cvd":       binance_cvd_enabled,
+        # Feature A-E: new gates/modifiers
+        "mod_exhaustion_prop":    exhaustion_prop_enabled,
+        "gate_daily_rsi":         daily_rsi_gate_enabled,
+        "gate_vol_climax":        vol_climax_gate_enabled,
+        "mod_c2_inversion":       c2_inversion_gate_enabled,
+        "pm_exhaust_max_hold":    exhaustion_max_hold_enabled,
     }
 
     # ── Reversal stats (separati da trend stats) ─────────────────────────────

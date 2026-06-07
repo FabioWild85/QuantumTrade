@@ -53,6 +53,8 @@ interface ParamStats {
   gate_path_obstruction: number;
   gate_consec_bars: number;
   gate_atr_pct: number;
+  gate_daily_rsi?: number;
+  gate_vol_climax?: number;
   // bias/modifiers
   mod_mtf_alignment: number;
   mod_regime_bias: number;
@@ -64,6 +66,9 @@ interface ParamStats {
   mod_absorption_filter: number;
   mod_atr_pct_scale: number;
   mod_sweep_conf_bonus: number;
+  mod_exhaustion_prop?: number;
+  mod_c2_inversion?: number;
+  pm_exhaust_max_hold?: number;
   // structural SL/TP overrides
   sl_structural_ob: number;
   sl_fvg: number;
@@ -86,6 +91,7 @@ interface ParamStats {
   pb_decayed: number;
   // reversal zone detector
   rev_signals?: number;
+  rev_guard_triggered?: number;
   rev_pending_set?: number;
   rev_pending_triggered?: number;
   rev_pending_expired?: number;
@@ -800,6 +806,8 @@ const ParamActivity: React.FC<{ ps: ParamStats; cfg?: Record<string, boolean> }>
         { key: 'gate_path_obstruction', label: 'Path Obstruction (OB opposto blocca il percorso)', count: ps.gate_path_obstruction, pct: pct(ps.gate_path_obstruction) },
         { key: 'gate_consec_bars',      label: 'Consecutive Bars Filter (trend overextended)', count: ps.gate_consec_bars,  pct: pct(ps.gate_consec_bars) },
         { key: 'gate_atr_pct',          label: 'ATR% Volatility Gate (bassa volatilità, fee drag)', count: ps.gate_atr_pct ?? 0, pct: pct(ps.gate_atr_pct ?? 0) },
+        { key: 'gate_daily_rsi',        label: 'Daily RSI Gate (RSI giornaliero estremo — capitolazione/euforia)', count: ps.gate_daily_rsi ?? 0, pct: pct(ps.gate_daily_rsi ?? 0) },
+        { key: 'gate_vol_climax',       label: 'Volume Climax Gate (volume 2.5σ + RSI oversold — capitolazione)', count: ps.gate_vol_climax ?? 0, pct: pct(ps.gate_vol_climax ?? 0) },
       ],
     },
     {
@@ -816,6 +824,8 @@ const ParamActivity: React.FC<{ ps: ParamStats; cfg?: Record<string, boolean> }>
         { key: 'mod_absorption_filter',  label: 'Absorption Filter (volume anomalo, soglia +0.03)', count: ps.mod_absorption_filter,  pct: pct(ps.mod_absorption_filter) },
         { key: 'mod_atr_pct_scale',      label: 'ATR% Scale (size ridotta per bassa volatilità)',   count: ps.mod_atr_pct_scale ?? 0, pct: pct(ps.mod_atr_pct_scale ?? 0), note: (ps.mod_atr_pct_scale ?? 0) > 0 ? `${pct(ps.mod_atr_pct_scale ?? 0)}% delle candele` : undefined },
         { key: 'mod_sweep_conf_bonus',   label: 'Sweep Confluenza direzionale (bonus -0.03)',       count: ps.mod_sweep_conf_bonus,   pct: pct(ps.mod_sweep_conf_bonus) },
+        { key: 'mod_exhaustion_prop',    label: 'ExhaustionGuard Proporzionale (boost extra per ret_48 estremo)', count: ps.mod_exhaustion_prop ?? 0, pct: pct(ps.mod_exhaustion_prop ?? 0) },
+        { key: 'mod_c2_inversion',       label: 'C2 Inversion Gate (C2 forecast opposto al segnale → +0.10 threshold)', count: ps.mod_c2_inversion ?? 0, pct: pct(ps.mod_c2_inversion ?? 0) },
       ],
     },
     {
@@ -838,7 +848,8 @@ const ParamActivity: React.FC<{ ps: ParamStats; cfg?: Record<string, boolean> }>
         { key: 'pm_be_sl',       label: 'Break-even SL applicato (SL a breakeven)',          count: ps.pm_be_sl,       pct: trades > 0 ? pct(ps.pm_be_sl, trades)       : 0, note: trades > 0 ? `${pct(ps.pm_be_sl, trades)}% dei trade`       : undefined },
         { key: 'pm_partial_tp',  label: 'Partial TP eseguito (50% della posizione chiusa)', count: ps.pm_partial_tp,  pct: trades > 0 ? pct(ps.pm_partial_tp, trades)  : 0, note: trades > 0 ? `${pct(ps.pm_partial_tp, trades)}% dei trade`  : undefined },
         { key: 'pm_lgbm_exit',   label: 'LGBM Exit (uscita AI per segnale invertito)',      count: ps.pm_lgbm_exit,   pct: trades > 0 ? pct(ps.pm_lgbm_exit, trades)   : 0, note: trades > 0 ? `${pct(ps.pm_lgbm_exit, trades)}% dei trade`   : undefined },
-        { key: 'pm_max_hold',    label: 'Max Hold (uscita temporale forzata)',               count: ps.pm_max_hold,    pct: trades > 0 ? pct(ps.pm_max_hold, trades)    : 0, note: trades > 0 ? `${pct(ps.pm_max_hold, trades)}% dei trade`    : undefined },
+        { key: 'pm_max_hold',         label: 'Max Hold (uscita temporale forzata)',                    count: ps.pm_max_hold,           pct: trades > 0 ? pct(ps.pm_max_hold, trades)          : 0, note: trades > 0 ? `${pct(ps.pm_max_hold, trades)}% dei trade`          : undefined },
+        { key: 'pm_exhaust_max_hold', label: 'Exhaust Max Hold (uscita anticipata per entry in esaurimento)', count: ps.pm_exhaust_max_hold ?? 0, pct: trades > 0 ? pct(ps.pm_exhaust_max_hold ?? 0, trades) : 0, note: trades > 0 ? `${pct(ps.pm_exhaust_max_hold ?? 0, trades)}% dei trade` : undefined },
       ],
     },
     {
@@ -870,8 +881,9 @@ const ParamActivity: React.FC<{ ps: ParamStats; cfg?: Record<string, boolean> }>
       color: 'border-violet-200 dark:border-violet-500/20',
       dot: 'bg-violet-500',
       rows: [
-        { key: 'rev_signals',       alwaysShow: true, label: 'Trade reversal aperti (score ≥ soglia, guard_only=OFF)', count: ps.rev_signals ?? 0, pct: ps.bars_evaluated > 0 ? pct(ps.rev_signals ?? 0, ps.bars_evaluated) : 0, note: ps.bars_evaluated > 0 ? `${pct(ps.rev_signals ?? 0, ps.bars_evaluated)}% delle barre` : undefined },
-        { key: 'rev_conflict_block', alwaysShow: true, label: 'Trade trend bloccati dal Reversal (esaurimento rilevato)', count: ps.rev_conflict_block ?? 0, pct: ps.bars_evaluated > 0 ? pct(ps.rev_conflict_block ?? 0, ps.bars_evaluated) : 0, note: ps.bars_evaluated > 0 ? `${pct(ps.rev_conflict_block ?? 0, ps.bars_evaluated)}% delle barre` : undefined },
+        { key: 'rev_guard_triggered', alwaysShow: true, label: 'Guard — attivazioni totali (score ≥ soglia, qualsiasi modalità)', count: ps.rev_guard_triggered ?? 0, pct: ps.bars_evaluated > 0 ? pct(ps.rev_guard_triggered ?? 0, ps.bars_evaluated) : 0, note: ps.bars_evaluated > 0 ? `${pct(ps.rev_guard_triggered ?? 0, ps.bars_evaluated)}% delle barre` : undefined },
+        { key: 'rev_signals',       alwaysShow: true, label: 'Trade reversal aperti (guard_only=OFF, score ≥ soglia)', count: ps.rev_signals ?? 0, pct: (ps.rev_guard_triggered ?? 0) > 0 ? pct(ps.rev_signals ?? 0, ps.rev_guard_triggered!) : 0, note: (ps.rev_guard_triggered ?? 0) > 0 ? `${pct(ps.rev_signals ?? 0, ps.rev_guard_triggered!)}% delle attivazioni` : undefined },
+        { key: 'rev_conflict_block', alwaysShow: true, label: 'Trade trend bloccati dal Guard (direzione opposta al trend)', count: ps.rev_conflict_block ?? 0, pct: (ps.rev_guard_triggered ?? 0) > 0 ? pct(ps.rev_conflict_block ?? 0, ps.rev_guard_triggered!) : 0, note: (ps.rev_guard_triggered ?? 0) > 0 ? `${pct(ps.rev_conflict_block ?? 0, ps.rev_guard_triggered!)}% delle attivazioni` : undefined },
         ...((ps.rev_pending_set ?? 0) > 0 || isOn('rev_pending_set') ? [
           { key: 'rev_pending_set',      label: 'Pending creati (limit-retest mode)',                              count: ps.rev_pending_set ?? 0,      pct: (ps.rev_signals ?? 0) > 0 ? pct(ps.rev_pending_set ?? 0, ps.rev_signals!) : 0,      note: (ps.rev_signals ?? 0) > 0 ? `${pct(ps.rev_pending_set ?? 0, ps.rev_signals!)}% dei segnali` : undefined },
           { key: 'rev_pending_triggered',label: 'Pending triggerati (retest raggiunto → trade aperto)',            count: ps.rev_pending_triggered ?? 0, pct: (ps.rev_pending_set ?? 0) > 0 ? pct(ps.rev_pending_triggered ?? 0, ps.rev_pending_set!) : 0, note: (ps.rev_pending_set ?? 0) > 0 ? `${pct(ps.rev_pending_triggered ?? 0, ps.rev_pending_set!)}% dei pending` : undefined },
@@ -1333,7 +1345,7 @@ const NumInput: React.FC<{
 );
 
 // ── Regime period data ────────────────────────────────────────────────────────
-type RegimeKey = 'uptrend' | 'downtrend' | 'sideways' | 'flat';
+type RegimeKey = 'uptrend' | 'downtrend' | 'sideways' | 'flat' | 'stress';
 
 interface RegimePeriodEntry {
   id: string;
@@ -1392,6 +1404,16 @@ const REGIME_META: Record<RegimeKey, {
     activeBg: 'bg-slate-50 dark:bg-white/5',
     activeBorder: 'border-slate-400 dark:border-slate-500',
   },
+  stress: {
+    label: 'Stress Test', icon: '⚡',
+    dot: 'bg-orange-500', bg: 'bg-orange-50 dark:bg-orange-500/10',
+    border: 'border-orange-200 dark:border-orange-500/30',
+    text: 'text-orange-700 dark:text-orange-400',
+    dropBg: 'bg-white dark:bg-[#151E32]',
+    hoverBg: 'hover:bg-orange-50 dark:hover:bg-orange-500/10',
+    activeBg: 'bg-orange-50 dark:bg-orange-500/10',
+    activeBorder: 'border-orange-400 dark:border-orange-500',
+  },
 };
 
 const REGIME_PERIODS: Record<RegimeKey, RegimePeriodEntry[]> = {
@@ -1409,18 +1431,18 @@ const REGIME_PERIODS: Record<RegimeKey, RegimePeriodEntry[]> = {
     { id: 'D1', shortLabel: 'D1 · Apr→Giu 2021', fullLabel: '13 Apr – 22 Giu 2021', from: '2021-04-13', to: '2021-06-22', change: '-56%', duration: '2.3 mesi', range: '$64k → $28k', isRef: true },
     { id: 'D2', shortLabel: 'D2 · Nov 2021→Gen 2022', fullLabel: '10 Nov 2021 – 22 Gen 2022', from: '2021-11-10', to: '2022-01-22', change: '-52%', duration: '2.5 mesi', range: '$69k → $33k', isRef: false },
     { id: 'D3', shortLabel: 'D3 · Apr→Giu 2022 ⚠', fullLabel: '5 Apr – 18 Giu 2022', from: '2022-04-05', to: '2022-06-18', change: '-62%', duration: '2.5 mesi', range: '$46k → $17.6k', isRef: false },
-    { id: 'D4', shortLabel: 'D4 · Nov 2022 ⚠', fullLabel: '3 – 22 Nov 2022', from: '2022-11-03', to: '2022-11-22', change: '-26%', duration: '3 settimane', range: '$21k → $15.5k', isRef: false },
-    { id: 'D5', shortLabel: 'D5 · Ago→Set 2023', fullLabel: '15 Ago – 11 Set 2023', from: '2023-08-15', to: '2023-09-11', change: '-19%', duration: '4 settimane', range: '$31k → $25k', isRef: false },
+    { id: 'D4', shortLabel: 'D4 · Nov→Dic 2022 ⚠', fullLabel: '1 Nov – 10 Dic 2022', from: '2022-11-01', to: '2022-12-10', change: '-26%', duration: '5.5 settimane', range: '$21k → $15.5k → $17k', isRef: false },
+    { id: 'D5', shortLabel: 'D5 · Ago→Set 2023', fullLabel: '1 Ago – 11 Set 2023', from: '2023-08-01', to: '2023-09-11', change: '-14%', duration: '5.5 settimane', range: '$29.5k → $25k', isRef: false },
     { id: 'D6', shortLabel: 'D6 · Giu→Ago 2024 ⚠', fullLabel: '5 Giu – 5 Ago 2024', from: '2024-06-05', to: '2024-08-05', change: '-32%', duration: '9 settimane', range: '$72k → $49k', isRef: false },
     { id: 'D7', shortLabel: 'D7 · Feb→Apr 2025', fullLabel: '1 Feb – 7 Apr 2025', from: '2025-02-01', to: '2025-04-07', change: '-28%', duration: '9 settimane', range: '$103k → $74k', isRef: false },
-    { id: 'D8', shortLabel: 'D8 · Nov 2025', fullLabel: '1 – 28 Nov 2025', from: '2025-11-01', to: '2025-11-28', change: '-27%', duration: '4 settimane', range: '$110k → $80k', isRef: false },
-    { id: 'D9', shortLabel: 'D9 · Gen→Feb 2026', fullLabel: '15 Gen – 7 Feb 2026', from: '2026-01-15', to: '2026-02-07', change: '-38%', duration: '3.5 settimane', range: '$97k → $60k', isRef: false },
+    { id: 'D8', shortLabel: 'D8 · Ott→Nov 2025', fullLabel: '20 Ott – 28 Nov 2025', from: '2025-10-20', to: '2025-11-28', change: '-27%', duration: '5.5 settimane', range: '$110k → $80k', isRef: false },
+    { id: 'D9', shortLabel: 'D9 · Gen→Feb 2026', fullLabel: '8 Gen – 14 Feb 2026', from: '2026-01-08', to: '2026-02-14', change: '-38%', duration: '5.5 settimane', range: '$97k → $60k', isRef: false },
   ],
   sideways: [
     { id: 'S1', shortLabel: 'S1 · Giu→Lug 2021', fullLabel: '22 Giu – 20 Lug 2021', from: '2021-06-22', to: '2021-07-20', change: '±24%', duration: '4 settimane', range: '$29k – $36k', isRef: false },
-    { id: 'S2', shortLabel: 'S2 · Set→Ott 2021', fullLabel: '7 Set – 4 Ott 2021', from: '2021-09-07', to: '2021-10-04', change: '±24%', duration: '4 settimane', range: '$42k – $52k', isRef: false },
+    { id: 'S2', shortLabel: 'S2 · Set→Ott 2021', fullLabel: '1 Set – 10 Ott 2021', from: '2021-09-01', to: '2021-10-10', change: '±24%', duration: '5.5 settimane', range: '$43k – $52k', isRef: false },
     { id: 'S3', shortLabel: 'S3 · Feb→Apr 2022', fullLabel: '16 Feb – 4 Apr 2022', from: '2022-02-16', to: '2022-04-04', change: '±21%', duration: '7 settimane', range: '$37k – $45k', isRef: false },
-    { id: 'S4', shortLabel: 'S4 · Lug→Ago 2022', fullLabel: '26 Lug – 17 Ago 2022', from: '2022-07-26', to: '2022-08-17', change: '±14%', duration: '3 settimane', range: '$22k – $25k', isRef: false },
+    { id: 'S4', shortLabel: 'S4 · Lug→Ago 2022', fullLabel: '14 Lug – 17 Ago 2022', from: '2022-07-14', to: '2022-08-17', change: '±16%', duration: '4.9 settimane', range: '$20k – $25k', isRef: false },
     { id: 'S5', shortLabel: 'S5 · Ott→Nov 2022', fullLabel: '1 Ott – 3 Nov 2022', from: '2022-10-01', to: '2022-11-03', change: '±13%', duration: '5 settimane', range: '$18.5k – $21k', isRef: false },
     { id: 'S6', shortLabel: 'S6 · Mar→Giu 2023', fullLabel: '1 Mar – 15 Giu 2023', from: '2023-03-01', to: '2023-06-15', change: '±24%', duration: '3.5 mesi', range: '$25k – $31k', isRef: true },
     { id: 'S7', shortLabel: 'S7 · Set 2024', fullLabel: '1 – 30 Set 2024', from: '2024-09-01', to: '2024-09-30', change: '±26%', duration: '4 settimane', range: '$53k – $67k', isRef: false },
@@ -1433,9 +1455,16 @@ const REGIME_PERIODS: Record<RegimeKey, RegimePeriodEntry[]> = {
   flat: [
     { id: 'F1', shortLabel: 'F1 · Dic 2022→Gen 2023', fullLabel: '1 Dic 2022 – 12 Gen 2023', from: '2022-12-01', to: '2023-01-12', change: '±8%', duration: '6 settimane', range: '$16k – $17.2k', isRef: true },
     { id: 'F2', shortLabel: 'F2 · Set→Ott 2023', fullLabel: '15 Set – 14 Ott 2023', from: '2023-09-15', to: '2023-10-14', change: '±10%', duration: '4 settimane', range: '$25k – $27.5k', isRef: false },
-    { id: 'F3', shortLabel: 'F3 · Apr 2024', fullLabel: '15 – 30 Apr 2024', from: '2024-04-15', to: '2024-04-30', change: '±8%', duration: '2.5 settimane', range: '$60k – $65k', isRef: false },
-    { id: 'F4', shortLabel: 'F4 · Giu→Lug 2024', fullLabel: '10 Giu – 5 Lug 2024', from: '2024-06-10', to: '2024-07-05', change: '±13%', duration: '3.5 settimane', range: '$60k – $68k', isRef: false },
-    { id: 'F5', shortLabel: 'F5 · Mag 2026', fullLabel: '1 – 17 Mag 2026', from: '2026-05-01', to: '2026-05-17', change: '±8.5%', duration: '~2.5 settimane', range: '$76k – $83k', isRef: false },
+    { id: 'F3', shortLabel: 'F3 · Post-Halving Apr→Mag 2024', fullLabel: '20 Apr – 20 Mag 2024', from: '2024-04-20', to: '2024-05-20', change: '±9%', duration: '4.4 settimane', range: '$57k – $68k', isRef: false },
+    { id: 'F4', shortLabel: 'F4 · Giu→Lug 2024', fullLabel: '10 Giu – 15 Lug 2024', from: '2024-06-10', to: '2024-07-15', change: '±13%', duration: '5 settimane', range: '$60k – $68k', isRef: false },
+    { id: 'F5', shortLabel: 'F5 · Mag 2026', fullLabel: '1 – 31 Mag 2026', from: '2026-05-01', to: '2026-05-31', change: '±8.5%', duration: '4.4 settimane', range: '$76k – $83k', isRef: false },
+  ],
+  stress: [
+    { id: 'ST1', shortLabel: 'ST1 · COVID Crash Feb→Apr 2020', fullLabel: '15 Feb – 30 Apr 2020', from: '2020-02-15', to: '2020-04-30', change: '-63% → +137%', duration: '10.5 settimane', range: '$10.2k → $3.8k → $9k', isRef: true },
+    { id: 'ST2', shortLabel: 'ST2 · Bear Cap Nov 2018→Feb 2019', fullLabel: '1 Nov 2018 – 28 Feb 2019', from: '2018-11-01', to: '2019-02-28', change: '-49%', duration: '17 settimane', range: '$6.3k → $3.2k', isRef: false },
+    { id: 'ST3', shortLabel: 'ST3 · ETF Sell-the-News Gen 2024', fullLabel: '8 Gen – 29 Feb 2024', from: '2024-01-08', to: '2024-02-29', change: '-18% → +65%', duration: '7.5 settimane', range: '$46k → $38k → $63k', isRef: false },
+    { id: 'ST4', shortLabel: 'ST4 · Black Monday Lug→Set 2024', fullLabel: '29 Lug – 7 Set 2024', from: '2024-07-29', to: '2024-09-07', change: '-28% → +18%', duration: '5.5 settimane', range: '$68k → $49k → $57k', isRef: false },
+    { id: 'ST5', shortLabel: 'ST5 · Bull→Bear 2019', fullLabel: '26 Giu – 25 Nov 2019', from: '2019-06-26', to: '2019-11-25', change: '-53%', duration: '22 settimane', range: '$13.8k → $6.5k', isRef: false },
   ],
 };
 
@@ -1677,7 +1706,24 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   const [exhaustionRsiHigh,  setExhaustionRsiHigh]  = useState('72');
   const [exhaustionRet48,    setExhaustionRet48]    = useState('6.0');
   const [exhaustionBoost,    setExhaustionBoost]    = useState('0.06');
-  const [structuralSl,       setStructuralSl]       = useState(false);
+  // Feature A: Exhaustion Guard proporzionale
+  const [exhaustionProp,       setExhaustionProp]       = useState(false);
+  const [exhaustionPropScale,  setExhaustionPropScale]  = useState('0.06');
+  // Feature B: Daily RSI Gate
+  const [dailyRsiGate,         setDailyRsiGate]         = useState(false);
+  const [dailyRsiShortBlock,   setDailyRsiShortBlock]   = useState('18');
+  const [dailyRsiLongBlock,    setDailyRsiLongBlock]    = useState('82');
+  // Feature C: Volume Climax Gate
+  const [volClimaxGate,        setVolClimaxGate]        = useState(false);
+  const [volClimaxZ,           setVolClimaxZ]           = useState('2.5');
+  const [volClimaxRsi,         setVolClimaxRsi]         = useState('30');
+  // Feature D: C2 Inversion Gate
+  const [c2InversionGate,      setC2InversionGate]      = useState(false);
+  const [c2InversionPct,       setC2InversionPct]       = useState('0.005');
+  // Feature E: Exhaustion Max Hold
+  const [exhaustionMaxHold,    setExhaustionMaxHold]    = useState(false);
+  const [exhaustionMaxHoldBars,setExhaustionMaxHoldBars]= useState('2');
+  const [structuralSl,         setStructuralSl]         = useState(false);
   const [obBufferPct,        setObBufferPct]        = useState('0.3');
   const [obBufferMinAtr,     setObBufferMinAtr]     = useState('0.0');
   const [lateEntryFilter,    setLateEntryFilter]    = useState(false);
@@ -1768,6 +1814,8 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   const [advMtfEnabled,  setAdvMtfEnabled]  = useState(true);
   // Chronos blend
   const [advChronosWeight, setAdvChronosWeight] = useState('0.40');
+  const [chronosCalendarCov, setChronosCalendarCov] = useState(false);
+  const [chronosPremiumCov,  setChronosPremiumCov]  = useState(false);
   // Position management
   const [advBeSL,        setAdvBeSL]        = useState(false);
   const [advBeSLAct,     setAdvBeSLAct]     = useState('1.0');
@@ -1835,8 +1883,20 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     if (p.exhaustion_rsi_low         !== undefined) setExhaustionRsiLow(String(p.exhaustion_rsi_low));
     if (p.exhaustion_rsi_high        !== undefined) setExhaustionRsiHigh(String(p.exhaustion_rsi_high));
     if (p.exhaustion_ret48_pct       !== undefined) setExhaustionRet48(String(p.exhaustion_ret48_pct));
-    if (p.exhaustion_boost           !== undefined) setExhaustionBoost(String(p.exhaustion_boost));
-    if (p.structural_sl_enabled      !== undefined) setStructuralSl(!!p.structural_sl_enabled);
+    if (p.exhaustion_boost              !== undefined) setExhaustionBoost(String(p.exhaustion_boost));
+    if (p.exhaustion_prop_enabled       !== undefined) setExhaustionProp(!!p.exhaustion_prop_enabled);
+    if (p.exhaustion_prop_scale         !== undefined) setExhaustionPropScale(String(p.exhaustion_prop_scale));
+    if (p.daily_rsi_gate_enabled        !== undefined) setDailyRsiGate(!!p.daily_rsi_gate_enabled);
+    if (p.daily_rsi_short_block         !== undefined) setDailyRsiShortBlock(String(p.daily_rsi_short_block));
+    if (p.daily_rsi_long_block          !== undefined) setDailyRsiLongBlock(String(p.daily_rsi_long_block));
+    if (p.vol_climax_gate_enabled       !== undefined) setVolClimaxGate(!!p.vol_climax_gate_enabled);
+    if (p.vol_climax_gate_z             !== undefined) setVolClimaxZ(String(p.vol_climax_gate_z));
+    if (p.vol_climax_gate_rsi           !== undefined) setVolClimaxRsi(String(p.vol_climax_gate_rsi));
+    if (p.c2_inversion_gate_enabled     !== undefined) setC2InversionGate(!!p.c2_inversion_gate_enabled);
+    if (p.c2_inversion_pct              !== undefined) setC2InversionPct(String(p.c2_inversion_pct));
+    if (p.exhaustion_max_hold_enabled   !== undefined) setExhaustionMaxHold(!!p.exhaustion_max_hold_enabled);
+    if (p.exhaustion_max_hold_bars      !== undefined) setExhaustionMaxHoldBars(String(p.exhaustion_max_hold_bars));
+    if (p.structural_sl_enabled         !== undefined) setStructuralSl(!!p.structural_sl_enabled);
     if (p.ob_buffer_pct              !== undefined) setObBufferPct(String(p.ob_buffer_pct));
     if (p.ob_buffer_min_atr          !== undefined) setObBufferMinAtr(String(p.ob_buffer_min_atr));
     if (p.late_entry_filter_enabled  !== undefined) setLateEntryFilter(!!p.late_entry_filter_enabled);
@@ -1863,6 +1923,8 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     if (p.fng_extreme_greed_thr   !== undefined) setFngExtremeGreedThr(String(p.fng_extreme_greed_thr));
     if (p.fng_bias_delta          !== undefined) setFngBiasDelta(String(p.fng_bias_delta));
     if (p.chronos_enabled         !== undefined) setUseChronos(!!p.chronos_enabled);
+    if (p.chronos_calendar_covariates !== undefined) setChronosCalendarCov(!!p.chronos_calendar_covariates);
+    if (p.chronos_premium_covariate   !== undefined) setChronosPremiumCov(!!p.chronos_premium_covariate);
     if (p.be_sl_enabled                 !== undefined) setAdvBeSL(!!p.be_sl_enabled);
     if (p.be_sl_activation      !== undefined) setAdvBeSLAct(String(p.be_sl_activation));
     if (p.max_hold_bars_enabled !== undefined) setAdvMaxHold(!!p.max_hold_bars_enabled);
@@ -2066,6 +2128,8 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     // Advanced signal controls (always active — drawer only)
     chronos_enabled:               useChronos,
     chronos_weight:                parseFloat(advChronosWeight),
+    chronos_calendar_covariates:   chronosCalendarCov,
+    chronos_premium_covariate:     chronosPremiumCov,
     adx_gate_enabled:              advAdxEnabled,
     sweep_gate_enabled:            advSweepEnabled,
     fvg_filter_enabled:            advFvgEnabled,
@@ -2111,6 +2175,18 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     exhaustion_rsi_high:           parseFloat(exhaustionRsiHigh),
     exhaustion_ret48_pct:          parseFloat(exhaustionRet48),
     exhaustion_boost:              parseFloat(exhaustionBoost),
+    exhaustion_prop_enabled:       exhaustionProp,
+    exhaustion_prop_scale:         parseFloat(exhaustionPropScale),
+    daily_rsi_gate_enabled:        dailyRsiGate,
+    daily_rsi_short_block:         parseFloat(dailyRsiShortBlock),
+    daily_rsi_long_block:          parseFloat(dailyRsiLongBlock),
+    vol_climax_gate_enabled:       volClimaxGate,
+    vol_climax_gate_z:             parseFloat(volClimaxZ),
+    vol_climax_gate_rsi:           parseFloat(volClimaxRsi),
+    c2_inversion_gate_enabled:     c2InversionGate,
+    c2_inversion_pct:              parseFloat(c2InversionPct),
+    exhaustion_max_hold_enabled:   exhaustionMaxHold,
+    exhaustion_max_hold_bars:      parseInt(exhaustionMaxHoldBars),
     structural_sl_enabled:         structuralSl,
     ob_buffer_pct:                 parseFloat(obBufferPct),
     ob_buffer_min_atr:             parseFloat(obBufferMinAtr),
@@ -2205,6 +2281,7 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
       '',
       '━━━ MODELLI AI ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
       `Chronos-2:              ${useChronos ? `ATTIVO — peso ensemble ${advChronosWeight}` : 'DISATTIVATO (solo LightGBM)'}`,
+      `Chronos covariate:      ${useChronos ? `calendar ${chronosCalendarCov ? 'ON (hour+dow sin/cos)' : 'OFF'} · premium_z ${chronosPremiumCov ? 'ON' : 'OFF'}` : '—'}`,
       `C2 Uncertainty gate:    ${c2UncertaintyGate ? `ATTIVO — soglia ${c2UncertaintyThresh}` : 'DISATTIVATO'}`,
       `C2 Continuation gate:   ${c2ContProbGate ? `ATTIVO — soglia ${c2ContProbThresh}` : 'DISATTIVATO'}`,
       `Dynamic SL/TP:          ${dynamicSlTp ? `ATTIVO — blend ${dynamicSlTpBlend}` : 'DISATTIVATO'}`,
@@ -2218,7 +2295,7 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
       `TP — Swing:             ${swingTp ? `ATTIVO — blend ${Math.round(parseFloat(swingTpBlend) * 100)}% Swing / ${Math.round((1 - parseFloat(swingTpBlend)) * 100)}% ATR` : 'DISATTIVATO'}`,
       '',
       '━━━ SIGNAL QUALITY FILTERS ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
-      `Exhaustion Guard:       ${exhaustionGuard ? `ATTIVO — RSI low ${exhaustionRsiLow} · RSI high ${exhaustionRsiHigh} · ret48 ±${exhaustionRet48}% · boost +${exhaustionBoost}` : 'DISATTIVATO'}`,
+      `Exhaustion Guard:       ${exhaustionGuard ? `ATTIVO — RSI low ${exhaustionRsiLow} · RSI high ${exhaustionRsiHigh} · ret48 ±${exhaustionRet48}% · boost +${exhaustionBoost}` + (exhaustionProp ? ` · prop ×${exhaustionPropScale}` : ' · prop OFF') : 'DISATTIVATO'}`,
       `Absorption Filter:      ${absorptionFilter ? `ATTIVO — soglia z ${absorptionZThresh}σ` : 'DISATTIVATO'}`,
       `Dual ATR (SL/TP):       ${dualAtr ? 'ATTIVO (SL=ATR_21, TP=ATR_14)' : 'DISATTIVATO'}`,
       `Late Entry Filter:      ${lateEntryFilter ? `ATTIVO — max OB dist ${lateEntryMaxObDist} ATR` : 'DISATTIVATO'}`,
@@ -2751,6 +2828,47 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                         {!useChronos && <span className="ml-1.5 px-1.5 py-0.5 rounded text-[9px] font-bold bg-slate-100 dark:bg-white/10 text-slate-400 dark:text-slate-500 uppercase tracking-wider">Richiede C2</span>}
                       </p>
                       <p className="text-[10px] text-slate-400 dark:text-slate-500 leading-snug mt-0.5">Chronos p10 come floor per lo SL — migliora R:R con forecast confidenti</p>
+                    </div>
+                  </label>
+                </Tooltip>
+              </div>
+
+              {/* Covariate avanzate Chronos: calendar (future) + premium_z (past) */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {/* Calendar future covariates */}
+                <Tooltip text="Passa a Chronos-2 ora-del-giorno e giorno-della-settimana (encoding ciclico sin/cos) come future_covariates — l'unico segnale noto in anticipo. Aiuta il modello a riconoscere sessioni (Asia/EU/US), weekend e settlement funding. Effetto atteso principalmente su volatilità/incertezza." pos="bottom" width="wide">
+                  <label className={`flex items-start gap-2.5 cursor-pointer group p-3 rounded-xl border transition-all duration-200 h-full ${chronosCalendarCov && useChronos ? 'border-cyan-200 dark:border-cyan-500/30 bg-cyan-50/40 dark:bg-cyan-500/5' : 'border-slate-100 dark:border-white/5 hover:bg-slate-50 dark:hover:bg-white/[0.03]'} ${!useChronos ? 'opacity-50' : ''}`}>
+                    <div className="relative mt-0.5 flex-shrink-0">
+                      <input type="checkbox" className="sr-only" checked={chronosCalendarCov} onChange={e => setChronosCalendarCov(e.target.checked)} disabled={!useChronos} />
+                      <div className={`w-9 h-[18px] rounded-full transition-all duration-300 ${chronosCalendarCov && useChronos ? 'bg-cyan-600' : 'bg-slate-200 dark:bg-white/10'}`} />
+                      <div className={`absolute top-[3px] left-[3px] w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${chronosCalendarCov ? 'translate-x-[18px]' : ''}`} />
+                    </div>
+                    <div className="min-w-0">
+                      <p className={`text-xs font-bold leading-tight transition-colors ${chronosCalendarCov && useChronos ? 'text-cyan-600 dark:text-cyan-400' : 'text-slate-700 dark:text-slate-300'}`}>
+                        Calendar Covariates
+                        {chronosCalendarCov && useChronos && <span className="ml-1.5 px-1.5 py-0.5 rounded text-[9px] font-bold bg-cyan-100 dark:bg-cyan-500/20 text-cyan-600 dark:text-cyan-400 uppercase tracking-wider">Future</span>}
+                        {!useChronos && <span className="ml-1.5 px-1.5 py-0.5 rounded text-[9px] font-bold bg-slate-100 dark:bg-white/10 text-slate-400 dark:text-slate-500 uppercase tracking-wider">Richiede C2</span>}
+                      </p>
+                      <p className="text-[10px] text-slate-400 dark:text-slate-500 leading-snug mt-0.5">Ora + giorno (sin/cos) come future_covariates — sessioni, weekend, settlement funding</p>
+                    </div>
+                  </label>
+                </Tooltip>
+
+                {/* Premium_z past covariate */}
+                <Tooltip text="Passa a Chronos-2 il premium_z (z-score del basis spot-perp) come past_covariate. Proxy di posizionamento/flusso complementare al funding. Costo quasi nullo." pos="bottom" width="wide">
+                  <label className={`flex items-start gap-2.5 cursor-pointer group p-3 rounded-xl border transition-all duration-200 h-full ${chronosPremiumCov && useChronos ? 'border-cyan-200 dark:border-cyan-500/30 bg-cyan-50/40 dark:bg-cyan-500/5' : 'border-slate-100 dark:border-white/5 hover:bg-slate-50 dark:hover:bg-white/[0.03]'} ${!useChronos ? 'opacity-50' : ''}`}>
+                    <div className="relative mt-0.5 flex-shrink-0">
+                      <input type="checkbox" className="sr-only" checked={chronosPremiumCov} onChange={e => setChronosPremiumCov(e.target.checked)} disabled={!useChronos} />
+                      <div className={`w-9 h-[18px] rounded-full transition-all duration-300 ${chronosPremiumCov && useChronos ? 'bg-cyan-600' : 'bg-slate-200 dark:bg-white/10'}`} />
+                      <div className={`absolute top-[3px] left-[3px] w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${chronosPremiumCov ? 'translate-x-[18px]' : ''}`} />
+                    </div>
+                    <div className="min-w-0">
+                      <p className={`text-xs font-bold leading-tight transition-colors ${chronosPremiumCov && useChronos ? 'text-cyan-600 dark:text-cyan-400' : 'text-slate-700 dark:text-slate-300'}`}>
+                        Premium-z Covariate
+                        {chronosPremiumCov && useChronos && <span className="ml-1.5 px-1.5 py-0.5 rounded text-[9px] font-bold bg-cyan-100 dark:bg-cyan-500/20 text-cyan-600 dark:text-cyan-400 uppercase tracking-wider">Past</span>}
+                        {!useChronos && <span className="ml-1.5 px-1.5 py-0.5 rounded text-[9px] font-bold bg-slate-100 dark:bg-white/10 text-slate-400 dark:text-slate-500 uppercase tracking-wider">Richiede C2</span>}
+                      </p>
+                      <p className="text-[10px] text-slate-400 dark:text-slate-500 leading-snug mt-0.5">Basis spot-perp (z-score) come past_covariate — proxy posizionamento, complementare al funding</p>
                     </div>
                   </label>
                 </Tooltip>
@@ -3386,6 +3504,81 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                         </Tooltip>
                         <Tooltip text="Quanto viene alzata la soglia direzionale quando la guard scatta. Es. 0.06 con threshold 0.62 → richiede 0.68 per entrare. Default: 0.06" pos="top" width="wide">
                           <NumInput label="Boost Soglia (Δ threshold)" value={exhaustionBoost} onChange={setExhaustionBoost} step="0.01" min="0.01" max="0.20" unit="" />
+                        </Tooltip>
+                      </div>
+                    )}
+                    {/* ── Gate avanzati: Exhaustion & Signal Quality ── */}
+                    <div className="pt-1 pb-0">
+                      <p className="text-[9px] font-semibold uppercase tracking-widest text-slate-400 dark:text-slate-500">Gate avanzati — Exhaustion &amp; Signal Quality</p>
+                    </div>
+                    <Toggle
+                      label="Exhaustion Boost Proporzionale"
+                      desc={`Scala il boost ExhaustionGuard in base alla severità del ret_48. A −12% (2× soglia) aggiunge +${exhaustionPropScale} extra. Cap +0.15.`}
+                      checked={exhaustionProp}
+                      onChange={setExhaustionProp}
+                    />
+                    {exhaustionProp && (
+                      <div className="pl-1">
+                        <Tooltip text="Coefficiente: extra_boost = max(0, (|ret48|/soglia − 1) × scala). 0.06 = neutro rispetto al boost fisso. Default: 0.06" pos="top" width="wide">
+                          <NumInput label="Coefficiente scala proporzionale" value={exhaustionPropScale} onChange={setExhaustionPropScale} step="0.01" min="0.01" max="0.30" unit="" />
+                        </Tooltip>
+                      </div>
+                    )}
+                    <Toggle
+                      label="Daily RSI Gate"
+                      desc={`Blocca short se RSI daily < ${dailyRsiShortBlock} (capitolazione). Blocca long se RSI daily > ${dailyRsiLongBlock} (euforia). Gate hard — no_trade immediato.`}
+                      checked={dailyRsiGate}
+                      onChange={setDailyRsiGate}
+                    />
+                    {dailyRsiGate && (
+                      <div className="space-y-3 pl-1">
+                        <Tooltip text="Sotto questa soglia RSI daily il mercato è in capitolazione: vietato shortare. Default: 18" pos="top" width="wide">
+                          <NumInput label="Blocco Short — RSI daily min" value={dailyRsiShortBlock} onChange={setDailyRsiShortBlock} step="1" min="5" max="35" unit="" />
+                        </Tooltip>
+                        <Tooltip text="Sopra questa soglia RSI daily il mercato è in euforia: vietato entrare long. Default: 82" pos="top" width="wide">
+                          <NumInput label="Blocco Long — RSI daily max" value={dailyRsiLongBlock} onChange={setDailyRsiLongBlock} step="1" min="65" max="95" unit="" />
+                        </Tooltip>
+                      </div>
+                    )}
+                    <Toggle
+                      label="Volume Climax Gate"
+                      desc={`Blocca short se vol_z_50 > ${volClimaxZ}σ e RSI 4H < ${volClimaxRsi}. Volume anomalo su RSI oversold = capitolazione, non trend.`}
+                      checked={volClimaxGate}
+                      onChange={setVolClimaxGate}
+                    />
+                    {volClimaxGate && (
+                      <div className="space-y-3 pl-1">
+                        <Tooltip text="Soglia Z-Score volume anomalo. 2.5σ = top 1% dei bar per volume. Default: 2.5" pos="top" width="wide">
+                          <NumInput label="Soglia Volume Z-Score" value={volClimaxZ} onChange={setVolClimaxZ} step="0.1" min="1.0" max="5.0" unit="σ" />
+                        </Tooltip>
+                        <Tooltip text="Gate attivo solo quando RSI 4H è già oversold. Evita falsi positivi in trend forte. Default: 30" pos="top" width="wide">
+                          <NumInput label="RSI 4H Oversold (gate attivo sotto)" value={volClimaxRsi} onChange={setVolClimaxRsi} step="1" min="10" max="50" unit="" />
+                        </Tooltip>
+                      </div>
+                    )}
+                    <Toggle
+                      label="C2 Forecast Inversion Gate"
+                      desc={`Se C2 p50 punta nella direzione opposta al trade di oltre ${(parseFloat(c2InversionPct)*100).toFixed(1)}%, alza la soglia +0.10. Non blocca, rende più esigente.`}
+                      checked={c2InversionGate}
+                      onChange={setC2InversionGate}
+                    />
+                    {c2InversionGate && (
+                      <div className="pl-1">
+                        <Tooltip text="Distanza minima tra C2 p50 e prezzo corrente per attivare il gate. 0.5% = solo previsioni chiaramente opposte. Default: 0.005" pos="top" width="wide">
+                          <NumInput label="Soglia inversione C2 (%)" value={c2InversionPct} onChange={setC2InversionPct} step="0.001" min="0.001" max="0.05" unit="" />
+                        </Tooltip>
+                      </div>
+                    )}
+                    <Toggle
+                      label="Exhaustion Max Hold"
+                      desc={`Quando ExhaustionGuard era attivo all'apertura, forza uscita dopo max ${exhaustionMaxHoldBars} bar (${parseInt(exhaustionMaxHoldBars)*4}h). Evita trade in esaurimento troppo lunghi.`}
+                      checked={exhaustionMaxHold}
+                      onChange={setExhaustionMaxHold}
+                    />
+                    {exhaustionMaxHold && (
+                      <div className="pl-1">
+                        <Tooltip text="Limite massimo di permanenza per trade aperti durante esaurimento. Default: 2 bar (8h)" pos="top" width="wide">
+                          <NumInput label="Barre massime (4H)" value={exhaustionMaxHoldBars} onChange={setExhaustionMaxHoldBars} step="1" min="1" max="12" unit="bar" />
                         </Tooltip>
                       </div>
                     )}

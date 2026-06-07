@@ -28,6 +28,7 @@ class DecisionResult:
     forecast_uncertainty: float = 0.0
     size_factor: float = 1.0  # 1.0 = full size; <1.0 = reduced for counter-trend trades
     _is_reversal: bool = False  # True when signal originates from ReversalZoneDetector
+    _exhaustion_triggered: bool = False  # True when ExhaustionGuard was active at entry (for exhaust_max_hold)
 
 
 class DecisionEngine:
@@ -93,6 +94,23 @@ class DecisionEngine:
         atr_pct_gate_enabled: bool  = False,
         atr_pct_min:          float = 0.008,
         atr_pct_mode:         str   = "scale",
+        # Exhaustion Guard — proportional boost
+        exhaustion_prop_enabled: bool  = False,
+        exhaustion_prop_scale:   float = 0.06,
+        # Daily RSI Gate
+        daily_rsi_gate_enabled:  bool  = False,
+        daily_rsi_short_block:   float = 18.0,
+        daily_rsi_long_block:    float = 82.0,
+        # Volume Climax Gate
+        vol_climax_gate_enabled: bool  = False,
+        vol_climax_gate_z:       float = 2.5,
+        vol_climax_gate_rsi:     float = 30.0,
+        # C2 Forecast Inversion Gate
+        c2_inversion_gate_enabled: bool  = False,
+        c2_inversion_pct:          float = 0.005,
+        # Exhaustion Max Hold
+        exhaustion_max_hold_enabled: bool = False,
+        exhaustion_max_hold_bars:    int  = 2,
     ):
         self.directional_threshold       = directional_threshold
         self.adx_gate                    = adx_gate
@@ -148,6 +166,23 @@ class DecisionEngine:
         self.atr_pct_gate_enabled  = atr_pct_gate_enabled
         self.atr_pct_min           = atr_pct_min
         self.atr_pct_mode          = atr_pct_mode
+        # Exhaustion Guard — proportional boost
+        self.exhaustion_prop_enabled = exhaustion_prop_enabled
+        self.exhaustion_prop_scale   = exhaustion_prop_scale
+        # Daily RSI Gate
+        self.daily_rsi_gate_enabled  = daily_rsi_gate_enabled
+        self.daily_rsi_short_block   = daily_rsi_short_block
+        self.daily_rsi_long_block    = daily_rsi_long_block
+        # Volume Climax Gate
+        self.vol_climax_gate_enabled = vol_climax_gate_enabled
+        self.vol_climax_gate_z       = vol_climax_gate_z
+        self.vol_climax_gate_rsi     = vol_climax_gate_rsi
+        # C2 Forecast Inversion Gate
+        self.c2_inversion_gate_enabled = c2_inversion_gate_enabled
+        self.c2_inversion_pct          = c2_inversion_pct
+        # Exhaustion Max Hold
+        self.exhaustion_max_hold_enabled = exhaustion_max_hold_enabled
+        self.exhaustion_max_hold_bars    = exhaustion_max_hold_bars
 
     def decide(
         self,
@@ -177,6 +212,8 @@ class DecisionEngine:
         rsi_14   = features.get("rsi_14", 50.0)
         ret_48   = features.get("ret_48", 0.0)
         d_regime = features.get("d_regime", 0)
+        d_rsi    = float(features.get("d_rsi", 50.0) or 50.0)
+        vol_z_50 = float(features.get("vol_z_50", 0.0) or 0.0)
 
         # Manual override: forced_regime takes precedence over auto-detected d_regime
         # for the Regime Bias logic. MTF alignment always uses the auto d_regime.
@@ -440,10 +477,10 @@ class DecisionEngine:
                 )
 
         # ── Exhaustion Guard: RSI extreme + extended ret_48 ──────────────────
+        _exh_short_conds: list[str] = []
+        _exh_long_conds:  list[str] = []
+        _ret48_thr = self.exhaustion_ret48_pct / 100.0
         if self.exhaustion_guard_enabled:
-            _exh_short_conds: list[str] = []
-            _exh_long_conds:  list[str] = []
-            _ret48_thr = self.exhaustion_ret48_pct / 100.0
 
             if rsi_14 < self.exhaustion_rsi_low:
                 _exh_short_conds.append(f"RSI {rsi_14:.1f} < {self.exhaustion_rsi_low:.0f}")
@@ -455,18 +492,29 @@ class DecisionEngine:
                 _exh_long_conds.append(f"ret_48 {ret_48*100:.1f}% > +{self.exhaustion_ret48_pct:.0f}%")
 
             _exh_boost = self.exhaustion_boost
-            _exh_short_boost = _exh_boost if _exh_short_conds else 0.0
-            _exh_long_boost  = _exh_boost if _exh_long_conds  else 0.0
+
+            # ── Feature A: proportional boost scaled by severity of ret_48 ────
+            # extra_boost = max(0, abs(ret48)/threshold - 1.0) * scale, capped at 0.15.
+            # E.g. ret48=12% with threshold=6%: extra = (2.0-1.0)*0.06 = 0.06.
+            _exh_extra = 0.0
+            if self.exhaustion_prop_enabled and _ret48_thr > 0:
+                _ret48_ratio = abs(ret_48) / _ret48_thr
+                _exh_extra   = min(0.15, max(0.0, (_ret48_ratio - 1.0) * self.exhaustion_prop_scale))
+
+            _exh_short_boost = (_exh_boost + _exh_extra) if _exh_short_conds else 0.0
+            _exh_long_boost  = (_exh_boost + _exh_extra) if _exh_long_conds  else 0.0
 
             if _exh_short_conds:
+                _prop_note = f" +{_exh_extra:.3f} proporzionale" if _exh_extra > 0 else ""
                 reasoning.append(
                     f"ExhaustionGuard [{' & '.join(_exh_short_conds)}] → "
-                    f"short threshold +{_exh_short_boost:.2f} (bounce/pullback risk)"
+                    f"short threshold +{_exh_short_boost:.3f} (base +{_exh_boost:.2f}{_prop_note}, bounce/pullback risk)"
                 )
             if _exh_long_conds:
+                _prop_note = f" +{_exh_extra:.3f} proporzionale" if _exh_extra > 0 else ""
                 reasoning.append(
                     f"ExhaustionGuard [{' & '.join(_exh_long_conds)}] → "
-                    f"long threshold +{_exh_long_boost:.2f} (pullback risk)"
+                    f"long threshold +{_exh_long_boost:.3f} (base +{_exh_boost:.2f}{_prop_note}, pullback risk)"
                 )
 
             threshold_short += _exh_short_boost
@@ -518,6 +566,58 @@ class DecisionEngine:
         if confluence_score is not None and confluence_score < self.confluence_gate:
             reasoning.append(f"GATE: Confluence {confluence_score:.0f} < {self.confluence_gate:.0f}")
             return self._no_trade(reasoning, dir_prob, p10, p50, p90, features, c2_uncertainty)
+
+        # ── Feature B: Daily RSI Gate ─────────────────────────────────────────
+        # Hard block when Daily RSI is at extremes inconsistent with new entries.
+        # d_rsi < daily_rsi_short_block → capitolazione giornaliera, non entrare short.
+        # d_rsi > daily_rsi_long_block  → euforia giornaliera, non entrare long.
+        if self.daily_rsi_gate_enabled:
+            if ensemble_prob < 0.5 and d_rsi < self.daily_rsi_short_block:
+                reasoning.append(
+                    f"GATE: Daily RSI [{d_rsi:.1f}] < {self.daily_rsi_short_block:.0f} "
+                    f"— short block (RSI daily in zona capitolazione, rimbalzo probabile)"
+                )
+                return self._no_trade(reasoning, dir_prob, p10, p50, p90, features, c2_uncertainty)
+            if ensemble_prob > 0.5 and d_rsi > self.daily_rsi_long_block:
+                reasoning.append(
+                    f"GATE: Daily RSI [{d_rsi:.1f}] > {self.daily_rsi_long_block:.0f} "
+                    f"— long block (RSI daily in zona euforia, pullback probabile)"
+                )
+                return self._no_trade(reasoning, dir_prob, p10, p50, p90, features, c2_uncertainty)
+
+        # ── Feature C: Volume Climax Gate ─────────────────────────────────────
+        # Volume 2.5σ+ su RSI 4H oversold = capitolazione, non continuazione ribassista.
+        # Blocca solo nuovi short (se voglio entrare short durante una capitolazione è rischioso).
+        if self.vol_climax_gate_enabled and ensemble_prob < 0.5:
+            if vol_z_50 > self.vol_climax_gate_z and rsi_14 < self.vol_climax_gate_rsi:
+                reasoning.append(
+                    f"GATE: VolClimax z={vol_z_50:.2f} > {self.vol_climax_gate_z:.1f} "
+                    f"con RSI4H={rsi_14:.1f} < {self.vol_climax_gate_rsi:.0f} "
+                    f"— capitolazione rilevata, short block"
+                )
+                return self._no_trade(reasoning, dir_prob, p10, p50, p90, features, c2_uncertainty)
+
+        # ── Feature D: C2 Forecast Inversion Gate ────────────────────────────
+        # Quando la previsione C2 punta nella direzione opposta al trade, alzare la soglia.
+        # Non è un hard block — incrementa solo il threshold richiesto di +0.10.
+        if self.c2_inversion_gate_enabled and current_price > 0:
+            _inv_pct = self.c2_inversion_pct
+            if ensemble_prob < 0.5 and p50 > current_price * (1.0 + _inv_pct):
+                # Short signal, ma C2 prevede rialzo → alzare soglia short
+                _inv_pct_disp = _inv_pct * 100
+                threshold_short += 0.10
+                reasoning.append(
+                    f"C2 InversionGate: p50={p50:.0f} > close={current_price:.0f} "
+                    f"(+{_inv_pct_disp:.1f}%) → short threshold +0.10 (C2 prevede rialzo)"
+                )
+            elif ensemble_prob > 0.5 and p50 < current_price * (1.0 - _inv_pct):
+                # Long signal, ma C2 prevede ribasso → alzare soglia long
+                _inv_pct_disp = _inv_pct * 100
+                threshold_long += 0.10
+                reasoning.append(
+                    f"C2 InversionGate: p50={p50:.0f} < close={current_price:.0f} "
+                    f"(-{_inv_pct_disp:.1f}%) → long threshold +0.10 (C2 prevede ribasso)"
+                )
 
         # ── Long signal ───────────────────────────────────────────────────────
         if ensemble_prob > threshold_long:
@@ -572,6 +672,7 @@ class DecisionEngine:
             is_counter_trend = (bias_regime == -1)
             sf = (counter_trend_size_factor if is_counter_trend else 1.0) * iv_sf * _atr_size_mult
             thr_used = threshold_long
+            _long_exhaust = bool(self.exhaustion_guard_enabled and _exh_long_conds) if self.exhaustion_guard_enabled else False
             reasoning.append(
                 f"LONG: P(up)={ensemble_prob:.3f} > {thr_used:.2f}, C2_p50={p50:.1f}"
                 + (f" [size×{sf:.2f}]" if sf < 1.0 else "")
@@ -587,6 +688,7 @@ class DecisionEngine:
                 forecast_p90=p90,
                 forecast_uncertainty=c2_uncertainty,
                 size_factor=sf,
+                _exhaustion_triggered=_long_exhaust,
             )
 
         # ── Short signal ──────────────────────────────────────────────────────
@@ -640,6 +742,7 @@ class DecisionEngine:
             is_counter_trend = (bias_regime == 1)
             sf = (counter_trend_size_factor if is_counter_trend else 1.0) * iv_sf * _atr_size_mult
             thr_used = threshold_short
+            _short_exhaust = bool(self.exhaustion_guard_enabled and _exh_short_conds) if self.exhaustion_guard_enabled else False
             reasoning.append(
                 f"SHORT: P(down)={short_prob:.3f} > {thr_used:.2f}, C2_p50={p50:.1f}"
                 + (f" [size×{sf:.2f}]" if sf < 1.0 else "")
@@ -655,6 +758,7 @@ class DecisionEngine:
                 forecast_p90=p90,
                 forecast_uncertainty=c2_uncertainty,
                 size_factor=sf,
+                _exhaustion_triggered=_short_exhaust,
             )
 
         # ── No signal ─────────────────────────────────────────────────────────

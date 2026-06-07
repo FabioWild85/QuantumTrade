@@ -173,6 +173,8 @@ class BotConfig(BaseModel):
     # Advanced signal controls
     chronos_enabled: bool = Field(True)
     chronos_weight: float = Field(0.40, ge=0.0, le=0.9)
+    chronos_calendar_covariates: bool = Field(False)   # future_covariates: hour-of-day + day-of-week (sin/cos)
+    chronos_premium_covariate:   bool = Field(False)   # past_covariate: premium_z (spot-perp basis)
     adx_gate_enabled: bool = Field(True)
     sweep_gate_enabled: bool = Field(True)
     sweep_gate_directional: bool = Field(False)
@@ -290,6 +292,23 @@ class BotConfig(BaseModel):
     atr_pct_mode:         str   = Field("scale",
                                         description='"block"=no_trade immediately | '
                                         '"scale"=size reduced linearly (floor ×0.10)')
+    # Exhaustion Guard — proportional boost scaled by ret_48 severity (Feature A)
+    exhaustion_prop_enabled: bool  = Field(False)
+    exhaustion_prop_scale:   float = Field(0.06, ge=0.01, le=0.30)
+    # Daily RSI Gate — hard block when Daily RSI at extremes (Feature B)
+    daily_rsi_gate_enabled:  bool  = Field(False)
+    daily_rsi_short_block:   float = Field(18.0, ge=5.0,  le=35.0)
+    daily_rsi_long_block:    float = Field(82.0, ge=65.0, le=95.0)
+    # Volume Climax Gate — capitolazione rilevata, no short (Feature C)
+    vol_climax_gate_enabled: bool  = Field(False)
+    vol_climax_gate_z:       float = Field(2.5, ge=1.0, le=5.0)
+    vol_climax_gate_rsi:     float = Field(30.0, ge=10.0, le=50.0)
+    # C2 Forecast Inversion Gate — soglia +0.10 quando C2 punta nella direzione opposta (Feature D)
+    c2_inversion_gate_enabled: bool  = Field(False)
+    c2_inversion_pct:          float = Field(0.005, ge=0.001, le=0.05)
+    # Exhaustion Max Hold — forza uscita anticipata se ExhaustionGuard era attivo all'entry (Feature E)
+    exhaustion_max_hold_enabled: bool = Field(False)
+    exhaustion_max_hold_bars:    int  = Field(2, ge=1, le=12)
     # Pullback Entry — delayed entry on strong impulse candles
     pullback_entry_enabled:    bool  = Field(False)
     pullback_impulse_atr_mult: float = Field(1.2, ge=0.5, le=3.0)
@@ -610,6 +629,8 @@ async def get_forecast(symbol: str = "BTC", horizon: int = 3):
     atr_series = _ta.volatility.AverageTrueRange(df["high"], df["low"], df["close"], 14).average_true_range()
     atr = float(atr_series.iloc[-1]) if not atr_series.empty else None
 
+    import numpy as _np
+
     # Funding rate covariate (same source as execution engine)
     try:
         df_fund = await hl.get_funding_history(symbol, hours=512 * 4)
@@ -617,17 +638,18 @@ async def get_forecast(symbol: str = "BTC", horizon: int = 3):
     except Exception:
         funding_series = None
 
+    # Date range for external data fetches (shared by OI and liquidation blocks)
+    _today  = date.today().isoformat()
+    _from_d = (date.today() - timedelta(days=90)).isoformat()
+
     # OI covariate (Coinglass → Coinalyze fallback)
     try:
-        _today  = date.today().isoformat()
-        _from_d = (date.today() - timedelta(days=90)).isoformat()
         df_oi  = await get_best_oi(symbol, start_date=_from_d, end_date=_today)
         oi_series = df_oi["oi"].reindex(df.index, method="ffill").values if not df_oi.empty else None
     except Exception:
         oi_series = None
 
     # CVD covariate — Haas approximation from OHLCV (no external API required)
-    import numpy as _np
     try:
         _hl      = (df["high"] - df["low"]).replace(0, float("nan"))
         _buy_vol = df["volume"] * (df["close"] - df["low"]) / _hl
@@ -635,15 +657,51 @@ async def get_forecast(symbol: str = "BTC", horizon: int = 3):
     except Exception:
         cvd_series = None
 
+    # Volume-ratio covariate — normalised vol (vol/vol_ma20), more stable than raw volume
+    try:
+        _vol_ma = df["volume"].rolling(20).mean()
+        vol_ratio_series: Optional[_np.ndarray] = (
+            df["volume"] / _vol_ma.replace(0, float("nan"))
+        ).fillna(1.0).values
+    except Exception:
+        vol_ratio_series = None
+
+    # Liquidation-ratio covariate — liq_long / liq_total (0–1, 0.5 = balanced)
+    liq_ratio_series: Optional[_np.ndarray] = None
+    try:
+        from services.external_data import get_best_liquidations
+        df_liq = await get_best_liquidations(symbol, start_date=_from_d, end_date=_today)
+        if not df_liq.empty and "liq_long" in df_liq.columns and "liq_short" in df_liq.columns:
+            _liq_total = df_liq["liq_long"] + df_liq["liq_short"]
+            _liq_ratio = (df_liq["liq_long"] / _liq_total.replace(0, float("nan"))).fillna(0.5)
+            liq_ratio_series = _liq_ratio.reindex(df.index, method="ffill").fillna(0.5).values
+    except Exception:
+        pass
+
+    # Premium-z covariate (spot-perp basis), computed from df_fund's premium column
+    premium_series = None
+    try:
+        if not df_fund.empty and "premium" in df_fund.columns:
+            _prem = df_fund["premium"].reindex(df.index, method="ffill")
+            premium_series = ((_prem - _prem.rolling(12).mean())
+                              / (_prem.rolling(12).std() + 1e-9)).fillna(0.0).values
+    except Exception:
+        premium_series = None
+
     forecaster = ChronosForecaster()
     result = forecaster.forecast(
         df["close"].values,
         horizon=horizon,
         atr=atr,
-        volume_series=df["volume"].values if "volume" in df.columns else None,
+        volume_series=vol_ratio_series,
         funding_series=funding_series,
         oi_series=oi_series,
         cvd_series=cvd_series,
+        liq_series=liq_ratio_series,
+        premium_series=premium_series,
+        timestamps=df.index,
+        interval_hours=4,
+        calendar_covariates=True,   # debug endpoint: always on so badges/UI can preview the effect
     )
 
     return {

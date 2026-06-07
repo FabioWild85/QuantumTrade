@@ -18,6 +18,8 @@ interface Config {
   c2_cont_prob_gate_enabled: boolean;
   c2_cont_prob_threshold: number;
   chronos_enabled: boolean;
+  chronos_calendar_covariates: boolean;
+  chronos_premium_covariate: boolean;
   regime_bias_enabled: boolean;
   regime_bias_delta: number;
   regime_bias_size_factor: number;
@@ -91,6 +93,23 @@ interface Config {
   atr_pct_gate_enabled: boolean;
   atr_pct_min: number;
   atr_pct_mode: 'block' | 'scale';
+  // Feature A: Exhaustion Guard proportional boost
+  exhaustion_prop_enabled: boolean;
+  exhaustion_prop_scale: number;
+  // Feature B: Daily RSI Gate
+  daily_rsi_gate_enabled: boolean;
+  daily_rsi_short_block: number;
+  daily_rsi_long_block: number;
+  // Feature C: Volume Climax Gate
+  vol_climax_gate_enabled: boolean;
+  vol_climax_gate_z: number;
+  vol_climax_gate_rsi: number;
+  // Feature D: C2 Forecast Inversion Gate
+  c2_inversion_gate_enabled: boolean;
+  c2_inversion_pct: number;
+  // Feature E: Exhaustion Max Hold
+  exhaustion_max_hold_enabled: boolean;
+  exhaustion_max_hold_bars: number;
   // Pullback Entry
   pullback_entry_enabled: boolean;
   pullback_impulse_atr_mult: number;
@@ -179,6 +198,8 @@ const DEFAULTS: Config = {
   c2_cont_prob_gate_enabled: false,
   c2_cont_prob_threshold: 0.25,
   chronos_enabled: true,
+  chronos_calendar_covariates: false,
+  chronos_premium_covariate: false,
   regime_bias_enabled: false,
   regime_bias_delta: 0.08,
   regime_bias_size_factor: 1.0,
@@ -252,6 +273,23 @@ const DEFAULTS: Config = {
   atr_pct_gate_enabled: false,
   atr_pct_min: 0.008,
   atr_pct_mode: 'scale' as const,
+  // Feature A: Exhaustion Guard proportional boost
+  exhaustion_prop_enabled: false,
+  exhaustion_prop_scale: 0.06,
+  // Feature B: Daily RSI Gate
+  daily_rsi_gate_enabled: false,
+  daily_rsi_short_block: 18.0,
+  daily_rsi_long_block: 82.0,
+  // Feature C: Volume Climax Gate
+  vol_climax_gate_enabled: false,
+  vol_climax_gate_z: 2.5,
+  vol_climax_gate_rsi: 30.0,
+  // Feature D: C2 Forecast Inversion Gate
+  c2_inversion_gate_enabled: false,
+  c2_inversion_pct: 0.005,
+  // Feature E: Exhaustion Max Hold
+  exhaustion_max_hold_enabled: false,
+  exhaustion_max_hold_bars: 2,
   // Pullback Entry
   pullback_entry_enabled: false,
   pullback_impulse_atr_mult: 1.2,
@@ -398,7 +436,6 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   const [retraining, setRetraining]     = useState(false);
   const [retrainResult, setRetrainResult] = useState<RetrainMetrics | null>(null);
   const [lastRetrain, setLastRetrain]   = useState<RetrainMetrics | null>(null);
-  const [hlTestnet, setHlTestnet]       = useState<boolean | null>(null);
   const [featImportance, setFeatImportance] = useState<FeatureImportanceData | null>(null);
   const [featImportanceLoading, setFeatImportanceLoading] = useState(false);
   const [pruningStats, setPruningStats] = useState<PruningStatsData | null>(null);
@@ -563,7 +600,6 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
       .then(s => {
         if (!s) return;
         setModelLoaded(s.model_loaded ?? false);
-        setHlTestnet(s.hl_testnet ?? true);
         if (s.last_retrain) setLastRetrain(s.last_retrain);
         if (s.retrain_in_progress) setRetraining(true);
         if (s.lgbm_1h_loaded !== undefined) setLgbm1hLoaded(s.lgbm_1h_loaded);
@@ -841,101 +877,6 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
           )}
         </div>
       )}
-
-      {/* Mode Selection */}
-      <Section title="Ambiente di Esecuzione" description="Seleziona la modalità operativa del bot. Il Paper Trading simula l'esecuzione, il Live Trading opera con fondi reali.">
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <Tooltip text="Paper Trading: il bot simula operazioni usando dati reali di mercato ma senza usare fondi veri. Ideale per testare la strategia senza rischi." pos="bottom">
-            <button
-              onClick={() => setConfig(c => ({ ...c, mode: 'paper' }))}
-              className={`w-full py-4 rounded-xl text-[11px] font-bold uppercase tracking-widest transition-all border ${
-                config.mode === 'paper'
-                  ? 'bg-indigo-600 text-white border-indigo-600 shadow-lg shadow-indigo-500/30'
-                  : 'bg-slate-50 dark:bg-white/5 text-slate-400 dark:text-slate-500 border-slate-100 dark:border-white/10 hover:bg-slate-100 dark:hover:bg-white/10'
-              }`}
-            >
-              Paper Trading
-            </button>
-          </Tooltip>
-          <Tooltip text="Live Trading: il bot opera con fondi reali su Hyperliquid. Richiede un agent wallet configurato nelle Impostazioni. Usare con cautela." pos="bottom">
-            <button
-              onClick={() => setConfig(c => ({ ...c, mode: 'live' }))}
-              className={`w-full py-4 rounded-xl text-[11px] font-bold uppercase tracking-widest transition-all border ${
-                config.mode === 'live'
-                  ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-900 border-slate-900 dark:border-white shadow-lg'
-                  : 'bg-slate-50 dark:bg-white/5 text-slate-400 dark:text-slate-500 border-slate-100 dark:border-white/10 hover:bg-slate-100 dark:hover:bg-white/10'
-              }`}
-            >
-              Live Trading
-            </button>
-          </Tooltip>
-        </div>
-        {config.mode === 'live' && (
-          <div className="mt-4 flex items-start gap-3 bg-rose-50 dark:bg-rose-500/10 border border-rose-100 dark:border-rose-500/20 rounded-xl px-4 py-3 animate-in fade-in slide-in-from-top-1">
-             <svg className="w-5 h-5 text-rose-500 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
-             <p className="text-[10px] font-bold text-rose-600 dark:text-rose-400 uppercase tracking-tight leading-relaxed">
-               Attenzione: La modalità Live utilizza asset reali su Hyperliquid. Verifica attentamente le soglie di rischio prima di salvare.
-             </p>
-          </div>
-        )}
-      </Section>
-
-      {/* Network for live orders */}
-      <Section
-        title="Rete Ordini Live"
-        description="Indica su quale rete Hyperliquid vengono inviati gli ordini quando il bot è in modalità Live. I dati di mercato (prezzi, OHLCV) vengono sempre da mainnet."
-      >
-        {hlTestnet === null ? (
-          <div className="h-16 bg-slate-100 dark:bg-white/5 rounded-xl animate-pulse" />
-        ) : (
-          <div className="space-y-4">
-            {/* Current network badge */}
-            <div className={`flex items-center justify-between p-4 rounded-xl border ${
-              hlTestnet
-                ? 'bg-amber-50 dark:bg-amber-500/10 border-amber-200 dark:border-amber-500/25'
-                : 'bg-rose-50 dark:bg-rose-500/10 border-rose-200 dark:border-rose-500/25'
-            }`}>
-              <div className="flex items-center gap-3">
-                <span className={`w-2.5 h-2.5 rounded-full ${hlTestnet ? 'bg-amber-500' : 'bg-rose-500 animate-pulse'}`} />
-                <div>
-                  <p className={`text-xs font-bold uppercase tracking-widest ${hlTestnet ? 'text-amber-700 dark:text-amber-400' : 'text-rose-700 dark:text-rose-400'}`}>
-                    {hlTestnet ? 'Hyperliquid Testnet' : 'Hyperliquid Mainnet'}
-                  </p>
-                  <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5">
-                    {hlTestnet
-                      ? 'Ordini con fondi virtuali — nessun rischio reale'
-                      : 'Ordini con fondi reali — massima attenzione'}
-                  </p>
-                </div>
-              </div>
-              <span className={`text-[9px] font-bold uppercase tracking-widest px-2 py-1 rounded border ${
-                hlTestnet
-                  ? 'bg-amber-100 dark:bg-amber-500/15 text-amber-700 dark:text-amber-400 border-amber-300 dark:border-amber-500/30'
-                  : 'bg-rose-100 dark:bg-rose-500/15 text-rose-700 dark:text-rose-400 border-rose-300 dark:border-rose-500/30'
-              }`}>
-                {hlTestnet ? 'TESTNET' : 'MAINNET'}
-              </span>
-            </div>
-
-            {/* How to switch */}
-            <div className="bg-slate-50 dark:bg-white/[0.03] border border-slate-100 dark:border-white/8 rounded-xl p-4 space-y-2">
-              <p className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest">Come cambiare rete</p>
-              <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
-                La rete è configurata tramite variabile d'ambiente <code className="text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-500/10 px-1 rounded">HL_TESTNET</code> nel file <code className="text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-500/10 px-1 rounded">.env</code> sul VPS.
-              </p>
-              <div className="font-mono text-[10px] bg-slate-900 dark:bg-black/40 text-emerald-400 rounded-lg px-3 py-2 space-y-0.5 mt-2">
-                <div className="text-slate-500"># Testnet (default — ordini virtuali)</div>
-                <div>HL_TESTNET=<span className="text-amber-400">true</span></div>
-                <div className="text-slate-500 mt-1"># Mainnet (fondi reali)</div>
-                <div>HL_TESTNET=<span className="text-rose-400">false</span></div>
-              </div>
-              <p className="text-[10px] text-slate-400 dark:text-slate-500 leading-relaxed mt-1">
-                Dopo aver modificato il file, riavvia il servizio con <code className="text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-500/10 px-1 rounded">systemctl restart quantum-trade</code>.
-              </p>
-            </div>
-          </div>
-        )}
-      </Section>
 
       {/* Risk Management */}
       <Section title="Risk Management" description="Gestione dell'esposizione e dei livelli di uscita. Questi parametri determinano la conservatività del bot.">
@@ -2117,6 +2058,30 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                 <div>
                   <p className={`text-xs font-bold leading-tight ${config.recalibrated_uncertainty_thresholds ? 'text-teal-600 dark:text-teal-400' : 'text-slate-700 dark:text-slate-300'}`}>Soglie Uncertainty Ricalibrate</p>
                   <p className="text-[10px] text-slate-400 dark:text-slate-500 leading-snug mt-0.5">Usa thresholds C2 ottimizzati sul dataset storico</p>
+                </div>
+              </label>
+              {/* Calendar future covariates */}
+              <label className="flex items-start gap-3 cursor-pointer group p-3 rounded-xl border border-slate-100 dark:border-white/5 hover:bg-slate-50 dark:hover:bg-white/[0.03] transition-colors">
+                <div className="relative mt-0.5 flex-shrink-0">
+                  <input type="checkbox" className="sr-only" checked={config.chronos_calendar_covariates} onChange={e => setConfig(c => ({ ...c, chronos_calendar_covariates: e.target.checked }))} />
+                  <div className={`w-9 h-[18px] rounded-full transition-all duration-300 ${config.chronos_calendar_covariates ? 'bg-cyan-600' : 'bg-slate-200 dark:bg-white/10'}`} />
+                  <div className={`absolute top-[3px] left-[3px] w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.chronos_calendar_covariates ? 'translate-x-[18px]' : ''}`} />
+                </div>
+                <div>
+                  <p className={`text-xs font-bold leading-tight ${config.chronos_calendar_covariates ? 'text-cyan-600 dark:text-cyan-400' : 'text-slate-700 dark:text-slate-300'}`}>Calendar Covariates (future)</p>
+                  <p className="text-[10px] text-slate-400 dark:text-slate-500 leading-snug mt-0.5">Ora + giorno (sin/cos) noti in anticipo — sessioni, weekend, settlement funding</p>
+                </div>
+              </label>
+              {/* Premium-z past covariate */}
+              <label className="flex items-start gap-3 cursor-pointer group p-3 rounded-xl border border-slate-100 dark:border-white/5 hover:bg-slate-50 dark:hover:bg-white/[0.03] transition-colors">
+                <div className="relative mt-0.5 flex-shrink-0">
+                  <input type="checkbox" className="sr-only" checked={config.chronos_premium_covariate} onChange={e => setConfig(c => ({ ...c, chronos_premium_covariate: e.target.checked }))} />
+                  <div className={`w-9 h-[18px] rounded-full transition-all duration-300 ${config.chronos_premium_covariate ? 'bg-cyan-600' : 'bg-slate-200 dark:bg-white/10'}`} />
+                  <div className={`absolute top-[3px] left-[3px] w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.chronos_premium_covariate ? 'translate-x-[18px]' : ''}`} />
+                </div>
+                <div>
+                  <p className={`text-xs font-bold leading-tight ${config.chronos_premium_covariate ? 'text-cyan-600 dark:text-cyan-400' : 'text-slate-700 dark:text-slate-300'}`}>Premium-z Covariate (past)</p>
+                  <p className="text-[10px] text-slate-400 dark:text-slate-500 leading-snug mt-0.5">Basis spot-perp (z-score) — proxy posizionamento, complementare al funding</p>
                 </div>
               </label>
             </div>
@@ -3892,6 +3857,195 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                   onChange={e => setConfig(c => ({ ...c, exhaustion_boost: parseFloat(e.target.value) }))}
                   className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-rose-500" />
                 <p className="text-[9px] text-slate-400 dark:text-slate-500">Quanto alzare la soglia direzionale quando la guard scatta. Es. 0.06 con threshold 0.62 → richiede 0.68 per entrare. Default: 0.06</p>
+              </div>
+            </div>
+          )}
+
+          {/* ── Divisore: Nuovi gate ExhaustionGuard ── */}
+          <div className="pt-1 pb-0">
+            <p className="text-[9px] font-semibold uppercase tracking-widest text-slate-400 dark:text-slate-500 px-1">Gate avanzati — Exhaustion &amp; Signal Quality</p>
+          </div>
+
+          {/* Feature A: Exhaustion Boost Proporzionale — dipende da Exhaustion Guard */}
+          {config.exhaustion_guard_enabled && (
+            <>
+              <label className={`flex items-start gap-3 cursor-pointer group p-4 rounded-xl border transition-all duration-200 ${config.exhaustion_prop_enabled ? 'border-rose-200 dark:border-rose-500/30 bg-rose-50/40 dark:bg-rose-500/5' : 'border-slate-100 dark:border-white/5 hover:bg-slate-50 dark:hover:bg-white/[0.03]'}`}>
+                <div className="relative mt-0.5 flex-shrink-0">
+                  <input type="checkbox" className="sr-only" checked={config.exhaustion_prop_enabled} onChange={e => setConfig(c => ({ ...c, exhaustion_prop_enabled: e.target.checked }))} />
+                  <div className={`w-9 h-[18px] rounded-full transition-all duration-300 ${config.exhaustion_prop_enabled ? 'bg-rose-500' : 'bg-slate-200 dark:bg-white/10'}`} />
+                  <div className={`absolute top-[3px] left-[3px] w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.exhaustion_prop_enabled ? 'translate-x-[18px]' : ''}`} />
+                </div>
+                <div className="min-w-0">
+                  <p className={`text-xs font-bold leading-tight transition-colors ${config.exhaustion_prop_enabled ? 'text-rose-600 dark:text-rose-400' : 'text-slate-700 dark:text-slate-300'}`}>
+                    Exhaustion Boost Proporzionale
+                    {config.exhaustion_prop_enabled && <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-rose-100 dark:bg-rose-500/20 text-rose-600 dark:text-rose-400 uppercase tracking-wider">Attivo</span>}
+                  </p>
+                  <p className="text-[10px] text-slate-400 dark:text-slate-500 leading-snug mt-1">
+                    Scala il boost ExhaustionGuard in base alla severità del ret_48. A −12% (2× soglia) aggiunge +{config.exhaustion_prop_scale.toFixed(2)} extra. Capped a +0.15.
+                  </p>
+                </div>
+              </label>
+              {config.exhaustion_prop_enabled && (
+                <div className="ml-2 pl-4 border-l-2 border-rose-200 dark:border-rose-500/30 space-y-3">
+                  <div className="flex flex-col gap-1">
+                    <div className="flex justify-between items-center">
+                      <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">Coefficiente di scala</span>
+                      <span className="text-[10px] font-bold text-rose-600 dark:text-rose-400">×{config.exhaustion_prop_scale.toFixed(2)}</span>
+                    </div>
+                    <input type="range" min={0.01} max={0.30} step={0.01} value={config.exhaustion_prop_scale}
+                      onChange={e => setConfig(c => ({ ...c, exhaustion_prop_scale: parseFloat(e.target.value) }))}
+                      className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-rose-500" />
+                    <p className="text-[9px] text-slate-400 dark:text-slate-500">Extra boost = max(0, (|ret48|/soglia − 1) × scala). Default 0.06 = neutro rispetto al boost fisso. Default: 0.06</p>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+
+          {/* Feature B: Daily RSI Gate */}
+          <label className={`flex items-start gap-3 cursor-pointer group p-4 rounded-xl border transition-all duration-200 ${config.daily_rsi_gate_enabled ? 'border-amber-200 dark:border-amber-500/30 bg-amber-50/40 dark:bg-amber-500/5' : 'border-slate-100 dark:border-white/5 hover:bg-slate-50 dark:hover:bg-white/[0.03]'}`}>
+            <div className="relative mt-0.5 flex-shrink-0">
+              <input type="checkbox" className="sr-only" checked={config.daily_rsi_gate_enabled} onChange={e => setConfig(c => ({ ...c, daily_rsi_gate_enabled: e.target.checked }))} />
+              <div className={`w-9 h-[18px] rounded-full transition-all duration-300 ${config.daily_rsi_gate_enabled ? 'bg-amber-500' : 'bg-slate-200 dark:bg-white/10'}`} />
+              <div className={`absolute top-[3px] left-[3px] w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.daily_rsi_gate_enabled ? 'translate-x-[18px]' : ''}`} />
+            </div>
+            <div className="min-w-0">
+              <p className={`text-xs font-bold leading-tight transition-colors ${config.daily_rsi_gate_enabled ? 'text-amber-600 dark:text-amber-400' : 'text-slate-700 dark:text-slate-300'}`}>
+                Daily RSI Gate
+                {config.daily_rsi_gate_enabled && <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-amber-100 dark:bg-amber-500/20 text-amber-600 dark:text-amber-400 uppercase tracking-wider">Attivo</span>}
+              </p>
+              <p className="text-[10px] text-slate-400 dark:text-slate-500 leading-snug mt-1">
+                Blocca short se RSI daily &lt; {config.daily_rsi_short_block} (capitolazione). Blocca long se RSI daily &gt; {config.daily_rsi_long_block} (euforia). Gate hard.
+              </p>
+            </div>
+          </label>
+          {config.daily_rsi_gate_enabled && (
+            <div className="ml-2 pl-4 border-l-2 border-amber-200 dark:border-amber-500/30 space-y-3">
+              <div className="flex flex-col gap-1">
+                <div className="flex justify-between items-center">
+                  <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">Blocco Short (RSI daily &lt; soglia)</span>
+                  <span className="text-[10px] font-bold text-amber-600 dark:text-amber-400">RSI &lt; {config.daily_rsi_short_block}</span>
+                </div>
+                <input type="range" min={5} max={35} step={1} value={config.daily_rsi_short_block}
+                  onChange={e => setConfig(c => ({ ...c, daily_rsi_short_block: parseFloat(e.target.value) }))}
+                  className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-amber-500" />
+                <p className="text-[9px] text-slate-400 dark:text-slate-500">Sotto questa soglia RSI daily il mercato è in capitolazione: vietato shortare. Default: 18</p>
+              </div>
+              <div className="flex flex-col gap-1">
+                <div className="flex justify-between items-center">
+                  <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">Blocco Long (RSI daily &gt; soglia)</span>
+                  <span className="text-[10px] font-bold text-amber-600 dark:text-amber-400">RSI &gt; {config.daily_rsi_long_block}</span>
+                </div>
+                <input type="range" min={65} max={95} step={1} value={config.daily_rsi_long_block}
+                  onChange={e => setConfig(c => ({ ...c, daily_rsi_long_block: parseFloat(e.target.value) }))}
+                  className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-amber-500" />
+                <p className="text-[9px] text-slate-400 dark:text-slate-500">Sopra questa soglia RSI daily il mercato è in euforia: vietato entrare long. Default: 82</p>
+              </div>
+            </div>
+          )}
+
+          {/* Feature C: Volume Climax Gate */}
+          <label className={`flex items-start gap-3 cursor-pointer group p-4 rounded-xl border transition-all duration-200 ${config.vol_climax_gate_enabled ? 'border-purple-200 dark:border-purple-500/30 bg-purple-50/40 dark:bg-purple-500/5' : 'border-slate-100 dark:border-white/5 hover:bg-slate-50 dark:hover:bg-white/[0.03]'}`}>
+            <div className="relative mt-0.5 flex-shrink-0">
+              <input type="checkbox" className="sr-only" checked={config.vol_climax_gate_enabled} onChange={e => setConfig(c => ({ ...c, vol_climax_gate_enabled: e.target.checked }))} />
+              <div className={`w-9 h-[18px] rounded-full transition-all duration-300 ${config.vol_climax_gate_enabled ? 'bg-purple-500' : 'bg-slate-200 dark:bg-white/10'}`} />
+              <div className={`absolute top-[3px] left-[3px] w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.vol_climax_gate_enabled ? 'translate-x-[18px]' : ''}`} />
+            </div>
+            <div className="min-w-0">
+              <p className={`text-xs font-bold leading-tight transition-colors ${config.vol_climax_gate_enabled ? 'text-purple-600 dark:text-purple-400' : 'text-slate-700 dark:text-slate-300'}`}>
+                Volume Climax Gate
+                {config.vol_climax_gate_enabled && <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-purple-100 dark:bg-purple-500/20 text-purple-600 dark:text-purple-400 uppercase tracking-wider">Attivo</span>}
+              </p>
+              <p className="text-[10px] text-slate-400 dark:text-slate-500 leading-snug mt-1">
+                Blocca short se volume z-score &gt; {config.vol_climax_gate_z.toFixed(1)}σ e RSI 4H &lt; {config.vol_climax_gate_rsi}. Volume 3× su RSI oversold = capitolazione, non trend.
+              </p>
+            </div>
+          </label>
+          {config.vol_climax_gate_enabled && (
+            <div className="ml-2 pl-4 border-l-2 border-purple-200 dark:border-purple-500/30 space-y-3">
+              <div className="flex flex-col gap-1">
+                <div className="flex justify-between items-center">
+                  <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">Soglia Volume Z-Score (vol_z_50)</span>
+                  <span className="text-[10px] font-bold text-purple-600 dark:text-purple-400">&gt; {config.vol_climax_gate_z.toFixed(1)}σ</span>
+                </div>
+                <input type="range" min={1.0} max={5.0} step={0.1} value={config.vol_climax_gate_z}
+                  onChange={e => setConfig(c => ({ ...c, vol_climax_gate_z: parseFloat(e.target.value) }))}
+                  className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-purple-500" />
+                <p className="text-[9px] text-slate-400 dark:text-slate-500">Volume anomalo sopra la media. 2.5σ = top 1% dei bar per volume. Default: 2.5</p>
+              </div>
+              <div className="flex flex-col gap-1">
+                <div className="flex justify-between items-center">
+                  <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">RSI 4H Oversold (gate attivo solo sotto soglia)</span>
+                  <span className="text-[10px] font-bold text-purple-600 dark:text-purple-400">RSI &lt; {config.vol_climax_gate_rsi}</span>
+                </div>
+                <input type="range" min={10} max={50} step={1} value={config.vol_climax_gate_rsi}
+                  onChange={e => setConfig(c => ({ ...c, vol_climax_gate_rsi: parseFloat(e.target.value) }))}
+                  className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-purple-500" />
+                <p className="text-[9px] text-slate-400 dark:text-slate-500">Gate attivo solo quando RSI 4H è già oversold. Evita falsi positivi in trend forte. Default: 30</p>
+              </div>
+            </div>
+          )}
+
+          {/* Feature D: C2 Forecast Inversion Gate */}
+          <label className={`flex items-start gap-3 cursor-pointer group p-4 rounded-xl border transition-all duration-200 ${config.c2_inversion_gate_enabled ? 'border-sky-200 dark:border-sky-500/30 bg-sky-50/40 dark:bg-sky-500/5' : 'border-slate-100 dark:border-white/5 hover:bg-slate-50 dark:hover:bg-white/[0.03]'}`}>
+            <div className="relative mt-0.5 flex-shrink-0">
+              <input type="checkbox" className="sr-only" checked={config.c2_inversion_gate_enabled} onChange={e => setConfig(c => ({ ...c, c2_inversion_gate_enabled: e.target.checked }))} />
+              <div className={`w-9 h-[18px] rounded-full transition-all duration-300 ${config.c2_inversion_gate_enabled ? 'bg-sky-500' : 'bg-slate-200 dark:bg-white/10'}`} />
+              <div className={`absolute top-[3px] left-[3px] w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.c2_inversion_gate_enabled ? 'translate-x-[18px]' : ''}`} />
+            </div>
+            <div className="min-w-0">
+              <p className={`text-xs font-bold leading-tight transition-colors ${config.c2_inversion_gate_enabled ? 'text-sky-600 dark:text-sky-400' : 'text-slate-700 dark:text-slate-300'}`}>
+                C2 Forecast Inversion Gate
+                {config.c2_inversion_gate_enabled && <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-sky-100 dark:bg-sky-500/20 text-sky-600 dark:text-sky-400 uppercase tracking-wider">Attivo</span>}
+              </p>
+              <p className="text-[10px] text-slate-400 dark:text-slate-500 leading-snug mt-1">
+                Se C2 p50 &gt; close +{(config.c2_inversion_pct * 100).toFixed(1)}% per un segnale short (o p50 &lt; close −{(config.c2_inversion_pct * 100).toFixed(1)}% per long), alza la soglia +0.10. Non blocca, rende più esigente.
+              </p>
+            </div>
+          </label>
+          {config.c2_inversion_gate_enabled && (
+            <div className="ml-2 pl-4 border-l-2 border-sky-200 dark:border-sky-500/30 space-y-3">
+              <div className="flex flex-col gap-1">
+                <div className="flex justify-between items-center">
+                  <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">Soglia inversione C2 (%)</span>
+                  <span className="text-[10px] font-bold text-sky-600 dark:text-sky-400">{(config.c2_inversion_pct * 100).toFixed(2)}%</span>
+                </div>
+                <input type="range" min={0.001} max={0.05} step={0.001} value={config.c2_inversion_pct}
+                  onChange={e => setConfig(c => ({ ...c, c2_inversion_pct: parseFloat(e.target.value) }))}
+                  className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-sky-500" />
+                <p className="text-[9px] text-slate-400 dark:text-slate-500">Distanza minima tra C2 p50 e prezzo corrente per attivare il gate. 0.5% = solo previsioni chiaramente opposte. Default: 0.005</p>
+              </div>
+            </div>
+          )}
+
+          {/* Feature E: Exhaustion Max Hold */}
+          <label className={`flex items-start gap-3 cursor-pointer group p-4 rounded-xl border transition-all duration-200 ${config.exhaustion_max_hold_enabled ? 'border-rose-200 dark:border-rose-500/30 bg-rose-50/40 dark:bg-rose-500/5' : 'border-slate-100 dark:border-white/5 hover:bg-slate-50 dark:hover:bg-white/[0.03]'}`}>
+            <div className="relative mt-0.5 flex-shrink-0">
+              <input type="checkbox" className="sr-only" checked={config.exhaustion_max_hold_enabled} onChange={e => setConfig(c => ({ ...c, exhaustion_max_hold_enabled: e.target.checked }))} />
+              <div className={`w-9 h-[18px] rounded-full transition-all duration-300 ${config.exhaustion_max_hold_enabled ? 'bg-rose-500' : 'bg-slate-200 dark:bg-white/10'}`} />
+              <div className={`absolute top-[3px] left-[3px] w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.exhaustion_max_hold_enabled ? 'translate-x-[18px]' : ''}`} />
+            </div>
+            <div className="min-w-0">
+              <p className={`text-xs font-bold leading-tight transition-colors ${config.exhaustion_max_hold_enabled ? 'text-rose-600 dark:text-rose-400' : 'text-slate-700 dark:text-slate-300'}`}>
+                Exhaustion Max Hold
+                {config.exhaustion_max_hold_enabled && <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-rose-100 dark:bg-rose-500/20 text-rose-600 dark:text-rose-400 uppercase tracking-wider">Attivo — max {config.exhaustion_max_hold_bars} bar</span>}
+              </p>
+              <p className="text-[10px] text-slate-400 dark:text-slate-500 leading-snug mt-1">
+                Quando ExhaustionGuard era attivo all'apertura, forza uscita dopo max {config.exhaustion_max_hold_bars} bar ({config.exhaustion_max_hold_bars * 4}h). Evita che trade aperti in esaurimento restino aperti troppo a lungo.
+              </p>
+            </div>
+          </label>
+          {config.exhaustion_max_hold_enabled && (
+            <div className="ml-2 pl-4 border-l-2 border-rose-200 dark:border-rose-500/30 space-y-3">
+              <div className="flex flex-col gap-1">
+                <div className="flex justify-between items-center">
+                  <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">Barre massime (4H)</span>
+                  <span className="text-[10px] font-bold text-rose-600 dark:text-rose-400">{config.exhaustion_max_hold_bars} bar = {config.exhaustion_max_hold_bars * 4}h</span>
+                </div>
+                <input type="range" min={1} max={12} step={1} value={config.exhaustion_max_hold_bars}
+                  onChange={e => setConfig(c => ({ ...c, exhaustion_max_hold_bars: parseInt(e.target.value) }))}
+                  className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-rose-500" />
+                <p className="text-[9px] text-slate-400 dark:text-slate-500">Limite massimo di permanenza per trade aperti durante esaurimento. Default: 2 bar (8h)</p>
               </div>
             </div>
           )}
