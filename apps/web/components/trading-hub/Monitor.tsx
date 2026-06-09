@@ -24,11 +24,43 @@ interface Position {
   partial_done: boolean;
   partial_realized_pnl: number;
   lgbm_strikes: number;
+  trend_strikes: number;
   partial_tp_price: number | null;
   trailing_sl_activation_price: number | null;
   trailing_sl_dist: number | null;
   entry_atr: number | null;
   entry_reasoning?: string[];
+}
+
+interface TrendMeterData {
+  display_score: number;
+  predictive: number;
+  label: string;
+  side: string;
+  updated_at: string;
+  strategic_4h?: {
+    score: number;
+    components: { direction?: number; adx: number; mtf: number; c2_cont?: number };
+    ensemble: number | null;
+    chronos: boolean;
+    ml_pending?: boolean;
+    updated_at: string;
+    source?: 'fresh' | 'cycle';
+  };
+  tactical_1h?: {
+    score: number;
+    components: { gate_prob: number };
+    lgbm_1h_prob: number;
+    model_available: boolean;
+    updated_at: string;
+    error?: string;
+  };
+  pulse_15m?: {
+    score: number;
+    components: { direction_4c?: number; ema_8?: number };
+    updated_at: string;
+    error?: string;
+  };
 }
 
 interface BotStatus {
@@ -58,6 +90,7 @@ interface BotStatus {
     reasoning: string[];
     updated_at: string;
   } | null;
+  trend_meter?: TrendMeterData | null;
   macro_pause_active?: string | null;
   retrain_due?: boolean;
   pending_pullback?: {
@@ -896,6 +929,9 @@ export const Monitor: React.FC<{ apiBase: string }> = ({ apiBase }) => {
           lgbmConfirmBars={status?.config?.lgbm_exit_confirm_bars ?? 2}
           beSlEnabled={status?.config?.be_sl_enabled ?? false}
           lastCycleSignals={status?.last_cycle_signals ?? null}
+          trendMeter={status?.trend_meter ?? null}
+          trendExitEnabled={!!(status?.config?.trend_exit_enabled)}
+          trendExitConfirmBars={(status?.config?.trend_exit_confirm_bars as number) ?? 2}
           onClose={closePosition}
         />
       )}
@@ -1508,6 +1544,9 @@ interface LiveTradeCardProps {
   lgbmConfirmBars: number;
   beSlEnabled: boolean;
   lastCycleSignals: LastCycleSignals | null;
+  trendMeter: TrendMeterData | null;
+  trendExitEnabled: boolean;
+  trendExitConfirmBars: number;
   onClose: () => void;
 }
 
@@ -1516,7 +1555,7 @@ const LiveTradeCard: React.FC<LiveTradeCardProps> = ({
   distToSL, distToTP, distToSLPct, distToTPPct,
   slProgressPct, ptpProgressPct, distToPTP, distToPTPPct,
   positionDurationH, mode, lgbmConfirmBars, beSlEnabled,
-  lastCycleSignals, onClose,
+  lastCycleSignals, trendMeter, trendExitEnabled, trendExitConfirmBars, onClose,
 }) => {
   const isLong    = pos.side === 'long';
   const pnlPos    = unrealizedPnl >= 0;
@@ -1717,6 +1756,9 @@ const LiveTradeCard: React.FC<LiveTradeCardProps> = ({
         </div>
       )}
 
+      {/* Trend Continuation Meter */}
+      {trendMeter && <TrendMeter meter={trendMeter} />}
+
       {/* Trade management badges */}
       <div className="px-6 py-4 border-b border-slate-100 dark:border-white/5">
         <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-3">Gestione Trade</p>
@@ -1760,6 +1802,17 @@ const LiveTradeCard: React.FC<LiveTradeCardProps> = ({
             <span className="text-[9px] font-bold uppercase tracking-widest opacity-70">LGBM Strikes</span>
             <span className="font-bold font-mono">{pos.lgbm_strikes ?? 0} / {lgbmConfirmBars}</span>
           </div>
+          {/* Trend Exit strikes — visible only when feature is enabled */}
+          {trendExitEnabled && (
+            <div className={`flex flex-col gap-1 px-3 py-2.5 rounded-xl border text-xs ${
+              (pos.trend_strikes ?? 0) > 0
+                ? 'bg-orange-50 dark:bg-orange-500/10 border-orange-200 dark:border-orange-500/25 text-orange-700 dark:text-orange-400'
+                : 'bg-slate-50 dark:bg-white/5 border-slate-100 dark:border-white/8 text-slate-400 dark:text-slate-500'
+            }`}>
+              <span className="text-[9px] font-bold uppercase tracking-widest opacity-70">Trend Strikes</span>
+              <span className="font-bold font-mono">{pos.trend_strikes ?? 0} / {trendExitConfirmBars}</span>
+            </div>
+          )}
         </div>
       </div>
 
@@ -1870,6 +1923,175 @@ const LiveTradeCard: React.FC<LiveTradeCardProps> = ({
           </svg>
           Chiudi Posizione
         </button>
+      </div>
+    </div>
+  );
+};
+
+// ── Trend Continuation Meter ──────────────────────────────────────────────────
+
+const TrendMeter: React.FC<{ meter: TrendMeterData }> = ({ meter }) => {
+  const score = meter.display_score ?? 0;
+  const pred  = meter.predictive   ?? 0;
+  const s4h   = meter.strategic_4h?.score ?? null;
+  const t1h   = meter.tactical_1h?.score  ?? null;
+  const p15m  = meter.pulse_15m?.score    ?? null;
+  const has1hModel = meter.tactical_1h?.model_available ?? false;
+
+  // Colour gradient: emerald ≥65, amber 40-64, rose <40
+  const barColor =
+    score >= 65 ? 'from-emerald-500 to-emerald-400'
+    : score >= 40 ? 'from-amber-500 to-amber-400'
+    : 'from-rose-500 to-rose-400';
+  const scoreColor =
+    score >= 65 ? 'text-emerald-600 dark:text-emerald-400'
+    : score >= 40 ? 'text-amber-600 dark:text-amber-400'
+    : 'text-rose-600 dark:text-rose-400';
+  const labelColor =
+    score >= 65 ? 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border-emerald-200 dark:border-emerald-500/25'
+    : score >= 40 ? 'bg-amber-50 dark:bg-amber-500/10 text-amber-700 dark:text-amber-400 border-amber-200 dark:border-amber-500/25'
+    : 'bg-rose-50 dark:bg-rose-500/10 text-rose-700 dark:text-rose-400 border-rose-200 dark:border-rose-500/25';
+
+  // Mini sub-bar helpers
+  const SubBar: React.FC<{ value: number | null; label: string; tooltip: string }> = ({ value, label, tooltip }) => {
+    const v = value ?? 50;
+    const col = v >= 65 ? 'bg-emerald-500' : v >= 40 ? 'bg-amber-500' : 'bg-rose-500';
+    return (
+      <Tooltip text={tooltip} pos="top">
+        <div className="flex flex-col gap-0.5 min-w-0">
+          <div className="flex items-center justify-between gap-1">
+            <span className="text-[8px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest truncate">{label}</span>
+            <span className={`text-[9px] font-bold font-mono tabular-nums ${
+              v >= 65 ? 'text-emerald-600 dark:text-emerald-400' : v >= 40 ? 'text-amber-600 dark:text-amber-400' : 'text-rose-600 dark:text-rose-400'
+            }`}>{value !== null ? `${v.toFixed(0)}` : '—'}</span>
+          </div>
+          <div className="h-1 bg-slate-100 dark:bg-white/8 rounded-full overflow-hidden">
+            <div
+              className={`h-full rounded-full transition-all duration-700 ${col}`}
+              style={{ width: `${value !== null ? v : 50}%` }}
+            />
+          </div>
+        </div>
+      </Tooltip>
+    );
+  };
+
+  const s4hSource    = meter.strategic_4h?.source;
+  const s4hMlPending = meter.strategic_4h?.ml_pending === true;
+  const s4hTime      = meter.strategic_4h?.updated_at ? new Date(meter.strategic_4h.updated_at).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' }) : null;
+  const s4hLabel     = s4hMlPending ? '4H · Strutturale ⏳' : s4hSource === 'fresh' ? '4H · Ora ⚡' : '4H · Strategico';
+  const s4hSourceNote = s4hMlPending
+    ? 'ML in attesa del primo ciclo 4H (bot appena avviato o nessun ciclo ancora completato). Mostra solo ADX + regime — il componente LGBM si aggiungerà alla prossima chiusura 4H.'
+    : s4hSource === 'fresh'
+      ? 'Calcolato ora (LGBM ultimo ciclo + ADX + regime da dati recenti). Si consolida alla prossima chiusura 4H.'
+      : `Aggiornato all'ultima chiusura 4H: ${s4hTime ?? '—'}`;
+  const t1hTime = meter.tactical_1h?.updated_at  ? new Date(meter.tactical_1h.updated_at).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' }) : null;
+  const p15mTime = meter.pulse_15m?.updated_at   ? new Date(meter.pulse_15m.updated_at).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' }) : null;
+
+  return (
+    <div className="px-6 py-4 border-b border-slate-100 dark:border-white/5">
+      {/* Header */}
+      <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center gap-2">
+          <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest">
+            Forza Trend
+          </p>
+          <Tooltip
+            text={`Punteggio multi-timeframe che misura la forza e la probabilità di continuazione del trend nella direzione del trade.\n\n• 4H Strategico: ensemble LGBM+Chronos + ADX 4H + regime giornaliero. ${s4hSourceNote}\n• 1H Tattico (${t1hTime ?? '—'}): modello gate 1H${has1hModel ? '' : ' non disponibile — valore neutro 50'} — "il prezzo sta prendendo la direzione sperata?". Aggiorna ogni ora.\n• 15m Polso (${p15mTime ?? '—'}): momentum leggero (direzione ultime 4 candele + EMA 8). Descrittivo, non predittivo. Aggiorna ogni ~60s.\n\nScore finale = (4H × 0.55 + 1H × 0.45) ± modulazione 15m (max ±10 pt).`}
+            pos="bottom"
+            width="wide"
+          >
+            <svg className="w-3 h-3 text-slate-400 dark:text-slate-500 cursor-help" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <circle cx="12" cy="12" r="10"/><path d="M12 16v-4m0-4h.01"/>
+            </svg>
+          </Tooltip>
+        </div>
+        <span className={`text-[9px] font-bold uppercase tracking-widest px-2 py-0.5 rounded-full border ${labelColor}`}>
+          {meter.label}
+        </span>
+      </div>
+
+      {/* Main score + bar */}
+      <div className="flex items-center gap-4 mb-3">
+        <span className={`text-2xl font-bold font-mono tabular-nums w-12 shrink-0 ${scoreColor}`}>
+          {score.toFixed(0)}
+        </span>
+        <div className="flex-1 relative">
+          {/* Track */}
+          <div className="h-3 bg-slate-100 dark:bg-white/8 rounded-full overflow-hidden">
+            <div
+              className={`h-full rounded-full bg-gradient-to-r transition-all duration-700 ${barColor}`}
+              style={{ width: `${score}%` }}
+            />
+          </div>
+          {/* Threshold ticks */}
+          <div className="absolute top-0 h-3 w-full pointer-events-none">
+            {/* 40 threshold */}
+            <div className="absolute top-0 h-full w-px bg-slate-300 dark:bg-white/20" style={{ left: '40%' }} />
+            {/* 65 threshold */}
+            <div className="absolute top-0 h-full w-px bg-slate-300 dark:bg-white/20" style={{ left: '65%' }} />
+          </div>
+        </div>
+        <div className="text-right shrink-0">
+          <p className="text-[9px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest">Predittivo</p>
+          <p className="text-[11px] font-bold font-mono text-slate-600 dark:text-slate-300">{pred.toFixed(0)}</p>
+        </div>
+      </div>
+
+      {/* Scale labels */}
+      <div className="flex justify-between text-[8px] font-bold text-slate-300 dark:text-slate-600 uppercase tracking-widest mb-4 px-12">
+        <span>Debole</span>
+        <span>In indebolimento</span>
+        <span>Forte</span>
+      </div>
+
+      {/* ML pending notice */}
+      {s4hMlPending && (
+        <div className="mb-3 flex items-center gap-2 px-3 py-2 rounded-lg bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/25">
+          <svg className="w-3 h-3 text-amber-500 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <circle cx="12" cy="12" r="10"/><path d="M12 8v4m0 4h.01"/>
+          </svg>
+          <p className="text-[10px] text-amber-700 dark:text-amber-400">
+            <span className="font-bold">ML in attesa</span> — componente LGBM 4H non ancora disponibile (primo ciclo 4H non completato). Il valore riflette solo ADX e regime strutturale.
+          </p>
+        </div>
+      )}
+
+      {/* Three sub-bars */}
+      <div className="grid grid-cols-3 gap-3">
+        <SubBar
+          value={s4h}
+          label={s4hLabel}
+          tooltip={[
+            'Score 4H (predittivo):',
+            meter.strategic_4h?.ml_pending
+              ? '⏳ ML in attesa del primo ciclo 4H — solo ADX e regime strutturale.'
+              : `• Direzione LGBM: ${meter.strategic_4h?.components.direction?.toFixed(0) ?? '—'}/100`,
+            `• ADX 4H: ${meter.strategic_4h?.components.adx?.toFixed(0) ?? '—'}/100`,
+            `• Regime 1D/MTF: ${meter.strategic_4h?.components.mtf?.toFixed(0) ?? '—'}/100`,
+            meter.strategic_4h?.chronos && meter.strategic_4h?.components.c2_cont != null
+              ? `• Continuazione C2: ${meter.strategic_4h.components.c2_cont?.toFixed(0)}/100`
+              : '• C2 Chronos: disabilitato (escluso)',
+            s4hSourceNote,
+          ].filter(Boolean).join('\n')}
+        />
+        <SubBar
+          value={t1h}
+          label={`1H · Tattico${has1hModel ? '' : ' ⚠'}`}
+          tooltip={[
+            'Score 1H (predittivo — solo gate model):',
+            has1hModel
+              ? `• P(direzione corretta su 1H): ${meter.tactical_1h?.components.gate_prob?.toFixed(0) ?? '—'}%\n  (50% = neutro, 100% = max conferma)`
+              : '⚠ Modello 1H non addestrato — valore neutro (50).\nEsegui un retrain 1H per attivare questo strato.',
+            'ADX su 1H escluso: già incluso nel modello, laggante sul TF orario.',
+            `Aggiornato: ${t1hTime ?? 'in attesa…'}`,
+          ].join('\n')}
+        />
+        <SubBar
+          value={p15m}
+          label="15m · Polso"
+          tooltip={`Polso 15m (descrittivo — non predittivo):\n• Direzione ultime 4 candele: ${meter.pulse_15m?.components.direction_4c?.toFixed(0) ?? '—'}\n• EMA 8 (≈2h): ${meter.pulse_15m?.components.ema_8?.toFixed(0) ?? '—'}\nFa "respirare" la barra tra le candele 4H senza impatto sull'auto-chiusura.\nAggiornato: ${p15mTime ?? 'in attesa…'}`}
+        />
       </div>
     </div>
   );

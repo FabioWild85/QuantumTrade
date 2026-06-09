@@ -254,6 +254,18 @@ class BotConfig(BaseModel):
     use_1h_lgbm_gate:               bool  = Field(False)
     lgbm_1h_min_agreement:          float = Field(0.52, ge=0.50, le=0.70)
     lgbm_1h_block_threshold:        float = Field(0.45, ge=0.30, le=0.50)
+    # Trend Continuation Meter — multi-timeframe strength bar in LiveTradeCard
+    # strategic_4h (4H ensemble+C2+ADX+MTF) × w_4h + tactical_1h (1H gate model) × w_1h,
+    # then modulated by a lightweight 15m momentum pulse within ±pulse_band points.
+    # Auto-close acts on the predictive score only (not on the 15m pulse) and requires
+    # confirm_bars consecutive evaluations below threshold to avoid noise-triggered exits.
+    trend_exit_enabled:       bool  = Field(False)
+    trend_exit_threshold:     float = Field(35.0, ge=10.0, le=60.0)
+    trend_exit_confirm_bars:  int   = Field(2,    ge=1,    le=6)
+    trend_exit_min_hold_bars: int   = Field(2,    ge=1,    le=24)
+    trend_meter_w_4h:         float = Field(0.55, ge=0.20, le=0.80)
+    trend_meter_w_1h:         float = Field(0.45, ge=0.20, le=0.80)
+    trend_meter_pulse_band:   float = Field(10.0, ge=2.0,  le=20.0)
     # Optuna hyperparameter tuning (manual/deep retrains only)
     use_optuna:                     bool  = Field(False)
     optuna_n_trials:                int   = Field(50,  ge=10, le=200)

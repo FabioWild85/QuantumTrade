@@ -7,12 +7,14 @@ LightGBM is retrained automatically every 120 cycles (~30 days).
 
 import asyncio
 import copy
+import json
 import logging
 import math
 import os
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
+from pathlib import Path
 from typing import Optional
 
 import numpy as np
@@ -49,6 +51,25 @@ CIRCUIT_BREAKER_THRESHOLD = 5   # stop bot after N consecutive cycle errors
 # Concept drift: check every N cycles (~4 days on 4H), cooldown 24h between retrains
 DRIFT_CHECK_INTERVAL     = 24
 DRIFT_RETRAIN_COOLDOWN_H = 24
+
+# Last-cycle-signals persistence: survives bot restarts so the trend meter
+# keeps a valid ML component between restart and next 4H close.
+_LCS_STATE_FILE = Path(__file__).parent.parent / "state" / "last_cycle_signals.json"
+
+def _save_lcs(lcs: dict) -> None:
+    try:
+        _LCS_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _LCS_STATE_FILE.write_text(json.dumps(lcs))
+    except Exception as exc:
+        log.debug("Could not persist last_cycle_signals: %s", exc)
+
+def _load_lcs() -> Optional[dict]:
+    try:
+        if _LCS_STATE_FILE.exists():
+            return json.loads(_LCS_STATE_FILE.read_text())
+    except Exception:
+        pass
+    return None
 
 
 # ── Pullback Entry state ──────────────────────────────────────────────────────
@@ -118,6 +139,11 @@ class BotConfig:
         self.lgbm_exit_min_hold_bars = kw.get("lgbm_exit_min_hold_bars", 6)
         self.lgbm_exit_confirm_bars  = kw.get("lgbm_exit_confirm_bars",  2)
         self.enhanced_exit_enabled   = kw.get("enhanced_exit_enabled",   False)
+        # Trend Meter auto-close: exit when predictive score (4H+1H) stays below threshold
+        self.trend_exit_enabled       = kw.get("trend_exit_enabled",       False)
+        self.trend_exit_threshold     = kw.get("trend_exit_threshold",     35.0)
+        self.trend_exit_confirm_bars  = kw.get("trend_exit_confirm_bars",  2)
+        self.trend_exit_min_hold_bars = kw.get("trend_exit_min_hold_bars", 2)
         # ── Advanced signal controls ──────────────────────────────────────────
         self.chronos_enabled         = kw.get("chronos_enabled",         True)
         self.chronos_weight          = kw.get("chronos_weight",          0.40)
@@ -371,8 +397,11 @@ class ExecutionEngine:
         self._retrain_task: Optional[asyncio.Task] = None
         self._task: Optional[asyncio.Task]         = None
         self._last_retrain_metrics: Optional[dict]     = None
-        self._last_cycle_signals:   Optional[dict]     = None
+        self._last_cycle_signals:   Optional[dict]     = _load_lcs()   # persisted across restarts
         self._macro_pause_active:   Optional[str]      = None
+        # Trend meter — multi-timeframe continuation meter (see _trend_meter_loop)
+        self._trend_meter:          Optional[dict]     = None
+        self._trend_meter_task:     Optional[asyncio.Task] = None
         self._last_drift_retrain:   Optional[datetime] = None
         self._last_drift_result:    Optional[dict]     = None
         self._retrain_due:          bool               = False
@@ -427,6 +456,9 @@ class ExecutionEngine:
         if mode == "paper":
             asyncio.create_task(self._paper_watchdog())
 
+        # Trend meter loop — active in both paper and live mode
+        self._trend_meter_task = asyncio.create_task(self._trend_meter_loop())
+
         log.info("Execution engine starting in %s mode", mode.upper())
         await self._notifier.send_bot_started(mode)
 
@@ -436,6 +468,8 @@ class ExecutionEngine:
         self.running = False
         if self._task:
             self._task.cancel()
+        if self._trend_meter_task:
+            self._trend_meter_task.cancel()
         await self._ws.stop()
         log.info("Execution engine stopped")
         await self._notifier.send_bot_stopped("manual")
@@ -524,6 +558,7 @@ class ExecutionEngine:
                 "opened_at":                    datetime.now(timezone.utc).isoformat(),
                 "bars_held":                    0,
                 "lgbm_strikes":                 0,
+                "trend_strikes":                0,
                 "be_sl_applied":                False,
                 "sl_trailing_active":           False,
                 "high_water":                   price,
@@ -669,6 +704,7 @@ class ExecutionEngine:
             "opened_at":          datetime.now(timezone.utc).isoformat(),
             "bars_held":              0,
             "lgbm_strikes":           0,
+            "trend_strikes":          0,
             "be_sl_applied":          False,
             "sl_trailing_active":     False,
             "high_water":             hl_pos["entry_price"],
@@ -688,6 +724,7 @@ class ExecutionEngine:
                     "take_profit":             saved_state.get("take_profit", 0.0),
                     "bars_held":               saved_state.get("bars_held", 0),
                     "lgbm_strikes":            saved_state.get("lgbm_strikes", 0),
+                    "trend_strikes":           saved_state.get("trend_strikes", 0),
                     "be_sl_applied":           saved_state.get("be_sl_applied", False),
                     "sl_trailing_active":      saved_state.get("sl_trailing_active", False),
                     "high_water":              saved_state.get("high_water") or hl_pos["entry_price"],
@@ -854,6 +891,7 @@ class ExecutionEngine:
                 existing["_live_position_state"] = {
                     "bars_held":               self._position.get("bars_held", 0),
                     "lgbm_strikes":            self._position.get("lgbm_strikes", 0),
+                    "trend_strikes":           self._position.get("trend_strikes", 0),
                     "be_sl_applied":           self._position.get("be_sl_applied", False),
                     "sl_trailing_active":      self._position.get("sl_trailing_active", False),
                     "high_water":              self._position.get("high_water"),
@@ -966,6 +1004,7 @@ class ExecutionEngine:
             "retrain_due":              self._retrain_due,
             "last_retrain":             self._last_retrain_metrics,
             "last_cycle_signals":       self._last_cycle_signals,
+            "trend_meter":              self._trend_meter,
             "macro_pause_active":       self._macro_pause_active,
             "config":                   self.config.model_dump(),
             "regime_signal":            regime_data,
@@ -2033,7 +2072,8 @@ class ExecutionEngine:
         if self._cycle_count % DRIFT_CHECK_INTERVAL == 0:
             asyncio.create_task(self._drift_check_background())
 
-        # Store latest signal snapshot for status endpoint and Monitor UI
+        # Store latest signal snapshot for status endpoint and Monitor UI.
+        # Also persisted to disk so the trend meter has valid ML data after restart.
         self._last_cycle_signals = {
             "action":       result.action,
             "ensemble_pct": round(result.confidence * 100, 1),
@@ -2044,6 +2084,17 @@ class ExecutionEngine:
             "reasoning":    result.reasoning,
             "updated_at":   datetime.now(timezone.utc).isoformat(),
         }
+        _save_lcs(self._last_cycle_signals)
+
+        # Update 4H strategic score in trend meter whenever a position is open.
+        # Uses the model outputs already computed in this cycle — zero extra cost.
+        if self._position:
+            _side_now = self._position["side"]
+            _s4h      = self._compute_strategic_4h(result.features_snapshot, c2_out, lgbm_prob, _side_now)
+            if self._trend_meter is None:
+                self._trend_meter = {}
+            self._trend_meter["strategic_4h"] = _s4h
+            log.debug("TrendMeter 4H updated: score=%.1f side=%s", _s4h["score"], _side_now)
 
         elapsed_ms = (datetime.now(timezone.utc) - cycle_start).total_seconds() * 1000
         log.info("Cycle %d done in %.0fms | action=%s", self._cycle_count, elapsed_ms, result.action)
@@ -2098,6 +2149,384 @@ class ExecutionEngine:
         except Exception as exc:
             log.warning("1H LightGBM predict failed: %s — using 0.5", exc)
             return 0.5
+
+    # ── Trend Continuation Meter ──────────────────────────────────────────────
+
+    def _compute_strategic_4h(
+        self, features: dict, c2_out: dict, lgbm_p: float, side: str
+    ) -> dict:
+        """
+        4H strategic score (0-100) projected in the direction of the open trade.
+
+        When Chronos is ENABLED (3 components + c2_cont):
+          0.40 × direction_score  — ensemble probability in trade direction
+          0.20 × c2_cont          — Chronos continuation probability (meaningful only when active)
+          0.20 × adx_score        — ADX trend strength
+          0.20 × mtf_score        — daily regime / MTF alignment
+
+        When Chronos is DISABLED (c2_cont excluded, weights redistributed):
+          0.50 × direction_score
+          0.25 × adx_score
+          0.25 × mtf_score
+
+        c2_cont_prob = 1.0 is the placeholder set by the engine when Chronos is off
+        (execution.py line ~1451). Including it would inflate the score by 20 points
+        with a fake signal — so it is excluded entirely when chronos_enabled = False.
+        """
+        is_long         = (side == "long")
+        chronos_enabled = getattr(self.config, "chronos_enabled", True)
+
+        chronos_w = self.config.chronos_weight if chronos_enabled else 0.0
+        lgbm_w    = 1.0 - chronos_w
+        c2_dir    = c2_out.get("c2_dir_prob", 0.5)
+        ensemble  = lgbm_w * lgbm_p + chronos_w * c2_dir
+
+        if is_long:
+            dir_score = max(0.0, (ensemble - 0.5) / 0.5) * 100.0
+        else:
+            dir_score = max(0.0, (0.5 - ensemble) / 0.5) * 100.0
+
+        adx       = float(features.get("adx_14") or 0.0)
+        adx_score = min(100.0, max(0.0, (adx - 15.0) / 25.0 * 100.0))
+
+        d_regime    = int(features.get("d_regime") or 0)
+        mtf_aligned = float(features.get("mtf_aligned") or 0.0)
+        dir_sign    = 1 if is_long else -1
+        if d_regime * dir_sign > 0 and mtf_aligned * dir_sign > 0:
+            mtf_score = 100.0
+        elif d_regime * dir_sign > 0 or mtf_aligned * dir_sign > 0:
+            mtf_score = 50.0
+        else:
+            mtf_score = 0.0
+
+        if chronos_enabled:
+            c2_cont = c2_out.get("c2_cont_prob", 0.0) * 100.0
+            score   = 0.40 * dir_score + 0.20 * c2_cont + 0.20 * adx_score + 0.20 * mtf_score
+        else:
+            c2_cont = None   # excluded — placeholder value (1.0) would be misleading
+            score   = 0.50 * dir_score + 0.25 * adx_score + 0.25 * mtf_score
+
+        score = round(min(100.0, max(0.0, score)), 1)
+
+        components: dict = {
+            "direction": round(dir_score, 1),
+            "adx":       round(adx_score, 1),
+            "mtf":       round(mtf_score, 1),
+        }
+        if c2_cont is not None:
+            components["c2_cont"] = round(c2_cont, 1)
+
+        return {
+            "score":      score,
+            "components": components,
+            "ensemble":   round(ensemble, 3),
+            "chronos":    chronos_enabled,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+    async def _compute_strategic_4h_fresh(self, side: str) -> Optional[dict]:
+        """
+        On-demand 4H strategic score for situations where _cycle() has not yet run
+        (bot restart with restored position, manual trade, first minutes after open).
+
+        Strategy:
+          - ML components: use _last_cycle_signals if available (recent enough — same 4H bar),
+            otherwise run LGBM on fresh 4H features (fallback path).
+          - ADX + MTF: fetched fresh from OHLCV, computed inline without full feature pipeline.
+          - C2 Chronos: taken from _last_cycle_signals; not rerun (too slow/expensive).
+
+        The result is tagged with source="fresh" so the UI can show a slightly different badge
+        ("Calcolato ora" instead of "4H chiusa MM:SS") without mixing up cadences.
+        """
+        try:
+            import ta as _ta
+
+            df_4h = await self._hl.get_ohlcv(SYMBOL, "4h", limit=100)
+            if len(df_4h) >= 2:
+                df_4h = df_4h.iloc[:-1]   # drop forming candle
+            if len(df_4h) < 20:
+                return None
+
+            # ── ADX 4H ───────────────────────────────────────────────────────
+            adx_ser = _ta.trend.ADXIndicator(df_4h["high"], df_4h["low"], df_4h["close"], 14).adx()
+            adx_14  = float(adx_ser.iloc[-1]) if not adx_ser.empty and not pd.isna(adx_ser.iloc[-1]) else 20.0
+
+            # ── Daily regime + MTF alignment (resample 4H→1D) ─────────────────
+            daily = df_4h.resample("1D").agg(
+                {"open": "first", "high": "max", "low": "min", "close": "last"}
+            ).dropna()
+            d_regime    = 0
+            mtf_aligned = 0.0
+            if len(daily) >= 20:
+                d_ema20_ser = _ta.trend.EMAIndicator(daily["close"], 20).ema_indicator()
+                d_adx_ser   = _ta.trend.ADXIndicator(daily["high"], daily["low"], daily["close"], 14).adx() \
+                              if len(daily) >= 28 else None
+                d_ema20 = float(d_ema20_ser.iloc[-1]) if not d_ema20_ser.empty else 0.0
+                d_adx   = float(d_adx_ser.iloc[-1])   if d_adx_ser is not None and not d_adx_ser.empty else 0.0
+                last_d  = float(daily["close"].iloc[-1])
+                if last_d > d_ema20 and d_adx > 20:
+                    d_regime = 1
+                elif last_d < d_ema20 and d_adx > 20:
+                    d_regime = -1
+                # MTF alignment: 4H trend agrees with daily trend
+                last_4h = float(df_4h["close"].iloc[-1])
+                ema20_4h = float(_ta.trend.EMAIndicator(df_4h["close"], 20).ema_indicator().iloc[-1])
+                h4_regime = 1 if last_4h > ema20_4h and adx_14 > 20 else (-1 if last_4h < ema20_4h and adx_14 > 20 else 0)
+                if d_regime == h4_regime and d_regime != 0:
+                    mtf_aligned = float(d_regime)
+
+            features_approx = {
+                "adx_14":     adx_14,
+                "d_regime":   d_regime,
+                "mtf_aligned": mtf_aligned,
+            }
+
+            # ── ML components: use persisted last_cycle_signals only ────────────
+            # NEVER run LGBM here with incomplete data (empty OI/liq/LS DataFrames):
+            # doing so produces unreliable direction scores that contradict the real
+            # cycle — e.g. 78% bullish when the cycle said 72% bearish.
+            # If no lcs is available yet (first ever start, state file missing),
+            # compute only the structural components (ADX + MTF) and flag ml_pending.
+            lcs = self._last_cycle_signals
+            if lcs:
+                lgbm_p = lcs["lgbm_pct"] / 100.0
+                c2_out = {
+                    "c2_dir_prob":  lcs["c2_dir_pct"]  / 100.0,
+                    "c2_cont_prob": lcs["c2_cont_prob"] / 100.0,
+                }
+                result = self._compute_strategic_4h(features_approx, c2_out, lgbm_p, side)
+                result["source"]     = "fresh"
+                result["ml_pending"] = False
+            else:
+                # No reliable ML data — structural only (ADX + MTF, equal weights)
+                adx_s = min(100.0, max(0.0, (adx_14 - 15.0) / 25.0 * 100.0))
+                dir_sign = 1 if side == "long" else -1
+                d_regime_v  = int(features_approx.get("d_regime") or 0)
+                mtf_v       = float(features_approx.get("mtf_aligned") or 0.0)
+                if d_regime_v * dir_sign > 0 and mtf_v * dir_sign > 0:
+                    mtf_s = 100.0
+                elif d_regime_v * dir_sign > 0 or mtf_v * dir_sign > 0:
+                    mtf_s = 50.0
+                else:
+                    mtf_s = 0.0
+                struct_score = round(0.50 * adx_s + 0.50 * mtf_s, 1)
+                result = {
+                    "score":      struct_score,
+                    "components": {"adx": round(adx_s, 1), "mtf": round(mtf_s, 1)},
+                    "ensemble":   None,
+                    "chronos":    getattr(self.config, "chronos_enabled", True),
+                    "source":     "fresh",
+                    "ml_pending": True,
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }
+
+            log.info(
+                "TrendMeter 4H fresh: score=%.1f side=%s adx=%.1f d_regime=%d ml_pending=%s",
+                result["score"], side, adx_14, d_regime, result.get("ml_pending"),
+            )
+            return result
+
+        except Exception as exc:
+            log.warning("TrendMeter 4H fresh computation failed: %s", exc)
+            return None
+
+    async def _compute_tactical_1h(self, side: str) -> dict:
+        """
+        1H tactical score (0-100) using the gate 1H model mid-trade.
+        Answers: "il prezzo sta prendendo la direzione del trade su 1H?"
+
+        Uses ONLY the gate probability — ADX is excluded because:
+        1. ADX on 1H lags severely and is structurally near the floor (15–17) even
+           during real trending moves, producing near-zero scores unrelated to direction.
+        2. ADX is already a feature inside the LGBM 1H model — including it again as a
+           separate component is double-counting.
+
+        Score formula:
+          gate_score = max(0, (p_dir − 0.5) / 0.5) × 100
+          where p_dir = P(trade direction correct on 1H) from LGBM gate model.
+          Neutral (50%) → 0,  strong (100%) → 100, below neutral → 0 (capped).
+        """
+        is_long = (side == "long")
+        now_iso = datetime.now(timezone.utc).isoformat()
+        try:
+            df_1h_raw  = await self._hl.get_ohlcv(SYMBOL, "1h", limit=720)
+            if len(df_1h_raw) >= 2:
+                df_1h_raw = df_1h_raw.iloc[:-1]   # drop forming candle
+            df_1h_fund = await self._hl.get_funding_history(SYMBOL, hours=720)
+            df_1h_feat = build_all_features(df_1h_raw, df_1h_fund, pd.DataFrame(), pd.DataFrame())
+            df_1h_feat = build_4h_context_for_1h(df_1h_feat).iloc[64:]
+
+            lgbm_1h_prob = self._get_lgbm_1h_prob(df_1h_feat)
+            p_dir        = lgbm_1h_prob if is_long else (1.0 - lgbm_1h_prob)
+            gate_score   = max(0.0, (p_dir - 0.5) / 0.5) * 100.0
+            score        = round(min(100.0, max(0.0, gate_score)), 1)
+
+            return {
+                "score": score,
+                "components": {
+                    "gate_prob": round(p_dir * 100.0, 1),
+                },
+                "lgbm_1h_prob":    round(lgbm_1h_prob, 3),
+                "model_available": self._lgbm_1h is not None,
+                "updated_at":      now_iso,
+            }
+        except Exception as exc:
+            log.warning("Tactical 1H computation failed: %s", exc)
+            return {
+                "score": 50.0,
+                "components": {"gate_prob": 50.0},
+                "lgbm_1h_prob":    0.5,
+                "model_available": self._lgbm_1h is not None,
+                "updated_at":      now_iso,
+                "error":           str(exc),
+            }
+
+    async def _compute_pulse_15m(self, side: str) -> dict:
+        """
+        Lightweight 15m momentum pulse (0-100, descriptive — no ML model).
+        Fetches the last 24 closed 15m candles (6 hours) and evaluates:
+          0.55 × dir_score  — fraction of the last 4 candles (1h) bullish/bearish in trade direction
+          0.45 × ema_score  — current mark price vs 8-bar EMA (≈ 2h) in trade direction
+        Returns 50 on error.
+        """
+        is_long = (side == "long")
+        now_iso = datetime.now(timezone.utc).isoformat()
+        try:
+            df_15m = await self._hl.get_ohlcv(SYMBOL, "15m", limit=24)
+            if len(df_15m) >= 2:
+                df_15m = df_15m.iloc[:-1]   # drop forming candle
+            if len(df_15m) < 4:
+                return {"score": 50.0, "components": {}, "updated_at": now_iso}
+
+            last4     = df_15m.iloc[-4:]
+            bull_cnt  = int((last4["close"] > last4["open"]).sum())
+            dir_raw   = bull_cnt / 4.0                            # 0..1 bullish fraction
+            if not is_long:
+                dir_raw = 1.0 - dir_raw
+            dir_score = dir_raw * 100.0
+
+            closes  = df_15m["close"].values
+            ema_len = min(8, len(closes))
+            ema8    = float(closes[-ema_len:].mean())
+            mark    = self._ws.latest_mark or float(closes[-1])
+            ema_pct = (mark - ema8) / (ema8 + 1e-9)
+            if not is_long:
+                ema_pct = -ema_pct
+            # ±2% → 0-100, clipped. 500× multiplier: 0.02 × 500 = 10 → 50+10=60 top.
+            ema_score = min(100.0, max(0.0, 50.0 + ema_pct * 500.0))
+
+            score = round(min(100.0, max(0.0, 0.55 * dir_score + 0.45 * ema_score)), 1)
+
+            return {
+                "score": score,
+                "components": {
+                    "direction_4c": round(dir_score, 1),
+                    "ema_8":        round(ema_score, 1),
+                },
+                "updated_at": now_iso,
+            }
+        except Exception as exc:
+            log.warning("Pulse 15m computation failed: %s", exc)
+            return {"score": 50.0, "components": {}, "updated_at": now_iso, "error": str(exc)}
+
+    async def _trend_meter_loop(self):
+        """
+        Background task: keeps _trend_meter up to date while a position is open.
+          - Strategic 4H: written by _cycle() directly into _trend_meter["strategic_4h"].
+          - Tactical 1H : refreshed when the UTC hour changes (once per hour).
+          - Pulse 15m   : refreshed every 60 seconds.
+        When no position is open the meter is reset to None.
+        """
+        REFRESH_S    = 60
+        last_1h_hour: Optional[int] = None
+
+        log.info("Trend meter loop started")
+        while self.running:
+            try:
+                pos = self._position
+                if pos is None:
+                    if self._trend_meter is not None:
+                        self._trend_meter = None
+                        last_1h_hour = None
+                    await asyncio.sleep(REFRESH_S)
+                    continue
+
+                side     = pos["side"]
+                now_hour = datetime.now(timezone.utc).hour
+
+                # Strategic 4H — on-demand bootstrap when _cycle() has not yet run.
+                # Covers: bot restart with restored position, manual trade, first loop
+                # iteration after position opens mid-cycle. After the next 4H close,
+                # _cycle() takes over and overwrites with the full authoritative value.
+                if (self._trend_meter or {}).get("strategic_4h") is None:
+                    fresh = await self._compute_strategic_4h_fresh(side)
+                    if fresh:
+                        if self._trend_meter is None:
+                            self._trend_meter = {}
+                        self._trend_meter["strategic_4h"] = fresh
+
+                # Tactical 1H — refresh once per UTC hour
+                if last_1h_hour != now_hour:
+                    tactical = await self._compute_tactical_1h(side)
+                    if self._trend_meter is None:
+                        self._trend_meter = {}
+                    self._trend_meter["tactical_1h"] = tactical
+                    last_1h_hour = now_hour
+                    log.debug(
+                        "TrendMeter 1H updated: score=%.1f model=%s",
+                        tactical["score"], tactical.get("model_available"),
+                    )
+
+                # Pulse 15m — refresh every iteration
+                pulse = await self._compute_pulse_15m(side)
+                if self._trend_meter is None:
+                    self._trend_meter = {}
+                self._trend_meter["pulse_15m"] = pulse
+
+                # Assemble display score only when all 3 strata are available.
+                # Strategic 4H is written by _cycle(); the meter may start up
+                # before the first 4H close — fall back to 50 until it arrives.
+                strategic = (self._trend_meter or {}).get("strategic_4h")
+                tactical  = (self._trend_meter or {}).get("tactical_1h")
+                pulse_d   = (self._trend_meter or {}).get("pulse_15m")
+
+                s4h  = strategic["score"]  if strategic else 50.0
+                t1h  = tactical["score"]   if tactical  else 50.0
+                p15m = pulse_d["score"]    if pulse_d   else 50.0
+
+                cfg        = self.config
+                w_4h       = float(getattr(cfg, "trend_meter_w_4h",      0.55))
+                w_1h       = float(getattr(cfg, "trend_meter_w_1h",      0.45))
+                pulse_band = float(getattr(cfg, "trend_meter_pulse_band", 10.0))
+
+                predictive    = w_4h * s4h + w_1h * t1h
+                display_score = predictive + (p15m - 50.0) / 50.0 * pulse_band
+                display_score = round(min(100.0, max(0.0, display_score)), 1)
+                predictive    = round(predictive, 1)
+
+                if display_score >= 65:
+                    label = "Forte"
+                elif display_score >= 40:
+                    label = "In indebolimento"
+                else:
+                    label = "Debole"
+
+                self._trend_meter.update({
+                    "predictive":    predictive,
+                    "display_score": display_score,
+                    "label":         label,
+                    "side":          side,
+                    "updated_at":    datetime.now(timezone.utc).isoformat(),
+                })
+
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                log.warning("Trend meter loop error: %s", exc)
+
+            await asyncio.sleep(REFRESH_S)
+
+        log.info("Trend meter loop stopped")
 
     # ── Retraining ────────────────────────────────────────────────────────────
 
@@ -2453,6 +2882,7 @@ class ExecutionEngine:
             "opened_at":         datetime.now(timezone.utc).isoformat(),
             "bars_held":              0,
             "lgbm_strikes":           0,
+            "trend_strikes":          0,
             "be_sl_applied":          False,
             "sl_trailing_active":     False,
             "high_water":             price,
@@ -2766,6 +3196,43 @@ class ExecutionEngine:
                 )
                 await self._close_position(current_price, "lgbm_exit")
                 return
+
+        # ── 4b. Trend Meter auto-close ───────────────────────────────────────────
+        # Evaluates the predictive score (4H + 1H blend, no 15m pulse) from the
+        # trend meter computed by _trend_meter_loop. Closes only after confirm_bars
+        # consecutive cycles below the threshold AND after min_hold_bars are elapsed.
+        # ml_pending: when LGBM data is not yet available the 4H score uses only
+        # ADX+MTF; to avoid false exits we skip the check in that case.
+        if (
+            self.config.trend_exit_enabled
+            and self._position is not None
+            and self._position["bars_held"] >= self.config.trend_exit_min_hold_bars
+        ):
+            _tm       = self._trend_meter or {}
+            _s4h_blk  = _tm.get("strategic_4h") or {}
+            _ml_ok    = not _s4h_blk.get("ml_pending", False)   # skip when ML data absent
+            _pred     = _tm.get("predictive")                    # None until loop assembles it
+
+            if _ml_ok and _pred is not None:
+                if _pred < self.config.trend_exit_threshold:
+                    self._position["trend_strikes"] = self._position.get("trend_strikes", 0) + 1
+                    log.debug(
+                        "TrendExit strike %d/%d: pred=%.1f < %.1f | bars=%d | side=%s",
+                        self._position["trend_strikes"], self.config.trend_exit_confirm_bars,
+                        _pred, self.config.trend_exit_threshold,
+                        self._position["bars_held"], side,
+                    )
+                else:
+                    self._position["trend_strikes"] = 0
+
+                if self._position.get("trend_strikes", 0) >= self.config.trend_exit_confirm_bars:
+                    log.info(
+                        "TrendMeter exit: %s | pred=%.1f < %.1f | bars=%d | strikes=%d",
+                        side, _pred, self.config.trend_exit_threshold,
+                        self._position["bars_held"], self._position["trend_strikes"],
+                    )
+                    await self._close_position(current_price, "trend_exit")
+                    return
 
         # ── 5. Max hold bars: time-based exit ─────────────────────────────────
         # Priority: exhaust_max_hold (Feature E) > rev_max_hold (reversals) > max_hold_bars (trend).

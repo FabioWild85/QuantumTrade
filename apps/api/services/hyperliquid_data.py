@@ -24,7 +24,7 @@ HL_BASE = "https://api.hyperliquid.xyz"
 HL_TESTNET = os.getenv("HL_TESTNET", "true").lower() == "true"
 ENCRYPTION_KEY = os.getenv("ENCRYPTION_KEY", "")
 
-TimeFrame = Literal["1h", "4h", "1d"]
+TimeFrame = Literal["15m", "1h", "4h", "1d"]
 
 
 class HyperliquidData:
@@ -46,7 +46,7 @@ class HyperliquidData:
         end_time: Optional[datetime] = None,
     ) -> pd.DataFrame:
         """Fetch OHLCV from Hyperliquid candleSnapshot."""
-        interval_ms = {"1h": 3_600_000, "4h": 14_400_000, "1d": 86_400_000}[interval]
+        interval_ms = {"15m": 900_000, "1h": 3_600_000, "4h": 14_400_000, "1d": 86_400_000}[interval]
         end_ts = int((end_time or datetime.now(timezone.utc)).timestamp() * 1000)
         start_ts = end_ts - limit * interval_ms
 
