@@ -67,6 +67,30 @@ class PendingPullback:
     ob_order_id:    Optional[str]   = None  # HL GTC order ID (live mode only)
 
 
+@dataclass
+class PendingBounceFade:
+    """
+    Active bounce-fade pending — created when a counter-trend signal fires in a
+    bouncing market. Instead of entering at market, waits for the bounce to climb
+    toward overhead resistance and fills with a tighter SL → better R:R.
+    Single limit entry (NOT laddered); market fallback at expiry if signal persists.
+    """
+    direction:       str            # "long" | "short"
+    close_4h:        float          # 4H close at signal time
+    atr_at_signal:   float          # ATR_14 at signal time
+    entry_limit:     float          # computed limit price (penetration toward resistance)
+    resistance:      float          # nearest overhead resistance / underlying support used
+    bounce_extreme:  float          # running high (short) / low (long) reached during window
+    orig_tp:         float          # original absolute TP from the signal (kept on fill)
+    orig_size_usd:   float          # original risk-based size (frozen — prevents size explosion)
+    sl_buffer_atr:   float          # SL buffer above resistance, in ATR
+    sl_min_atr:      float          # SL distance floor, in ATR (anti-noise)
+    min_rr:          float          # minimum R:R to accept the limit fill
+    expires_at:      datetime       # absolute expiry timestamp
+    decision_result: object         # original DecisionResult (for market fallback)
+    market_fallback: bool           # enter at market on expiry if signal still valid
+
+
 # ── Config dataclass ──────────────────────────────────────────────────────────
 
 class BotConfig:
@@ -203,6 +227,27 @@ class BotConfig:
         self.atr_pct_gate_enabled  = kw.get("atr_pct_gate_enabled",  False)
         self.atr_pct_min           = kw.get("atr_pct_min",           0.008)
         self.atr_pct_mode          = kw.get("atr_pct_mode",          "scale")
+        # OI Spike Gate (Squeeze Protection A)
+        self.oi_spike_gate_enabled = kw.get("oi_spike_gate_enabled", False)
+        self.oi_spike_thr          = kw.get("oi_spike_thr",          2.0)
+        self.oi_spike_mode         = kw.get("oi_spike_mode",         "scale")
+        self.oi_spike_lookback     = kw.get("oi_spike_lookback",     2)
+        # Long/Short Ratio Gate (Squeeze Protection B)
+        self.ls_gate_enabled       = kw.get("ls_gate_enabled",       False)
+        self.ls_long_block_pct     = kw.get("ls_long_block_pct",     67.0)
+        self.ls_short_block_pct    = kw.get("ls_short_block_pct",    33.0)
+        self.ls_gate_mode          = kw.get("ls_gate_mode",          "scale")
+        self.ls_gate_scale_factor  = kw.get("ls_gate_scale_factor",  0.50)
+        self.ls_lookback_bars      = kw.get("ls_lookback_bars",      1)
+        # Liquidation Spike Gate (Squeeze Protection C)
+        self.liq_spike_gate_enabled = kw.get("liq_spike_gate_enabled", False)
+        self.liq_spike_thr          = kw.get("liq_spike_thr",          2.5)
+        self.liq_spike_lookback     = kw.get("liq_spike_lookback",     2)
+        self.liq_spike_mode         = kw.get("liq_spike_mode",         "block")
+        self.liq_spike_scale_factor = kw.get("liq_spike_scale_factor", 0.40)
+        # Weekend Gate — block entries on Sat/Sun (UTC)
+        self.weekend_gate_block_saturday = kw.get("weekend_gate_block_saturday", False)
+        self.weekend_gate_block_sunday   = kw.get("weekend_gate_block_sunday",   False)
         # Exhaustion Guard — proportional boost (Feature A)
         self.exhaustion_prop_enabled = kw.get("exhaustion_prop_enabled", False)
         self.exhaustion_prop_scale   = kw.get("exhaustion_prop_scale",   0.06)
@@ -226,6 +271,16 @@ class BotConfig:
         self.pullback_zone_atr         = kw.get("pullback_zone_atr",         0.3)
         self.pullback_window_h         = kw.get("pullback_window_h",         3)
         self.pullback_fallback_atr     = kw.get("pullback_fallback_atr",     0.5)
+        # Bounce-Fade Entry — resistance-anchored limit on counter-trend signals
+        self.bounce_fade_enabled            = kw.get("bounce_fade_enabled",            False)
+        self.bounce_fade_counter_trend_only = kw.get("bounce_fade_counter_trend_only", True)
+        self.bounce_fade_penetration_pct    = kw.get("bounce_fade_penetration_pct",    0.50)
+        self.bounce_fade_offset_atr         = kw.get("bounce_fade_offset_atr",         0.50)
+        self.bounce_fade_window_bars        = kw.get("bounce_fade_window_bars",        2)
+        self.bounce_fade_market_fallback    = kw.get("bounce_fade_market_fallback",    True)
+        self.bounce_fade_min_rr             = kw.get("bounce_fade_min_rr",             1.5)
+        self.bounce_fade_sl_buffer_atr      = kw.get("bounce_fade_sl_buffer_atr",      0.30)
+        self.bounce_fade_sl_min_atr         = kw.get("bounce_fade_sl_min_atr",         0.80)
         # ── Reversal Zone Detector ────────────────────────────────────────────
         # Defaults recalibrated on BTC 4H 3y (2023-06 → 2026-06, 6575 bars) + HL 2y:
         # - score_threshold 0.34: raw weighted score caps at ~0.53 (P99=0.40); 0.38 fired
@@ -307,6 +362,7 @@ class ExecutionEngine:
         # State
         self._position: Optional[dict]         = None   # active position dict
         self._pending_pullback: Optional[PendingPullback] = None  # pending pullback signal
+        self._pending_bounce_fade: Optional[PendingBounceFade] = None  # pending bounce-fade signal
         self._reversal_pending: Optional[dict] = None   # pending reversal (limit-retest mode)
         self._last_reversal_result = None                # cached for /reversal/current endpoint
         self._equity: float             = 10_000.0  # paper equity (USD)
@@ -562,6 +618,11 @@ class ExecutionEngine:
                     log.warning("Kill: cancel OB limit order failed: %s", _ke)
             log.info("Kill switch: cancelled pending pullback (%s)", pb.direction)
             self._pending_pullback = None
+
+        if self._pending_bounce_fade is not None:
+            log.info("Kill switch: cancelled pending bounce-fade (%s)",
+                     self._pending_bounce_fade.direction)
+            self._pending_bounce_fade = None
 
         orders_cancelled = 0
         positions_closed = 0
@@ -1049,6 +1110,15 @@ class ExecutionEngine:
                         asyncio.create_task(self._open_reversal_pending_position(_rp))
                 continue  # nessuna posizione — skip SL/TP check
 
+            # ── Pending bounce-fade trigger (paper mode, intracandle) ──────────
+            if self._pending_bounce_fade is not None and not self._position:
+                _bf_snap = {"mark_price": mark or 0.0}
+                await self._check_bounce_fade_entry(
+                    mark or 0.0, _bf_snap, None,
+                    check_high=check_high, check_low=check_low,
+                )
+                continue  # nessuna posizione — skip SL/TP check
+
             if not self._position:
                 continue
             if not mark or mark <= 0:
@@ -1289,6 +1359,18 @@ class ExecutionEngine:
         except Exception:
             df_oi = pd.DataFrame()
 
+        # Long/Short ratio (Coinalyze, ultimo aggiornamento ogni 4H) — feed Long/Short Ratio Gate
+        df_ls = pd.DataFrame()
+        try:
+            from services.external_data import get_coinalyze_ls
+            from datetime import date, timedelta
+            _ls_today = date.today().isoformat()
+            _ls_from  = (date.today() - timedelta(days=7)).isoformat()
+            df_ls = await get_coinalyze_ls(SYMBOL, start_date=_ls_from, end_date=_ls_today)
+        except Exception as _ls_exc:
+            log.warning("L/S ratio fetch failed: %s — using defaults", _ls_exc)
+            df_ls = pd.DataFrame()
+
         # Binance cross-exchange CVD data (non-blocking: skip on failure)
         df_binance = None
         if self.config.binance_cvd_enabled:
@@ -1312,6 +1394,7 @@ class ExecutionEngine:
         # 3. Build full feature matrix
         df_feat = build_all_features(
             df_4h, df_fund, df_oi, df_liq,
+            df_ls=df_ls,
             df_binance=df_binance,
             binance_cvd_enabled=self.config.binance_cvd_enabled,
             options_bias_enabled=self.config.options_bias_enabled,
@@ -1493,6 +1576,24 @@ class ExecutionEngine:
             atr_pct_gate_enabled        = getattr(cfg, "atr_pct_gate_enabled",  False),
             atr_pct_min                 = getattr(cfg, "atr_pct_min",           0.008),
             atr_pct_mode                = getattr(cfg, "atr_pct_mode",          "scale"),
+            # Squeeze Protection Gates
+            oi_spike_gate_enabled       = getattr(cfg, "oi_spike_gate_enabled", False),
+            oi_spike_thr                = getattr(cfg, "oi_spike_thr",          2.0),
+            oi_spike_mode               = getattr(cfg, "oi_spike_mode",         "scale"),
+            oi_spike_lookback           = getattr(cfg, "oi_spike_lookback",     2),
+            ls_gate_enabled             = getattr(cfg, "ls_gate_enabled",       False),
+            ls_long_block_pct           = getattr(cfg, "ls_long_block_pct",     67.0),
+            ls_short_block_pct          = getattr(cfg, "ls_short_block_pct",    33.0),
+            ls_gate_mode                = getattr(cfg, "ls_gate_mode",          "scale"),
+            ls_gate_scale_factor        = getattr(cfg, "ls_gate_scale_factor",  0.50),
+            ls_lookback_bars            = getattr(cfg, "ls_lookback_bars",      1),
+            liq_spike_gate_enabled      = getattr(cfg, "liq_spike_gate_enabled", False),
+            liq_spike_thr               = getattr(cfg, "liq_spike_thr",          2.5),
+            liq_spike_lookback          = getattr(cfg, "liq_spike_lookback",     2),
+            liq_spike_mode              = getattr(cfg, "liq_spike_mode",         "block"),
+            liq_spike_scale_factor      = getattr(cfg, "liq_spike_scale_factor", 0.40),
+            weekend_gate_block_saturday = getattr(cfg, "weekend_gate_block_saturday", False),
+            weekend_gate_block_sunday   = getattr(cfg, "weekend_gate_block_sunday",   False),
             # Feature A: proportional boost
             exhaustion_prop_enabled     = getattr(cfg, "exhaustion_prop_enabled", False),
             exhaustion_prop_scale       = getattr(cfg, "exhaustion_prop_scale",   0.06),
@@ -1519,6 +1620,7 @@ class ExecutionEngine:
             current_price=snap["mark_price"],
             avg_funding=avg_funding,
             covariates=covars,
+            bar_time=df_feat.index[-1],
         )
 
         # ── 7b. Gate LightGBM 1H ─────────────────────────────────────────────
@@ -1740,6 +1842,10 @@ class ExecutionEngine:
             _pb_price = self._ws.latest_mark or snap["mark_price"]
             await self._check_pullback_entry(_pb_price, snap, atr)
 
+        if self._pending_bounce_fade is not None:
+            _bf_price = self._ws.latest_mark or snap["mark_price"]
+            await self._check_bounce_fade_entry(_bf_price, snap, atr)
+
         if result.action != "no_trade" and allowed and self._position is None:
             # ── Reversal entry: limit-retest mode sets pending instead of opening immediately ──
             if getattr(result, "_is_reversal", False):
@@ -1772,35 +1878,72 @@ class ExecutionEngine:
                     await self._open_position(result, snap, atr, inference_id, cfg=_rev_cfg)
 
             else:
-                # ── Trend/pullback entry (comportamento originale) ─────────────────
-                _pb_enabled = getattr(self.config, "pullback_entry_enabled", False)
-                if _pb_enabled and self._pending_pullback is not None:
-                    log.info("Pullback wait active (%s) — new %s signal queued but skipped",
-                             self._pending_pullback.direction, result.action)
-                elif _pb_enabled:
-                    _close_px = float(latest.get("close") or snap["mark_price"])
-                    _open_px  = float(latest.get("open")  or _close_px)
-                    _atr_v    = atr or snap["mark_price"] * 0.01
-                    _impulse  = abs(_close_px - _open_px) / _atr_v if _atr_v > 0 else 0.0
-                    if _impulse >= getattr(self.config, "pullback_impulse_atr_mult", 1.5):
-                        self._pending_pullback = await self._create_pending_pullback(
-                            result, latest, _atr_v, snap
+                # ── Trend entry ───────────────────────────────────────────────────
+                # Bounce-Fade: counter-trend signal → resistance-anchored limit entry.
+                # Checked BEFORE pullback; if it creates a pending, everything else is
+                # skipped (the two cannot coexist on the same signal).
+                _bf_created = False
+                if (
+                    getattr(self.config, "bounce_fade_enabled", False)
+                    and self._pending_bounce_fade is None
+                    and self._pending_pullback is None
+                ):
+                    _ret6     = self._safe_float(latest.get("ret_6") or 0.0)
+                    _ct_only  = getattr(self.config, "bounce_fade_counter_trend_only", True)
+                    _counter  = (result.action == "short" and _ret6 > 0) or \
+                                (result.action == "long"  and _ret6 < 0)
+                    if _counter or not _ct_only:
+                        _bf = await self._create_pending_bounce_fade(
+                            result, latest, atr, snap, inference_id, atr_sl
                         )
-                        log.info(
-                            "Pullback mode activated: %s body_ratio=%.2f ≥ %.2f "
-                            "(body=%.0f open=%.0f close=%.0f) | "
-                            "zone=%.2f fallback=%.2f expires=%s",
-                            result.action, _impulse,
-                            getattr(self.config, "pullback_impulse_atr_mult", 1.5),
-                            abs(_close_px - _open_px), _open_px, _close_px,
-                            self._pending_pullback.pullback_zone,
-                            self._pending_pullback.fallback_limit,
-                            self._pending_pullback.expires_at.strftime("%H:%M UTC"),
-                        )
+                        if _bf is not None:
+                            self._pending_bounce_fade = _bf
+                            _bf_created = True
+                            result.reasoning.append(
+                                f"BounceFade: limite {_bf.entry_limit:.0f} "
+                                f"(resistenza {_bf.resistance:.0f}, TP {_bf.orig_tp:.0f}, "
+                                f"scade {_bf.expires_at.strftime('%H:%M UTC')})"
+                            )
+                            log.info(
+                                "BounceFade activated: %s limit=%.2f resistance=%.2f "
+                                "orig_tp=%.2f size=$%.0f expires=%s",
+                                result.action, _bf.entry_limit, _bf.resistance,
+                                _bf.orig_tp, _bf.orig_size_usd,
+                                _bf.expires_at.strftime("%H:%M UTC"),
+                            )
+
+                if _bf_created:
+                    pass  # pending created — fill/expiry handled by watchdog + cycle
+                else:
+                    # ── Pullback entry (comportamento originale) ───────────────────
+                    _pb_enabled = getattr(self.config, "pullback_entry_enabled", False)
+                    if _pb_enabled and self._pending_pullback is not None:
+                        log.info("Pullback wait active (%s) — new %s signal queued but skipped",
+                                 self._pending_pullback.direction, result.action)
+                    elif _pb_enabled:
+                        _close_px = float(latest.get("close") or snap["mark_price"])
+                        _open_px  = float(latest.get("open")  or _close_px)
+                        _atr_v    = atr or snap["mark_price"] * 0.01
+                        _impulse  = abs(_close_px - _open_px) / _atr_v if _atr_v > 0 else 0.0
+                        if _impulse >= getattr(self.config, "pullback_impulse_atr_mult", 1.5):
+                            self._pending_pullback = await self._create_pending_pullback(
+                                result, latest, _atr_v, snap
+                            )
+                            log.info(
+                                "Pullback mode activated: %s body_ratio=%.2f ≥ %.2f "
+                                "(body=%.0f open=%.0f close=%.0f) | "
+                                "zone=%.2f fallback=%.2f expires=%s",
+                                result.action, _impulse,
+                                getattr(self.config, "pullback_impulse_atr_mult", 1.5),
+                                abs(_close_px - _open_px), _open_px, _close_px,
+                                self._pending_pullback.pullback_zone,
+                                self._pending_pullback.fallback_limit,
+                                self._pending_pullback.expires_at.strftime("%H:%M UTC"),
+                            )
+                        else:
+                            await self._open_position(result, snap, atr, inference_id, atr_sl=atr_sl)
                     else:
                         await self._open_position(result, snap, atr, inference_id, atr_sl=atr_sl)
-                else:
-                    await self._open_position(result, snap, atr, inference_id, atr_sl=atr_sl)
         elif not allowed:
             log.info("Trade blocked: %s", block_reason)
         elif result.action != "no_trade" and self._position is not None:
@@ -2126,6 +2269,7 @@ class ExecutionEngine:
         atr_sl: Optional[float] = None,
         sl_override: Optional[float] = None,
         tp_override: Optional[float] = None,
+        size_usd_override: Optional[float] = None,
     ):
         # cfg holds the effective config for this trade (may include regime overrides).
         # _manage_position continues to read self.config throughout the trade lifetime.
@@ -2144,7 +2288,14 @@ class ExecutionEngine:
             _sl_dist   = abs(price - sl_override)
             _tp_dist   = abs(tp_override - price)
             _rr        = _tp_dist / _sl_dist if _sl_dist > 0 else 0.0
-            _size_usd  = self._risk.position_size_pct / 100.0 * self._equity * result.size_factor
+            # size_usd_override (bounce-fade): use the frozen risk-based size from the
+            # signal — prevents the position-size explosion that recomputing with a
+            # tight resistance SL would cause. Falls back to the notional sizing used
+            # by reversal pending fills when no override is given.
+            if size_usd_override is not None and size_usd_override > 0:
+                _size_usd = size_usd_override
+            else:
+                _size_usd = self._risk.position_size_pct / 100.0 * self._equity * result.size_factor
             _size_ctr  = _size_usd / price if price > 0 else 0.001
             params     = TradeParams(
                 side           = result.action,
@@ -2973,6 +3124,180 @@ class ExecutionEngine:
         inf_id = getattr(pb.decision_result, "inference_id", None)
         await self._open_position(pb.decision_result, snap, _atr, inf_id)
         self._pending_pullback = None
+
+    # ── Bounce-Fade Entry ───────────────────────────────────────────────────────
+
+    async def _create_pending_bounce_fade(
+        self, result, latest: dict, atr: Optional[float],
+        snap: dict, inference_id: Optional[str], atr_sl: Optional[float] = None,
+    ) -> "Optional[PendingBounceFade]":
+        """
+        Builds a PendingBounceFade for a counter-trend signal. Computes the limit
+        entry as a fraction (penetration_pct) of the distance toward the nearest
+        overhead resistance (short) / underlying support (long), capped at
+        offset_atr × ATR. Freezes the original risk-based size and absolute TP so
+        the fill cannot inflate the position. Returns None if no sensible limit
+        above (below) the current price can be formed.
+        """
+        cfg   = self.config
+        close = float(latest.get("close") or snap["mark_price"])
+        _atr  = atr or close * 0.01
+        if _atr <= 0 or close <= 0:
+            return None
+
+        pen   = getattr(cfg, "bounce_fade_penetration_pct", 0.50)
+        cap   = getattr(cfg, "bounce_fade_offset_atr",      0.50) * _atr
+        win   = getattr(cfg, "bounce_fade_window_bars",     2)
+        ema50 = close - self._safe_float(latest.get("ema50_dist") or 0.0) * _atr
+
+        if result.action == "short":
+            cands = [lv for lv in (
+                self._safe_float(latest.get("ob_bear_top_px")),
+                self._safe_float(latest.get("fvg_bear_bot_px")),
+                self._safe_float(latest.get("swing_high_px")),
+                ema50,
+            ) if lv and close < lv < close * 1.05]
+            resistance  = min(cands) if cands else close + cap
+            offset      = min(cap, pen * (resistance - close))
+            entry_limit = close + offset
+        else:  # long counter-trend
+            cands = [lv for lv in (
+                self._safe_float(latest.get("ob_bull_bot_px")),
+                self._safe_float(latest.get("fvg_bull_top_px")),
+                self._safe_float(latest.get("swing_low_px")),
+                ema50,
+            ) if lv and close * 0.95 < lv < close]
+            support     = max(cands) if cands else close - cap
+            offset      = min(cap, pen * (close - support))
+            entry_limit = close - offset
+            resistance  = support
+
+        if offset <= 0:
+            return None  # no room for a better entry — fall through to normal entry
+
+        # Freeze the original market-entry params (size + absolute TP) so the fill
+        # reuses them. This is what prevents the risk-based size explosion when the
+        # fill later uses a tighter resistance SL.
+        _orig_sl_mult = self._risk.sl_atr_mult
+        _orig_tp_mult = self._risk.tp_atr_mult
+        _orig_sz_pct  = self._risk.position_size_pct
+        self._risk.sl_atr_mult       = cfg.sl_atr_mult
+        self._risk.tp_atr_mult       = cfg.tp_atr_mult
+        self._risk.position_size_pct = cfg.position_size_pct
+        try:
+            _orig = self._risk.calculate_trade_params(
+                side=result.action, entry_price=close, atr=_atr,
+                equity_usd=self._equity, sl_atr=atr_sl,
+            )
+        finally:
+            self._risk.sl_atr_mult       = _orig_sl_mult
+            self._risk.tp_atr_mult       = _orig_tp_mult
+            self._risk.position_size_pct = _orig_sz_pct
+
+        return PendingBounceFade(
+            direction       = result.action,
+            close_4h        = close,
+            atr_at_signal   = _atr,
+            entry_limit     = entry_limit,
+            resistance      = resistance,
+            bounce_extreme  = close,
+            orig_tp         = _orig.take_profit,
+            orig_size_usd   = _orig.size_usd * result.size_factor,
+            sl_buffer_atr   = getattr(cfg, "bounce_fade_sl_buffer_atr", 0.30),
+            sl_min_atr      = getattr(cfg, "bounce_fade_sl_min_atr",    0.80),
+            min_rr          = getattr(cfg, "bounce_fade_min_rr",        1.5),
+            expires_at      = datetime.now(timezone.utc) + timedelta(hours=win * 4),
+            decision_result = result,
+            market_fallback = getattr(cfg, "bounce_fade_market_fallback", True),
+        )
+
+    async def _check_bounce_fade_entry(
+        self, price: float, snap: dict, atr: Optional[float],
+        check_high: Optional[float] = None, check_low: Optional[float] = None,
+    ):
+        """
+        Evaluates the active pending bounce-fade. Fills at the limit when the bounce
+        reaches it (tight resistance SL + original absolute TP + frozen size), or
+        enters at market on expiry if market_fallback is set and the signal persists.
+        check_high/check_low: intracandle extremes from the paper watchdog; default
+        to `price` when called from the 4H cycle.
+        """
+        bf = self._pending_bounce_fade
+        if bf is None:
+            return
+        if self._position:           # race-guard: position already opened this cycle
+            self._pending_bounce_fade = None
+            return
+
+        hi = check_high if (check_high and check_high > 0) else price
+        lo = check_low  if (check_low  and check_low  > 0) else price
+        if hi <= 0 or lo <= 0:
+            return
+
+        _atr = bf.atr_at_signal
+        # Track the running bounce extreme (for the SL anchor)
+        bf.bounce_extreme = max(bf.bounce_extreme, hi) if bf.direction == "short" else min(bf.bounce_extreme, lo)
+
+        _reached = (bf.direction == "short" and hi >= bf.entry_limit) or \
+                   (bf.direction == "long"  and lo <= bf.entry_limit)
+
+        if _reached:
+            entry = bf.entry_limit
+            sl_buf = bf.sl_buffer_atr * _atr
+            sl_min = bf.sl_min_atr    * _atr
+            if bf.direction == "short":
+                sl = max(bf.bounce_extreme, bf.resistance) + sl_buf
+                sl = max(sl, entry + sl_min)              # enforce SL distance floor
+                rr = (entry - bf.orig_tp) / (sl - entry) if sl > entry else 0.0
+            else:
+                sl = min(bf.bounce_extreme, bf.resistance) - sl_buf
+                sl = min(sl, entry - sl_min)
+                rr = (bf.orig_tp - entry) / (entry - sl) if entry > sl else 0.0
+
+            if rr < bf.min_rr:
+                log.info(
+                    "BounceFade fill skipped: R:R %.2f < %.2f (entry=%.2f sl=%.2f tp=%.2f)",
+                    rr, bf.min_rr, entry, sl, bf.orig_tp,
+                )
+                self._pending_bounce_fade = None
+                return
+
+            bf.decision_result.reasoning.append(
+                f"BounceFadeFill: entry={entry:.2f} (vs close {bf.close_4h:.2f}) "
+                f"SL={sl:.2f} TP={bf.orig_tp:.2f} R:R={rr:.2f}"
+            )
+            _fill_snap = {**snap, "mark_price": entry}
+            inf_id = getattr(bf.decision_result, "inference_id", None)
+            await self._open_position(
+                bf.decision_result, _fill_snap, _atr, inf_id,
+                sl_override=sl, tp_override=bf.orig_tp, size_usd_override=bf.orig_size_usd,
+            )
+            log.info(
+                "BounceFade FILLED: %s entry=%.2f SL=%.2f TP=%.2f R:R=%.2f size=$%.0f",
+                bf.direction, entry, sl, bf.orig_tp, rr, bf.orig_size_usd,
+            )
+            self._pending_bounce_fade = None
+            return
+
+        # Expiry: market fallback (if enabled) or abandon
+        if datetime.now(timezone.utc) >= bf.expires_at:
+            if bf.market_fallback:
+                bf.decision_result.reasoning.append(
+                    f"BounceFadeFallback: limite {bf.entry_limit:.0f} non raggiunto "
+                    f"(max {bf.bounce_extreme:.0f}) → entry a mercato"
+                )
+                inf_id = getattr(bf.decision_result, "inference_id", None)
+                await self._open_position(bf.decision_result, snap, _atr, inf_id)
+                log.info(
+                    "BounceFade fallback market entry: %s @ %.2f (limit %.2f never reached)",
+                    bf.direction, price, bf.entry_limit,
+                )
+            else:
+                log.info(
+                    "BounceFade expired without fill (fallback off): %s limit=%.2f",
+                    bf.direction, bf.entry_limit,
+                )
+            self._pending_bounce_fade = None
 
     async def _register_ob_limit_fill(
         self, pb: "PendingPullback", snap: dict, atr: Optional[float]

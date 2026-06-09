@@ -615,6 +615,37 @@ export const Monitor: React.FC<{ apiBase: string }> = ({ apiBase }) => {
         </div>
       )}
 
+      {/* ── Weekend Gate Banner ───────────────────────────────────────────── */}
+      {(() => {
+        const cfg = status?.config;
+        const blockSat = !!cfg?.weekend_gate_block_saturday;
+        const blockSun = !!cfg?.weekend_gate_block_sunday;
+        if (!blockSat && !blockSun) return null;
+        const utcDay    = new Date().getUTCDay(); // 0=Dom … 6=Sab
+        const activeNow = (utcDay === 6 && blockSat) || (utcDay === 0 && blockSun);
+        const days      = [blockSat && 'Sabato', blockSun && 'Domenica'].filter(Boolean).join(' e ');
+        return (
+          <div className={`elegant-card px-5 py-3.5 flex items-center gap-3 border ${
+            activeNow
+              ? 'bg-amber-100 dark:bg-amber-500/15 border-amber-300 dark:border-amber-500/40'
+              : 'bg-amber-50/60 dark:bg-amber-500/[0.07] border-amber-200/70 dark:border-amber-500/20'}`}>
+            <span className="text-lg">{activeNow ? '🚫' : '📅'}</span>
+            <div>
+              <p className="text-xs font-bold text-amber-800 dark:text-amber-300 uppercase tracking-wider">
+                {activeNow
+                  ? `Weekend Gate ATTIVO ORA — nuove aperture bloccate (${utcDay === 6 ? 'sabato' : 'domenica'} UTC)`
+                  : `Weekend Gate configurato — blocco ${days} (UTC)`}
+              </p>
+              <p className="text-[10px] text-amber-700 dark:text-amber-400 mt-0.5">
+                {activeNow
+                  ? 'Mercati tradizionali chiusi · nessun nuovo trade fino a fine giornata · SL/TP posizioni aperte operativi'
+                  : 'Durante i giorni selezionati il bot non aprirà nuovi trade · le posizioni aperte restano gestite'}
+              </p>
+            </div>
+          </div>
+        );
+      })()}
+
       {/* ── Pending Pullback Banner ───────────────────────────────────────── */}
       {status?.pending_pullback && !status?.position && (() => {
         const pb    = status.pending_pullback!;

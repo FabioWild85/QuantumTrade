@@ -379,6 +379,7 @@ def build_all_features(
     df_funding: pd.DataFrame,
     df_oi: pd.DataFrame,
     df_liq: pd.DataFrame,
+    df_ls: Optional[pd.DataFrame] = None,
     df_binance: Optional[pd.DataFrame] = None,
     binance_cvd_enabled: bool = False,
     options_bias_enabled: bool = False,
@@ -456,6 +457,25 @@ def build_all_features(
     d["oi_delta"]    = d.get("oi_raw", pd.Series(dtype=float)).diff(1)
     d["oi_delta_z"]  = d["oi_delta"] / (d.get("oi_raw", pd.Series(dtype=float)).rolling(24).std() + 1e-9)
     d["oi_ma24"]     = d.get("oi_raw", pd.Series(dtype=float)).rolling(24).mean()
+    # Lag features per OI Spike Gate lookback (max 3 barre)
+    for _lag in [1, 2, 3]:
+        d[f"oi_delta_z_lag{_lag}"] = d["oi_delta_z"].shift(_lag)
+
+    # ── Long/Short Ratio ──────────────────────────────────────────────────────
+    if df_ls is not None and not df_ls.empty and "long_pct" in df_ls.columns:
+        _ls_aligned = df_ls[["long_pct", "short_pct", "ls_ratio"]].reindex(d.index, method="ffill")
+        d["long_pct"]  = _ls_aligned["long_pct"].fillna(50.0)
+        d["short_pct"] = _ls_aligned["short_pct"].fillna(50.0)
+        d["ls_ratio"]  = _ls_aligned["ls_ratio"].fillna(1.0)
+        # Rolling mean (6 bars = 24h smoothing) to reduce noise
+        d["long_pct_ma6"]  = d["long_pct"].rolling(6, min_periods=1).mean()
+        d["short_pct_ma6"] = d["short_pct"].rolling(6, min_periods=1).mean()
+    else:
+        d["long_pct"]      = 50.0
+        d["short_pct"]     = 50.0
+        d["ls_ratio"]      = 1.0
+        d["long_pct_ma6"]  = 50.0
+        d["short_pct_ma6"] = 50.0
 
     # ── Liquidations ──────────────────────────────────────────────────────────
     d = d.join(df_liq, how="left")
@@ -466,6 +486,9 @@ def build_all_features(
         d["liq_ratio"]   = d["liq_long"] / (d["liq_total"].replace(0, np.nan))
         d["liq_long_z"]  = (d["liq_long"]  - d["liq_long"].rolling(24).mean())  / (d["liq_long"].rolling(24).std()  + 1e-9)
         d["liq_short_z"] = (d["liq_short"] - d["liq_short"].rolling(24).mean()) / (d["liq_short"].rolling(24).std() + 1e-9)
+        # Lag features per Liquidation Spike Gate
+        d["liq_short_z_lag1"] = d["liq_short_z"].shift(1)
+        d["liq_long_z_lag1"]  = d["liq_long_z"].shift(1)
 
     # ── Consecutive directional closes ──────────────────────────────────────
     # Positive = consecutive bullish closes, negative = consecutive bearish.
@@ -593,8 +616,12 @@ FEATURE_GROUPS = {
     ],
     "smc": ["fvg_bull", "fvg_bear", "sweep"],
     "funding": ["funding", "funding_ma24", "funding_z", "funding_std12", "funding_cum48", "premium_z"],
-    "oi":  ["oi_raw", "oi_ma_ratio", "oi_delta", "oi_delta_z", "oi_ma24"],
-    "liq": ["liq_total", "liq_sum_24h", "liq_z", "liq_ratio", "liq_long_z", "liq_short_z"],
+    "oi":  ["oi_raw", "oi_ma_ratio", "oi_delta", "oi_delta_z", "oi_ma24",
+            "oi_delta_z_lag1", "oi_delta_z_lag2", "oi_delta_z_lag3"],
+    "ls":  ["long_pct", "short_pct", "ls_ratio", "long_pct_ma6", "short_pct_ma6"],
+    "liq": ["liq_total", "liq_sum_24h", "liq_z", "liq_ratio",
+            "liq_long_z", "liq_short_z",
+            "liq_short_z_lag1", "liq_long_z_lag1"],
     "c2":  ["c2_dir_prob", "c2_vol_prob", "c2_p10", "c2_p50", "c2_p90",
              "c2_uncertainty", "c2_cont_prob", "c2_p50_vs_atr"],
     # Options IV features (Phase 1). Only populated when options_bias_enabled OR reversal_mode_enabled.

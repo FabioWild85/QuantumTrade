@@ -93,6 +93,27 @@ interface Config {
   atr_pct_gate_enabled: boolean;
   atr_pct_min: number;
   atr_pct_mode: 'block' | 'scale';
+  // Squeeze Protection Gates — OI Spike
+  oi_spike_gate_enabled: boolean;
+  oi_spike_thr: number;
+  oi_spike_mode: 'block' | 'scale';
+  oi_spike_lookback: number;
+  // Squeeze Protection Gates — Long/Short Ratio
+  ls_gate_enabled: boolean;
+  ls_long_block_pct: number;
+  ls_short_block_pct: number;
+  ls_gate_mode: 'block' | 'scale';
+  ls_gate_scale_factor: number;
+  ls_lookback_bars: number;
+  // Squeeze Protection Gates — Liquidation Spike
+  liq_spike_gate_enabled: boolean;
+  liq_spike_thr: number;
+  liq_spike_lookback: number;
+  liq_spike_mode: 'block' | 'scale';
+  liq_spike_scale_factor: number;
+  // Weekend Gate
+  weekend_gate_block_saturday: boolean;
+  weekend_gate_block_sunday: boolean;
   // Feature A: Exhaustion Guard proportional boost
   exhaustion_prop_enabled: boolean;
   exhaustion_prop_scale: number;
@@ -116,6 +137,15 @@ interface Config {
   pullback_zone_atr: number;
   pullback_window_h: number;
   pullback_fallback_atr: number;
+  bounce_fade_enabled: boolean;
+  bounce_fade_counter_trend_only: boolean;
+  bounce_fade_penetration_pct: number;
+  bounce_fade_offset_atr: number;
+  bounce_fade_window_bars: number;
+  bounce_fade_market_fallback: boolean;
+  bounce_fade_min_rr: number;
+  bounce_fade_sl_buffer_atr: number;
+  bounce_fade_sl_min_atr: number;
   // Dual ATR
   dual_atr_enabled: boolean;
   // Signal quality filters (formerly hardcoded)
@@ -273,6 +303,27 @@ const DEFAULTS: Config = {
   atr_pct_gate_enabled: false,
   atr_pct_min: 0.008,
   atr_pct_mode: 'scale' as const,
+  // Squeeze Protection Gates — OI Spike
+  oi_spike_gate_enabled: false,
+  oi_spike_thr: 2.0,
+  oi_spike_mode: 'scale' as const,
+  oi_spike_lookback: 2,
+  // Squeeze Protection Gates — Long/Short Ratio
+  ls_gate_enabled: false,
+  ls_long_block_pct: 67.0,
+  ls_short_block_pct: 33.0,
+  ls_gate_mode: 'scale' as const,
+  ls_gate_scale_factor: 0.50,
+  ls_lookback_bars: 1,
+  // Squeeze Protection Gates — Liquidation Spike
+  liq_spike_gate_enabled: false,
+  liq_spike_thr: 2.5,
+  liq_spike_lookback: 2,
+  liq_spike_mode: 'block' as const,
+  liq_spike_scale_factor: 0.40,
+  // Weekend Gate
+  weekend_gate_block_saturday: false,
+  weekend_gate_block_sunday: false,
   // Feature A: Exhaustion Guard proportional boost
   exhaustion_prop_enabled: false,
   exhaustion_prop_scale: 0.06,
@@ -296,6 +347,15 @@ const DEFAULTS: Config = {
   pullback_zone_atr: 0.3,
   pullback_window_h: 3,
   pullback_fallback_atr: 0.5,
+  bounce_fade_enabled: false,
+  bounce_fade_counter_trend_only: true,
+  bounce_fade_penetration_pct: 0.50,
+  bounce_fade_offset_atr: 0.50,
+  bounce_fade_window_bars: 2,
+  bounce_fade_market_fallback: true,
+  bounce_fade_min_rr: 1.5,
+  bounce_fade_sl_buffer_atr: 0.30,
+  bounce_fade_sl_min_atr: 0.80,
   // Dual ATR
   dual_atr_enabled: false,
   // Signal quality filters
@@ -1424,6 +1484,107 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
         </div>
       </Section>
 
+      {/* Bounce-Fade Entry */}
+      <Section title="Bounce-Fade Entry — Entry su Rimbalzi Controtendenza" description="Su segnali controtendenza (es. short mentre il 4H rimbalza), invece di entrare subito il bot piazza un limite ancorato alla resistenza sovrastante: entry più alto, SL stretto, R:R migliore. Size congelata (nessuna esplosione). Fallback a mercato a scadenza. Default OFF — validare in backtest prima del live.">
+        <div className={`flex flex-col gap-3 mb-6 pb-6 border-b transition-colors duration-200 ${config.bounce_fade_enabled ? 'border-rose-200 dark:border-rose-500/25' : 'border-slate-100 dark:border-white/5'}`}>
+          <label className="flex items-center gap-3 cursor-pointer group">
+            <div className="relative">
+              <input type="checkbox" className="sr-only" checked={config.bounce_fade_enabled} onChange={e => setConfig(c => ({ ...c, bounce_fade_enabled: e.target.checked }))} />
+              <div className={`w-9 h-[18px] rounded-full transition-all duration-300 ${config.bounce_fade_enabled ? 'bg-rose-600' : 'bg-slate-200 dark:bg-white/10'}`} />
+              <div className={`absolute top-[3px] left-[3px] w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.bounce_fade_enabled ? 'translate-x-[18px]' : ''}`} />
+            </div>
+            <div>
+              <p className={`text-xs font-bold leading-tight transition-colors ${config.bounce_fade_enabled ? 'text-rose-600 dark:text-rose-400' : 'text-slate-700 dark:text-slate-300'}`}>
+                Bounce-Fade Entry {config.bounce_fade_enabled && <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-rose-100 dark:bg-rose-500/20 text-rose-600 dark:text-rose-400 uppercase tracking-wider">Attivo</span>}
+              </p>
+              <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5">
+                {config.bounce_fade_enabled ? `Limite a ${Math.round(config.bounce_fade_penetration_pct * 100)}% verso la resistenza (cap ${config.bounce_fade_offset_atr}×ATR) · finestra ${config.bounce_fade_window_bars} bar · ${config.bounce_fade_market_fallback ? 'fallback mercato' : 'no fallback'}` : 'Entry immediata su ogni segnale (comportamento attuale)'}
+              </p>
+            </div>
+          </label>
+
+          {config.bounce_fade_enabled && (
+            <div className="flex flex-col gap-3 mt-1">
+              {/* Penetration */}
+              <div className="flex flex-col gap-1">
+                <div className="flex justify-between items-center">
+                  <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">Penetration verso resistenza</span>
+                  <span className="text-[10px] font-bold text-rose-600 dark:text-rose-400">{Math.round(config.bounce_fade_penetration_pct * 100)}%</span>
+                </div>
+                <input type="range" min={0.20} max={0.80} step={0.05} value={config.bounce_fade_penetration_pct}
+                  onChange={e => setConfig(c => ({ ...c, bounce_fade_penetration_pct: parseFloat(e.target.value) }))}
+                  className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-rose-500" />
+                <p className="text-[9px] text-slate-400 dark:text-slate-500">Frazione della distanza verso la resistenza. Più basso = riempie più spesso; più alto = entry migliore ma più fallback. Default 50%.</p>
+              </div>
+              {/* Offset cap */}
+              <div className="flex flex-col gap-1">
+                <div className="flex justify-between items-center">
+                  <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">Cap offset (×ATR)</span>
+                  <span className="text-[10px] font-bold text-rose-600 dark:text-rose-400">{config.bounce_fade_offset_atr.toFixed(2)}×</span>
+                </div>
+                <input type="range" min={0.20} max={1.50} step={0.05} value={config.bounce_fade_offset_atr}
+                  onChange={e => setConfig(c => ({ ...c, bounce_fade_offset_atr: parseFloat(e.target.value) }))}
+                  className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-rose-500" />
+                <p className="text-[9px] text-slate-400 dark:text-slate-500">Il limite non si allontana più di N×ATR dal prezzo (rete di sicurezza per i fill). Default 0.50.</p>
+              </div>
+              {/* Window */}
+              <div className="flex flex-col gap-1">
+                <div className="flex justify-between items-center">
+                  <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">Finestra (candele 4H)</span>
+                  <span className="text-[10px] font-bold text-rose-600 dark:text-rose-400">{config.bounce_fade_window_bars} bar</span>
+                </div>
+                <input type="range" min={1} max={4} step={1} value={config.bounce_fade_window_bars}
+                  onChange={e => setConfig(c => ({ ...c, bounce_fade_window_bars: parseInt(e.target.value) }))}
+                  className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-rose-500" />
+                <p className="text-[9px] text-slate-400 dark:text-slate-500">Candele 4H di attesa (2 = 8h). Alla scadenza: fallback a mercato o annulla. Default 2.</p>
+              </div>
+              {/* Min R:R */}
+              <div className="flex flex-col gap-1">
+                <div className="flex justify-between items-center">
+                  <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">R:R minimo</span>
+                  <span className="text-[10px] font-bold text-rose-600 dark:text-rose-400">{config.bounce_fade_min_rr.toFixed(1)}</span>
+                </div>
+                <input type="range" min={1.0} max={3.0} step={0.1} value={config.bounce_fade_min_rr}
+                  onChange={e => setConfig(c => ({ ...c, bounce_fade_min_rr: parseFloat(e.target.value) }))}
+                  className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-rose-500" />
+                <p className="text-[9px] text-slate-400 dark:text-slate-500">R:R minimo per accettare il fill al limite. Sotto soglia → trade annullato. Default 1.5.</p>
+              </div>
+              {/* SL buffer */}
+              <div className="flex flex-col gap-1">
+                <div className="flex justify-between items-center">
+                  <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">Buffer SL (×ATR)</span>
+                  <span className="text-[10px] font-bold text-rose-600 dark:text-rose-400">{config.bounce_fade_sl_buffer_atr.toFixed(2)}×</span>
+                </div>
+                <input type="range" min={0.10} max={1.00} step={0.05} value={config.bounce_fade_sl_buffer_atr}
+                  onChange={e => setConfig(c => ({ ...c, bounce_fade_sl_buffer_atr: parseFloat(e.target.value) }))}
+                  className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-rose-500" />
+                <p className="text-[9px] text-slate-400 dark:text-slate-500">Buffer SL sopra la resistenza. Default 0.30.</p>
+              </div>
+              {/* SL min floor */}
+              <div className="flex flex-col gap-1">
+                <div className="flex justify-between items-center">
+                  <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">SL minimo (floor ×ATR)</span>
+                  <span className="text-[10px] font-bold text-rose-600 dark:text-rose-400">{config.bounce_fade_sl_min_atr.toFixed(2)}×</span>
+                </div>
+                <input type="range" min={0.10} max={1.50} step={0.05} value={config.bounce_fade_sl_min_atr}
+                  onChange={e => setConfig(c => ({ ...c, bounce_fade_sl_min_atr: parseFloat(e.target.value) }))}
+                  className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-rose-500" />
+                <p className="text-[9px] text-slate-400 dark:text-slate-500">Distanza minima dello SL dall'entry (anti-rumore). Default 0.80.</p>
+              </div>
+              {/* Toggles */}
+              <label className="flex items-center gap-2 cursor-pointer mt-1">
+                <input type="checkbox" checked={config.bounce_fade_counter_trend_only} onChange={e => setConfig(c => ({ ...c, bounce_fade_counter_trend_only: e.target.checked }))} className="accent-rose-500" />
+                <span className="text-[10px] text-slate-600 dark:text-slate-400">Solo segnali controtendenza (ret_6 opposto al segnale)</span>
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input type="checkbox" checked={config.bounce_fade_market_fallback} onChange={e => setConfig(c => ({ ...c, bounce_fade_market_fallback: e.target.checked }))} className="accent-rose-500" />
+                <span className="text-[10px] text-slate-600 dark:text-slate-400">Fallback a mercato alla scadenza se il segnale persiste</span>
+              </label>
+            </div>
+          )}
+        </div>
+      </Section>
+
       {/* Pullback Entry */}
       <Section title="Pullback Entry — Timing Ottimizzato" description="Quando una candela 4H ha un range > N×ATR (impulso forte), invece di entrare subito il bot aspetta un ritracciamento tecnico. Migliora il R:R strutturalmente: entry più favorevole, SL più stretto. Default OFF — abilitare solo dopo 60+ trade live.">
         <div className={`flex flex-col gap-3 mb-6 pb-6 border-b transition-colors duration-200 ${config.pullback_entry_enabled ? 'border-cyan-200 dark:border-cyan-500/25' : 'border-slate-100 dark:border-white/5'}`}>
@@ -2011,6 +2172,285 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
               </div>
             </div>
           )}
+        </div>
+      </Section>
+
+      {/* ── Squeeze Protection Gates ── */}
+      <Section
+        title="Squeeze Protection Gates — Protezione Short/Long Squeeze"
+        description="Tre gate indipendenti basati su dati di posizionamento del mercato (Coinalyze). Attivare in presenza di crowding direzionale elevato. Richiedono API key Coinalyze già configurata."
+      >
+        {/* ── Gate A: OI Spike ── */}
+        <div className={`flex flex-col gap-3 mb-6 pb-6 border-b transition-colors duration-200
+          ${config.oi_spike_gate_enabled ? 'border-rose-200 dark:border-rose-500/25' : 'border-slate-100 dark:border-white/5'}`}>
+
+          <label className="flex items-start gap-3 cursor-pointer group">
+            <div className="relative inline-flex items-center mt-0.5">
+              <input type="checkbox" className="sr-only"
+                checked={config.oi_spike_gate_enabled}
+                onChange={e => setConfig(c => ({ ...c, oi_spike_gate_enabled: e.target.checked }))} />
+              <div className={`w-10 h-5 rounded-full transition-all duration-300
+                ${config.oi_spike_gate_enabled ? 'bg-rose-600' : 'bg-slate-200 dark:bg-white/10'}`} />
+              <div className={`absolute top-1 left-1 w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300
+                ${config.oi_spike_gate_enabled ? 'translate-x-5' : ''}`} />
+            </div>
+            <div>
+              <p className={`text-sm font-bold transition-colors
+                ${config.oi_spike_gate_enabled ? 'text-rose-600 dark:text-rose-400' : 'text-slate-800 dark:text-slate-200'}`}>
+                OI Spike Gate
+                {config.oi_spike_gate_enabled && (
+                  <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-rose-100 dark:bg-rose-500/20 text-rose-600 dark:text-rose-400 uppercase tracking-wider">Attivo</span>
+                )}
+              </p>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                {config.oi_spike_gate_enabled
+                  ? `soglia ${config.oi_spike_thr.toFixed(1)}σ · lookback ${config.oi_spike_lookback} bar · ${config.oi_spike_mode === 'block' ? 'Blocco' : 'Scale'}`
+                  : 'Blocca/riduce trade quando OI_delta_z supera la soglia (crowding direzionale)'}
+              </p>
+            </div>
+          </label>
+
+          {config.oi_spike_gate_enabled && (
+            <div className="grid grid-cols-2 gap-4 pl-14">
+              <div>
+                <label className="flex items-center justify-between mb-2">
+                  <span className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest">Soglia (σ)</span>
+                  <span className="font-mono text-sm font-bold text-rose-600 dark:text-rose-400">{config.oi_spike_thr.toFixed(1)}σ</span>
+                </label>
+                <input type="range" min="1.0" max="4.0" step="0.1"
+                  value={config.oi_spike_thr}
+                  onChange={e => setConfig(c => ({ ...c, oi_spike_thr: parseFloat(e.target.value) }))}
+                  className="w-full h-1.5 bg-slate-200 dark:bg-white/10 rounded-full appearance-none cursor-pointer accent-rose-600" />
+                <div className="flex justify-between text-[9px] font-mono text-slate-400 mt-1"><span>1.0</span><span>2.5</span><span>4.0</span></div>
+              </div>
+              <div>
+                <label className="flex items-center justify-between mb-2">
+                  <span className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest">Lookback (bar)</span>
+                  <span className="font-mono text-sm font-bold text-rose-600 dark:text-rose-400">{config.oi_spike_lookback}</span>
+                </label>
+                <input type="range" min="1" max="6" step="1"
+                  value={config.oi_spike_lookback}
+                  onChange={e => setConfig(c => ({ ...c, oi_spike_lookback: parseInt(e.target.value) }))}
+                  className="w-full h-1.5 bg-slate-200 dark:bg-white/10 rounded-full appearance-none cursor-pointer accent-rose-600" />
+                <div className="flex justify-between text-[9px] font-mono text-slate-400 mt-1"><span>1</span><span>3</span><span>6</span></div>
+              </div>
+              <div className="col-span-2 flex gap-3">
+                {(['scale', 'block'] as const).map(mode => (
+                  <button key={mode}
+                    onClick={() => setConfig(c => ({ ...c, oi_spike_mode: mode }))}
+                    className={`flex-1 py-2 rounded-lg text-xs font-bold border transition-all ${
+                      config.oi_spike_mode === mode
+                        ? 'bg-rose-600 text-white border-rose-600'
+                        : 'bg-transparent text-slate-600 dark:text-slate-400 border-slate-200 dark:border-white/10 hover:border-rose-400'
+                    }`}>
+                    {mode === 'scale' ? '⚖️ Scale size' : '🚫 Blocca trade'}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* ── Gate B: Long/Short Ratio ── */}
+        <div className={`flex flex-col gap-3 mb-6 pb-6 border-b transition-colors duration-200
+          ${config.ls_gate_enabled ? 'border-rose-200 dark:border-rose-500/25' : 'border-slate-100 dark:border-white/5'}`}>
+
+          <label className="flex items-start gap-3 cursor-pointer group">
+            <div className="relative inline-flex items-center mt-0.5">
+              <input type="checkbox" className="sr-only"
+                checked={config.ls_gate_enabled}
+                onChange={e => setConfig(c => ({ ...c, ls_gate_enabled: e.target.checked }))} />
+              <div className={`w-10 h-5 rounded-full transition-all duration-300
+                ${config.ls_gate_enabled ? 'bg-rose-600' : 'bg-slate-200 dark:bg-white/10'}`} />
+              <div className={`absolute top-1 left-1 w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300
+                ${config.ls_gate_enabled ? 'translate-x-5' : ''}`} />
+            </div>
+            <div>
+              <p className={`text-sm font-bold transition-colors
+                ${config.ls_gate_enabled ? 'text-rose-600 dark:text-rose-400' : 'text-slate-800 dark:text-slate-200'}`}>
+                Long/Short Ratio Gate
+                {config.ls_gate_enabled && (
+                  <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-rose-100 dark:bg-rose-500/20 text-rose-600 dark:text-rose-400 uppercase tracking-wider">Attivo</span>
+                )}
+              </p>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                {config.ls_gate_enabled
+                  ? `block SHORT se long ≥${config.ls_long_block_pct.toFixed(0)}% · block LONG se long ≤${config.ls_short_block_pct.toFixed(0)}%`
+                  : 'Blocca/riduce trade quando il mercato è eccessivamente posizionato in una direzione (Coinalyze)'}
+              </p>
+            </div>
+          </label>
+
+          {config.ls_gate_enabled && (
+            <div className="grid grid-cols-2 gap-4 pl-14">
+              <div>
+                <label className="flex items-center justify-between mb-2">
+                  <span className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest">Block SHORT se long ≥</span>
+                  <span className="font-mono text-sm font-bold text-rose-600 dark:text-rose-400">{config.ls_long_block_pct.toFixed(0)}%</span>
+                </label>
+                <input type="range" min="55" max="80" step="1"
+                  value={config.ls_long_block_pct}
+                  onChange={e => setConfig(c => ({ ...c, ls_long_block_pct: parseFloat(e.target.value) }))}
+                  className="w-full h-1.5 bg-slate-200 dark:bg-white/10 rounded-full appearance-none cursor-pointer accent-rose-600" />
+                <div className="flex justify-between text-[9px] font-mono text-slate-400 mt-1"><span>55%</span><span>67%</span><span>80%</span></div>
+              </div>
+              <div>
+                <label className="flex items-center justify-between mb-2">
+                  <span className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest">Block LONG se long ≤</span>
+                  <span className="font-mono text-sm font-bold text-rose-600 dark:text-rose-400">{config.ls_short_block_pct.toFixed(0)}%</span>
+                </label>
+                <input type="range" min="20" max="45" step="1"
+                  value={config.ls_short_block_pct}
+                  onChange={e => setConfig(c => ({ ...c, ls_short_block_pct: parseFloat(e.target.value) }))}
+                  className="w-full h-1.5 bg-slate-200 dark:bg-white/10 rounded-full appearance-none cursor-pointer accent-rose-600" />
+                <div className="flex justify-between text-[9px] font-mono text-slate-400 mt-1"><span>20%</span><span>33%</span><span>45%</span></div>
+              </div>
+              {config.ls_gate_mode === 'scale' && (
+                <div>
+                  <label className="flex items-center justify-between mb-2">
+                    <span className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest">Scale factor</span>
+                    <span className="font-mono text-sm font-bold text-rose-600 dark:text-rose-400">×{config.ls_gate_scale_factor.toFixed(2)}</span>
+                  </label>
+                  <input type="range" min="0.20" max="0.80" step="0.05"
+                    value={config.ls_gate_scale_factor}
+                    onChange={e => setConfig(c => ({ ...c, ls_gate_scale_factor: parseFloat(e.target.value) }))}
+                    className="w-full h-1.5 bg-slate-200 dark:bg-white/10 rounded-full appearance-none cursor-pointer accent-rose-600" />
+                  <div className="flex justify-between text-[9px] font-mono text-slate-400 mt-1"><span>×0.20</span><span>×0.50</span><span>×0.80</span></div>
+                </div>
+              )}
+              <div className={config.ls_gate_mode === 'scale' ? '' : 'col-span-2'}>
+                <div className="flex gap-3">
+                  {(['scale', 'block'] as const).map(mode => (
+                    <button key={mode}
+                      onClick={() => setConfig(c => ({ ...c, ls_gate_mode: mode }))}
+                      className={`flex-1 py-2 rounded-lg text-xs font-bold border transition-all ${
+                        config.ls_gate_mode === mode
+                          ? 'bg-rose-600 text-white border-rose-600'
+                          : 'bg-transparent text-slate-600 dark:text-slate-400 border-slate-200 dark:border-white/10 hover:border-rose-400'
+                      }`}>
+                      {mode === 'scale' ? '⚖️ Scale size' : '🚫 Blocca trade'}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* ── Gate C: Liquidation Spike ── */}
+        <div className="flex flex-col gap-3 transition-colors duration-200">
+
+          <label className="flex items-start gap-3 cursor-pointer group">
+            <div className="relative inline-flex items-center mt-0.5">
+              <input type="checkbox" className="sr-only"
+                checked={config.liq_spike_gate_enabled}
+                onChange={e => setConfig(c => ({ ...c, liq_spike_gate_enabled: e.target.checked }))} />
+              <div className={`w-10 h-5 rounded-full transition-all duration-300
+                ${config.liq_spike_gate_enabled ? 'bg-rose-600' : 'bg-slate-200 dark:bg-white/10'}`} />
+              <div className={`absolute top-1 left-1 w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300
+                ${config.liq_spike_gate_enabled ? 'translate-x-5' : ''}`} />
+            </div>
+            <div>
+              <p className={`text-sm font-bold transition-colors
+                ${config.liq_spike_gate_enabled ? 'text-rose-600 dark:text-rose-400' : 'text-slate-800 dark:text-slate-200'}`}>
+                Liquidation Spike Gate
+                {config.liq_spike_gate_enabled && (
+                  <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-rose-100 dark:bg-rose-500/20 text-rose-600 dark:text-rose-400 uppercase tracking-wider">Attivo</span>
+                )}
+              </p>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                {config.liq_spike_gate_enabled
+                  ? `soglia ${config.liq_spike_thr.toFixed(1)}σ · lookback ${config.liq_spike_lookback} bar · ${config.liq_spike_mode === 'block' ? 'Blocco' : 'Scale'}`
+                  : 'Blocca trade quando liq_short_z o liq_long_z supera la soglia (squeeze in corso)'}
+              </p>
+            </div>
+          </label>
+
+          {config.liq_spike_gate_enabled && (
+            <div className="grid grid-cols-2 gap-4 pl-14">
+              <div>
+                <label className="flex items-center justify-between mb-2">
+                  <span className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest">Soglia (σ)</span>
+                  <span className="font-mono text-sm font-bold text-rose-600 dark:text-rose-400">{config.liq_spike_thr.toFixed(1)}σ</span>
+                </label>
+                <input type="range" min="1.5" max="5.0" step="0.1"
+                  value={config.liq_spike_thr}
+                  onChange={e => setConfig(c => ({ ...c, liq_spike_thr: parseFloat(e.target.value) }))}
+                  className="w-full h-1.5 bg-slate-200 dark:bg-white/10 rounded-full appearance-none cursor-pointer accent-rose-600" />
+                <div className="flex justify-between text-[9px] font-mono text-slate-400 mt-1"><span>1.5</span><span>3.0</span><span>5.0</span></div>
+              </div>
+              <div>
+                <label className="flex items-center justify-between mb-2">
+                  <span className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest">Lookback (bar)</span>
+                  <span className="font-mono text-sm font-bold text-rose-600 dark:text-rose-400">{config.liq_spike_lookback}</span>
+                </label>
+                <input type="range" min="1" max="6" step="1"
+                  value={config.liq_spike_lookback}
+                  onChange={e => setConfig(c => ({ ...c, liq_spike_lookback: parseInt(e.target.value) }))}
+                  className="w-full h-1.5 bg-slate-200 dark:bg-white/10 rounded-full appearance-none cursor-pointer accent-rose-600" />
+                <div className="flex justify-between text-[9px] font-mono text-slate-400 mt-1"><span>1</span><span>3</span><span>6</span></div>
+              </div>
+              {config.liq_spike_mode === 'scale' && (
+                <div className="col-span-2">
+                  <label className="flex items-center justify-between mb-2">
+                    <span className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest">Scale factor</span>
+                    <span className="font-mono text-sm font-bold text-rose-600 dark:text-rose-400">×{config.liq_spike_scale_factor.toFixed(2)}</span>
+                  </label>
+                  <input type="range" min="0.20" max="0.80" step="0.05"
+                    value={config.liq_spike_scale_factor}
+                    onChange={e => setConfig(c => ({ ...c, liq_spike_scale_factor: parseFloat(e.target.value) }))}
+                    className="w-full h-1.5 bg-slate-200 dark:bg-white/10 rounded-full appearance-none cursor-pointer accent-rose-600" />
+                  <div className="flex justify-between text-[9px] font-mono text-slate-400 mt-1"><span>×0.20</span><span>×0.40</span><span>×0.80</span></div>
+                </div>
+              )}
+              <div className="col-span-2 flex gap-3">
+                {(['block', 'scale'] as const).map(mode => (
+                  <button key={mode}
+                    onClick={() => setConfig(c => ({ ...c, liq_spike_mode: mode }))}
+                    className={`flex-1 py-2 rounded-lg text-xs font-bold border transition-all ${
+                      config.liq_spike_mode === mode
+                        ? 'bg-rose-600 text-white border-rose-600'
+                        : 'bg-transparent text-slate-600 dark:text-slate-400 border-slate-200 dark:border-white/10 hover:border-rose-400'
+                    }`}>
+                    {mode === 'scale' ? '⚖️ Scale size' : '🚫 Blocca trade'}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      </Section>
+
+      {/* ── Weekend Gate ── */}
+      <Section
+        title="Weekend Gate — Blocco Sabato / Domenica"
+        description="Blocca l'apertura di nuovi trade nei giorni in cui i mercati tradizionali sono chiusi (orario UTC). Sabato e domenica la liquidità è sottile e si formano spesso movimenti anomali. Non chiude le posizioni già aperte — agisce solo sulle nuove entrate."
+      >
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          {([
+            { key: 'weekend_gate_block_saturday' as const, label: 'Blocca Sabato',   sub: 'Nessuna nuova entrata il sabato (UTC)' },
+            { key: 'weekend_gate_block_sunday'   as const, label: 'Blocca Domenica', sub: 'Nessuna nuova entrata la domenica (UTC)' },
+          ]).map(({ key, label, sub }) => (
+            <label key={key} className={`flex items-start gap-3 cursor-pointer group p-4 rounded-xl border transition-all duration-200
+              ${config[key] ? 'border-amber-200 dark:border-amber-500/30 bg-amber-50/40 dark:bg-amber-500/5' : 'border-slate-100 dark:border-white/5 hover:bg-slate-50 dark:hover:bg-white/[0.03]'}`}>
+              <div className="relative inline-flex items-center mt-0.5">
+                <input type="checkbox" className="sr-only"
+                  checked={config[key]}
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setConfig((c: Config) => ({ ...c, [key]: e.target.checked }))} />
+                <div className={`w-10 h-5 rounded-full transition-all duration-300 ${config[key] ? 'bg-amber-500' : 'bg-slate-200 dark:bg-white/10'}`} />
+                <div className={`absolute top-1 left-1 w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config[key] ? 'translate-x-5' : ''}`} />
+              </div>
+              <div>
+                <p className={`text-sm font-bold transition-colors ${config[key] ? 'text-amber-600 dark:text-amber-400' : 'text-slate-800 dark:text-slate-200'}`}>
+                  {label}
+                  {config[key] && (
+                    <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-amber-100 dark:bg-amber-500/20 text-amber-600 dark:text-amber-400 uppercase tracking-wider">Attivo</span>
+                  )}
+                </p>
+                <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">{sub}</p>
+              </div>
+            </label>
+          ))}
         </div>
       </Section>
 

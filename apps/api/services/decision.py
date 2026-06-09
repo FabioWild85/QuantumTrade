@@ -94,6 +94,25 @@ class DecisionEngine:
         atr_pct_gate_enabled: bool  = False,
         atr_pct_min:          float = 0.008,
         atr_pct_mode:         str   = "scale",
+        # Squeeze Protection Gates
+        oi_spike_gate_enabled: bool  = False,
+        oi_spike_thr:          float = 2.0,
+        oi_spike_mode:         str   = "scale",
+        oi_spike_lookback:     int   = 2,
+        ls_gate_enabled:       bool  = False,
+        ls_long_block_pct:     float = 67.0,
+        ls_short_block_pct:    float = 33.0,
+        ls_gate_mode:          str   = "scale",
+        ls_gate_scale_factor:  float = 0.50,
+        ls_lookback_bars:      int   = 1,
+        liq_spike_gate_enabled: bool  = False,
+        liq_spike_thr:          float = 2.5,
+        liq_spike_lookback:     int   = 2,
+        liq_spike_mode:         str   = "block",
+        liq_spike_scale_factor: float = 0.40,
+        # Weekend Gate — block entries on Sat/Sun (UTC) when traditional markets are closed
+        weekend_gate_block_saturday: bool = False,
+        weekend_gate_block_sunday:   bool = False,
         # Exhaustion Guard — proportional boost
         exhaustion_prop_enabled: bool  = False,
         exhaustion_prop_scale:   float = 0.06,
@@ -166,6 +185,25 @@ class DecisionEngine:
         self.atr_pct_gate_enabled  = atr_pct_gate_enabled
         self.atr_pct_min           = atr_pct_min
         self.atr_pct_mode          = atr_pct_mode
+        # Squeeze Protection Gates
+        self.oi_spike_gate_enabled = oi_spike_gate_enabled
+        self.oi_spike_thr          = oi_spike_thr
+        self.oi_spike_mode         = oi_spike_mode
+        self.oi_spike_lookback     = oi_spike_lookback
+        self.ls_gate_enabled       = ls_gate_enabled
+        self.ls_long_block_pct     = ls_long_block_pct
+        self.ls_short_block_pct    = ls_short_block_pct
+        self.ls_gate_mode          = ls_gate_mode
+        self.ls_gate_scale_factor  = ls_gate_scale_factor
+        self.ls_lookback_bars      = ls_lookback_bars
+        self.liq_spike_gate_enabled = liq_spike_gate_enabled
+        self.liq_spike_thr          = liq_spike_thr
+        self.liq_spike_lookback     = liq_spike_lookback
+        self.liq_spike_mode         = liq_spike_mode
+        self.liq_spike_scale_factor = liq_spike_scale_factor
+        # Weekend Gate
+        self.weekend_gate_block_saturday = weekend_gate_block_saturday
+        self.weekend_gate_block_sunday   = weekend_gate_block_sunday
         # Exhaustion Guard — proportional boost
         self.exhaustion_prop_enabled = exhaustion_prop_enabled
         self.exhaustion_prop_scale   = exhaustion_prop_scale
@@ -193,6 +231,7 @@ class DecisionEngine:
         current_price: float = 0.0,
         avg_funding: float = 0.0,
         covariates: Optional[dict] = None,
+        bar_time: Optional[object] = None,
     ) -> DecisionResult:
         """
         Args:
@@ -243,6 +282,29 @@ class DecisionEngine:
         p90            = c2_output.get("c2_p90", current_price)
         c2_uncertainty = c2_output.get("c2_uncertainty", 0.0)
         c2_cont_prob   = c2_output.get("c2_cont_prob", 0.0)
+
+        # ── Gating Level 0: Weekend Gate ─────────────────────────────────────
+        # Block new entries on Saturday/Sunday (UTC) when traditional markets are
+        # closed — thin liquidity often produces anomalous moves. Hard time-based
+        # block evaluated first (independent of market conditions). bar_time is the
+        # current bar's UTC timestamp (live: last closed 4H bar; backtest: bar index).
+        if (self.weekend_gate_block_saturday or self.weekend_gate_block_sunday) and bar_time is not None:
+            try:
+                _dow = bar_time.dayofweek  # Monday=0 … Saturday=5, Sunday=6
+            except AttributeError:
+                _dow = bar_time.weekday() if hasattr(bar_time, "weekday") else None
+            if _dow is not None:
+                _blocked_day = None
+                if _dow == 5 and self.weekend_gate_block_saturday:
+                    _blocked_day = "sabato"
+                elif _dow == 6 and self.weekend_gate_block_sunday:
+                    _blocked_day = "domenica"
+                if _blocked_day:
+                    reasoning.append(
+                        f"GATE: WEEKEND — {_blocked_day} (UTC), mercati tradizionali chiusi, "
+                        f"liquidità sottile / movimenti anomali"
+                    )
+                    return self._no_trade(reasoning, dir_prob, p10, p50, p90, features, c2_uncertainty)
 
         # ── Gating Level 1: ADX / volatility regime ──────────────────────────
         if self.adx_gate_enabled and adx < self.adx_gate:
@@ -626,8 +688,83 @@ class DecisionEngine:
                     f"(-{_inv_pct_disp:.1f}%) → long threshold +0.10 (C2 prevede ribasso)"
                 )
 
+        # ── Squeeze Protection Gates (A: OI spike · B: L/S ratio · C: Liq spike) ──
+        # Evaluated against the concrete entry direction, just before each return
+        # point so the candidate action is known (no lookahead on size_factor).
+        # "block" mode → no_trade; "scale" mode → size_factor multiplier folded
+        # into sf alongside iv_sf / _atr_size_mult / counter_trend_size_factor.
+        # All three gates default OFF — zero impact until explicitly enabled.
+        def _eval_squeeze_gates(action: str):
+            block_msg  = ""
+            size_mult  = 1.0
+            scale_msgs: list[str] = []
+
+            # Gate Level 2b — OI Spike
+            if self.oi_spike_gate_enabled:
+                _oi_z_vals = [
+                    features.get(f"oi_delta_z_lag{i}") if i > 0 else features.get("oi_delta_z")
+                    for i in range(max(1, self.oi_spike_lookback))
+                ]
+                _oi_z_max = max((abs(v) for v in _oi_z_vals if v is not None), default=0.0)
+                _oi_trig, _oi_msg = False, ""
+                if action == "short" and _oi_z_max > self.oi_spike_thr:
+                    _oi_trig = True
+                    _oi_msg = (f"OI_SPIKE: oi_delta_z={_oi_z_max:.2f} > {self.oi_spike_thr:.1f}σ "
+                               f"— crowded short, squeeze risk")
+                elif (action == "long" and _oi_z_max > self.oi_spike_thr
+                      and float(features.get("oi_delta", 0.0) or 0.0) < 0):
+                    _oi_trig = True
+                    _oi_msg = (f"OI_SPIKE: oi_delta_z={_oi_z_max:.2f} "
+                               f"— rapid OI decline, long squeeze risk")
+                if _oi_trig:
+                    if self.oi_spike_mode == "block":
+                        return True, _oi_msg, 1.0, []
+                    _oi_sf = max(0.30, 1.0 - (_oi_z_max - self.oi_spike_thr) * 0.15)
+                    size_mult *= _oi_sf
+                    scale_msgs.append(f"OI_SPIKE_SCALE ×{_oi_sf:.2f}: {_oi_msg}")
+
+            # Gate Level 2c — Long/Short Ratio
+            if self.ls_gate_enabled:
+                _long_pct = float(features.get("long_pct_ma6", features.get("long_pct", 50.0)) or 50.0)
+                _ls_trig, _ls_msg = False, ""
+                if action == "short" and _long_pct >= self.ls_long_block_pct:
+                    _ls_trig = True
+                    _ls_msg = (f"LS_RATIO: long={_long_pct:.1f}% ≥ {self.ls_long_block_pct:.0f}% "
+                               f"— mercato over-long, short squeeze risk")
+                elif action == "long" and _long_pct <= self.ls_short_block_pct:
+                    _ls_trig = True
+                    _ls_msg = (f"LS_RATIO: long={_long_pct:.1f}% ≤ {self.ls_short_block_pct:.0f}% "
+                               f"— mercato over-short, long squeeze risk")
+                if _ls_trig:
+                    if self.ls_gate_mode == "block":
+                        return True, _ls_msg, 1.0, []
+                    size_mult *= self.ls_gate_scale_factor
+                    scale_msgs.append(f"LS_RATIO_SCALE ×{self.ls_gate_scale_factor:.2f}: {_ls_msg}")
+
+            # Gate Level 2d — Liquidation Spike
+            if self.liq_spike_gate_enabled:
+                _liq_z_col  = "liq_short_z" if action == "short" else "liq_long_z"
+                _liq_z_cur  = float(features.get(_liq_z_col, 0.0) or 0.0)
+                _liq_z_lag  = float(features.get(f"{_liq_z_col}_lag1", 0.0) or 0.0)
+                _liq_z_peak = max(_liq_z_cur, _liq_z_lag)
+                if _liq_z_peak > self.liq_spike_thr:
+                    _liq_msg = (f"LIQ_SPIKE: {_liq_z_col}={_liq_z_peak:.2f}σ > {self.liq_spike_thr:.1f}σ "
+                                f"— liquidazioni {'short' if action == 'short' else 'long'} anomale, squeeze risk")
+                    if self.liq_spike_mode == "block":
+                        return True, _liq_msg, 1.0, []
+                    size_mult *= self.liq_spike_scale_factor
+                    scale_msgs.append(f"LIQ_SPIKE_SCALE ×{self.liq_spike_scale_factor:.2f}: {_liq_msg}")
+
+            return False, block_msg, size_mult, scale_msgs
+
         # ── Long signal ───────────────────────────────────────────────────────
         if ensemble_prob > threshold_long:
+            # Squeeze Protection Gates (evaluated for the long entry)
+            _sq_blocked, _sq_msg, _sq_mult, _sq_scale_msgs = _eval_squeeze_gates("long")
+            if _sq_blocked:
+                reasoning.append(f"GATE: {_sq_msg}")
+                return self._no_trade(reasoning, dir_prob, p10, p50, p90, features, c2_uncertainty)
+
             # Anti-FVG filter: don't enter long into a bearish FVG zone overhead
             if self.fvg_filter_enabled and fvg_bear == 1.0:
                 reasoning.append("FILTER: Bearish FVG detected overhead — skipping long entry")
@@ -676,8 +813,10 @@ class DecisionEngine:
             if p50 > 0 and p50 < current_price:
                 reasoning.append(f"NOTE: C2 median ({p50:.1f}) below entry — minor bearish bias in forecast")
 
+            for _m in _sq_scale_msgs:
+                reasoning.append(_m)
             is_counter_trend = (bias_regime == -1)
-            sf = (counter_trend_size_factor if is_counter_trend else 1.0) * iv_sf * _atr_size_mult
+            sf = (counter_trend_size_factor if is_counter_trend else 1.0) * iv_sf * _atr_size_mult * _sq_mult
             thr_used = threshold_long
             _long_exhaust = bool(self.exhaustion_guard_enabled and _exh_long_conds) if self.exhaustion_guard_enabled else False
             reasoning.append(
@@ -701,6 +840,12 @@ class DecisionEngine:
         # ── Short signal ──────────────────────────────────────────────────────
         short_prob = 1.0 - ensemble_prob
         if short_prob > threshold_short:
+            # Squeeze Protection Gates (evaluated for the short entry)
+            _sq_blocked, _sq_msg, _sq_mult, _sq_scale_msgs = _eval_squeeze_gates("short")
+            if _sq_blocked:
+                reasoning.append(f"GATE: {_sq_msg}")
+                return self._no_trade(reasoning, dir_prob, p10, p50, p90, features, c2_uncertainty)
+
             if self.fvg_filter_enabled and fvg_bull == 1.0:
                 reasoning.append("FILTER: Bullish FVG detected below — skipping short entry")
                 return self._no_trade(reasoning, dir_prob, p10, p50, p90, features, c2_uncertainty)
@@ -746,8 +891,10 @@ class DecisionEngine:
             if p50 > 0 and p50 > current_price:
                 reasoning.append(f"NOTE: C2 median ({p50:.1f}) above entry — minor bullish bias in forecast")
 
+            for _m in _sq_scale_msgs:
+                reasoning.append(_m)
             is_counter_trend = (bias_regime == 1)
-            sf = (counter_trend_size_factor if is_counter_trend else 1.0) * iv_sf * _atr_size_mult
+            sf = (counter_trend_size_factor if is_counter_trend else 1.0) * iv_sf * _atr_size_mult * _sq_mult
             thr_used = threshold_short
             _short_exhaust = bool(self.exhaustion_guard_enabled and _exh_short_conds) if self.exhaustion_guard_enabled else False
             reasoning.append(

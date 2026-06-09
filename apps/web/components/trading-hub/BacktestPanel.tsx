@@ -56,6 +56,15 @@ interface ParamStats {
   gate_daily_rsi?: number;
   gate_vol_climax?: number;
   gate_1h_block?: number;
+  // squeeze protection gates
+  gate_oi_spike?: number;
+  gate_ls_ratio?: number;
+  gate_liq_spike?: number;
+  mod_oi_spike_scale?: number;
+  mod_ls_ratio_scale?: number;
+  mod_liq_spike_scale?: number;
+  // weekend gate
+  gate_weekend?: number;
   // bias/modifiers
   mod_mtf_alignment: number;
   mod_regime_bias: number;
@@ -91,6 +100,11 @@ interface ParamStats {
   pb_filled_zone: number;
   pb_filled_fallback: number;
   pb_decayed: number;
+  // bounce-fade entry
+  bf_created?: number;
+  bf_filled_limit?: number;
+  bf_market_fallback?: number;
+  bf_abandoned?: number;
   // reversal zone detector
   rev_signals?: number;
   rev_guard_triggered?: number;
@@ -728,6 +742,11 @@ const ConfigSummary: React.FC<{ config: Record<string, any> }> = ({ config: c })
     activeBadges.push(badge(`Regime Bias +${c.regime_bias_delta ?? 0.08}${rLabel}`, 'bg-orange-50 dark:bg-orange-500/10 text-orange-600 dark:text-orange-400 border-orange-100 dark:border-orange-500/20'));
   }
   if (c.enhanced_exit_enabled)         activeBadges.push(badge('Enhanced Exit', 'bg-purple-50 dark:bg-purple-500/10 text-purple-600 dark:text-purple-400 border-purple-100 dark:border-purple-500/20'));
+  const sqColor = 'bg-rose-50 dark:bg-rose-500/10 text-rose-600 dark:text-rose-400 border-rose-100 dark:border-rose-500/20';
+  if (c.oi_spike_gate_enabled)  activeBadges.push(badge(`OI Spike ${c.oi_spike_thr ?? 2}σ ${c.oi_spike_mode === 'block' ? 'BLOCK' : 'scale'}`, sqColor));
+  if (c.ls_gate_enabled)        activeBadges.push(badge(`L/S Gate ≥${c.ls_long_block_pct ?? 67}% ${c.ls_gate_mode === 'block' ? 'BLOCK' : `×${c.ls_gate_scale_factor ?? 0.5}`}`, sqColor));
+  if (c.liq_spike_gate_enabled) activeBadges.push(badge(`Liq Spike ${c.liq_spike_thr ?? 2.5}σ ${c.liq_spike_mode === 'block' ? 'BLOCK' : 'scale'}`, sqColor));
+  if (c.weekend_gate_block_saturday || c.weekend_gate_block_sunday) activeBadges.push(badge(`Weekend BLOCK ${[c.weekend_gate_block_saturday && 'Sab', c.weekend_gate_block_sunday && 'Dom'].filter(Boolean).join('+')}`, 'bg-amber-50 dark:bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-100 dark:border-amber-500/20'));
 
   const disabledFilters: string[] = [];
   if (c.adx_gate_enabled      === false) disabledFilters.push('ADX OFF');
@@ -811,6 +830,10 @@ const ParamActivity: React.FC<{ ps: ParamStats; cfg?: Record<string, boolean> }>
         { key: 'gate_daily_rsi',        label: 'Daily RSI Gate (RSI giornaliero estremo — capitolazione/euforia)', count: ps.gate_daily_rsi ?? 0, pct: pct(ps.gate_daily_rsi ?? 0) },
         { key: 'gate_vol_climax',       label: 'Volume Climax Gate (volume 2.5σ + RSI oversold — capitolazione)', count: ps.gate_vol_climax ?? 0, pct: pct(ps.gate_vol_climax ?? 0) },
         { key: 'gate_1h_block',         label: '1H Gate BLOCK (modello 1H disaccorda con segnale 4H)',             count: ps.gate_1h_block ?? 0,   pct: pct(ps.gate_1h_block ?? 0) },
+        { key: 'gate_oi_spike',         label: 'OI Spike Gate BLOCK (crowding direzionale, oi_delta_z estremo)',   count: ps.gate_oi_spike ?? 0,   pct: pct(ps.gate_oi_spike ?? 0) },
+        { key: 'gate_ls_ratio',         label: 'Long/Short Ratio Gate BLOCK (mercato over-long/over-short)',       count: ps.gate_ls_ratio ?? 0,   pct: pct(ps.gate_ls_ratio ?? 0) },
+        { key: 'gate_liq_spike',        label: 'Liquidation Spike Gate BLOCK (squeeze in corso, liq_z estremo)',   count: ps.gate_liq_spike ?? 0,  pct: pct(ps.gate_liq_spike ?? 0) },
+        { key: 'gate_weekend',          label: 'Weekend Gate BLOCK (sabato/domenica, mercati chiusi)',             count: ps.gate_weekend ?? 0,    pct: pct(ps.gate_weekend ?? 0) },
       ],
     },
     {
@@ -830,6 +853,9 @@ const ParamActivity: React.FC<{ ps: ParamStats; cfg?: Record<string, boolean> }>
         { key: 'mod_exhaustion_prop',    label: 'ExhaustionGuard Proporzionale (boost extra per ret_48 estremo)', count: ps.mod_exhaustion_prop ?? 0, pct: pct(ps.mod_exhaustion_prop ?? 0) },
         { key: 'mod_c2_inversion',       label: 'C2 Inversion Gate (C2 forecast opposto al segnale → +0.10 threshold)', count: ps.mod_c2_inversion ?? 0, pct: pct(ps.mod_c2_inversion ?? 0) },
         { key: 'mod_1h_reduce',          label: '1H Gate REDUCE ×0.70 (modello 1H incerto, size ridotta)',             count: ps.mod_1h_reduce ?? 0, pct: pct(ps.mod_1h_reduce ?? 0) },
+        { key: 'mod_oi_spike_scale',     label: 'OI Spike Scale (size ridotta per crowding direzionale)',              count: ps.mod_oi_spike_scale ?? 0, pct: pct(ps.mod_oi_spike_scale ?? 0) },
+        { key: 'mod_ls_ratio_scale',     label: 'Long/Short Ratio Scale (size ridotta per mercato sbilanciato)',       count: ps.mod_ls_ratio_scale ?? 0, pct: pct(ps.mod_ls_ratio_scale ?? 0) },
+        { key: 'mod_liq_spike_scale',    label: 'Liquidation Spike Scale (size ridotta per spike liquidazioni)',       count: ps.mod_liq_spike_scale ?? 0, pct: pct(ps.mod_liq_spike_scale ?? 0) },
       ],
     },
     {
@@ -877,6 +903,18 @@ const ParamActivity: React.FC<{ ps: ParamStats; cfg?: Record<string, boolean> }>
         { key: 'pb_filled_zone',   label: 'Fill di zona (pullback raggiunto prima del timeout)', count: ps.pb_filled_zone ?? 0,   pct: (ps.pb_activated ?? 0) > 0 ? pct(ps.pb_filled_zone ?? 0, ps.pb_activated!) : 0, note: (ps.pb_activated ?? 0) > 0 ? `${pct(ps.pb_filled_zone ?? 0, ps.pb_activated!)}% delle attivazioni` : undefined },
         { key: 'pb_filled_fallback',label: 'Fill fallback (timeout, prezzo ancora vicino)',    count: ps.pb_filled_fallback ?? 0,pct: (ps.pb_activated ?? 0) > 0 ? pct(ps.pb_filled_fallback ?? 0, ps.pb_activated!) : 0, note: (ps.pb_activated ?? 0) > 0 ? `${pct(ps.pb_filled_fallback ?? 0, ps.pb_activated!)}% delle attivazioni` : undefined },
         { key: 'pb_decayed',       label: 'Segnale decaduto (prezzo fuori range o timeout)',   count: ps.pb_decayed ?? 0,       pct: (ps.pb_activated ?? 0) > 0 ? pct(ps.pb_decayed ?? 0, ps.pb_activated!) : 0, note: (ps.pb_activated ?? 0) > 0 ? `${pct(ps.pb_decayed ?? 0, ps.pb_activated!)}% delle attivazioni` : undefined },
+      ],
+    }] : []),
+    // Bounce-Fade: shown when enabled or when it actually fired
+    ...((isOn('bf_created') || (ps.bf_created ?? 0) > 0) ? [{
+      title: 'Bounce-Fade Entry',
+      color: 'border-rose-200 dark:border-rose-500/20',
+      dot: 'bg-rose-500',
+      rows: [
+        { key: 'bf_created',        label: 'Pending creati (segnali controtendenza)',           count: ps.bf_created ?? 0,        pct: trades > 0 ? pct(ps.bf_created ?? 0, trades) : 0, note: trades > 0 ? `${pct(ps.bf_created ?? 0, trades)}% dei trade` : undefined },
+        { key: 'bf_filled_limit',   label: 'Fill al limite (entry migliore, SL stretto)',       count: ps.bf_filled_limit ?? 0,   pct: (ps.bf_created ?? 0) > 0 ? pct(ps.bf_filled_limit ?? 0, ps.bf_created!) : 0, note: (ps.bf_created ?? 0) > 0 ? `${pct(ps.bf_filled_limit ?? 0, ps.bf_created!)}% dei pending` : undefined },
+        { key: 'bf_market_fallback',label: 'Fallback a mercato (segnale persistente)',          count: ps.bf_market_fallback ?? 0,pct: (ps.bf_created ?? 0) > 0 ? pct(ps.bf_market_fallback ?? 0, ps.bf_created!) : 0, note: (ps.bf_created ?? 0) > 0 ? `${pct(ps.bf_market_fallback ?? 0, ps.bf_created!)}% dei pending` : undefined },
+        { key: 'bf_abandoned',      label: 'Annullati (R:R sotto soglia o no fallback)',        count: ps.bf_abandoned ?? 0,      pct: (ps.bf_created ?? 0) > 0 ? pct(ps.bf_abandoned ?? 0, ps.bf_created!) : 0, note: (ps.bf_created ?? 0) > 0 ? `${pct(ps.bf_abandoned ?? 0, ps.bf_created!)}% dei pending` : undefined },
       ],
     }] : []),
     // Reversal: shown when enabled OR when conflict blocks fired (guard_only case: rev_signals=0 but conflict_block>0)
@@ -1764,6 +1802,16 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   const [pullbackZoneAtr,       setPullbackZoneAtr]       = useState('0.3');
   const [pullbackWindowH,       setPullbackWindowH]       = useState('3');
   const [pullbackFallbackAtr,   setPullbackFallbackAtr]   = useState('0.5');
+  // Bounce-Fade Entry
+  const [bounceFadeEnabled,     setBounceFadeEnabled]     = useState(false);
+  const [bounceFadeCounterOnly, setBounceFadeCounterOnly] = useState(true);
+  const [bounceFadePenetration, setBounceFadePenetration] = useState('50');  // shown as %
+  const [bounceFadeOffsetAtr,   setBounceFadeOffsetAtr]   = useState('0.5');
+  const [bounceFadeWindow,      setBounceFadeWindow]      = useState('2');
+  const [bounceFadeFallback,    setBounceFadeFallback]    = useState(true);
+  const [bounceFadeMinRr,       setBounceFadeMinRr]       = useState('1.5');
+  const [bounceFadeSlBuffer,    setBounceFadeSlBuffer]    = useState('0.3');
+  const [bounceFadeSlMin,       setBounceFadeSlMin]       = useState('0.8');
   // Reversal Zone Detector
   const [reversalEnabled,       setReversalEnabled]       = useState(false);
   const [reversalScoreThresh,   setReversalScoreThresh]   = useState('0.34');   // recal on BTC 4H 3y (2023-26): P99=0.40, max=0.53; 0.38 fired only 1.0% of bars
@@ -1786,6 +1834,26 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   const [atrPctGateEnabled, setAtrPctGateEnabled] = useState(false);
   const [atrPctMin,         setAtrPctMin]         = useState('0.8');  // shown as % in UI
   const [atrPctMode,        setAtrPctMode]         = useState<'block' | 'scale'>('scale');
+  // Squeeze Protection Gates — OI Spike
+  const [oiSpikeGateEnabled, setOiSpikeGateEnabled] = useState(false);
+  const [oiSpikeThr,         setOiSpikeThr]         = useState('2.0');
+  const [oiSpikeMode,        setOiSpikeMode]        = useState<'block' | 'scale'>('scale');
+  const [oiSpikeLookback,    setOiSpikeLookback]    = useState('2');
+  // Squeeze Protection Gates — Long/Short Ratio
+  const [lsGateEnabled,      setLsGateEnabled]      = useState(false);
+  const [lsLongBlockPct,     setLsLongBlockPct]     = useState('67');
+  const [lsShortBlockPct,    setLsShortBlockPct]    = useState('33');
+  const [lsGateMode,         setLsGateMode]         = useState<'block' | 'scale'>('scale');
+  const [lsGateScaleFactor,  setLsGateScaleFactor]  = useState('0.50');
+  // Squeeze Protection Gates — Liquidation Spike
+  const [liqSpikeGateEnabled, setLiqSpikeGateEnabled] = useState(false);
+  const [liqSpikeThr,         setLiqSpikeThr]         = useState('2.5');
+  const [liqSpikeLookback,    setLiqSpikeLookback]    = useState('2');
+  const [liqSpikeMode,        setLiqSpikeMode]        = useState<'block' | 'scale'>('block');
+  const [liqSpikeScaleFactor, setLiqSpikeScaleFactor] = useState('0.40');
+  // Weekend Gate
+  const [weekendBlockSaturday, setWeekendBlockSaturday] = useState(false);
+  const [weekendBlockSunday,   setWeekendBlockSunday]   = useState(false);
   // 1H LightGBM Gate
   const [use1hGate,            setUse1hGate]            = useState(false);
   const [lgbm1hMinAgreement,   setLgbm1hMinAgreement]   = useState('52');   // shown as %
@@ -1945,6 +2013,16 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     if (p.pullback_zone_atr          !== undefined) setPullbackZoneAtr(String(p.pullback_zone_atr));
     if (p.pullback_window_h          !== undefined) setPullbackWindowH(String(p.pullback_window_h));
     if (p.pullback_fallback_atr      !== undefined) setPullbackFallbackAtr(String(p.pullback_fallback_atr));
+    // Bounce-Fade Entry
+    if (p.bounce_fade_enabled            !== undefined) setBounceFadeEnabled(!!p.bounce_fade_enabled);
+    if (p.bounce_fade_counter_trend_only !== undefined) setBounceFadeCounterOnly(!!p.bounce_fade_counter_trend_only);
+    if (p.bounce_fade_penetration_pct    !== undefined) setBounceFadePenetration(String(Math.round(p.bounce_fade_penetration_pct * 100)));
+    if (p.bounce_fade_offset_atr         !== undefined) setBounceFadeOffsetAtr(String(p.bounce_fade_offset_atr));
+    if (p.bounce_fade_window_bars        !== undefined) setBounceFadeWindow(String(p.bounce_fade_window_bars));
+    if (p.bounce_fade_market_fallback    !== undefined) setBounceFadeFallback(!!p.bounce_fade_market_fallback);
+    if (p.bounce_fade_min_rr             !== undefined) setBounceFadeMinRr(String(p.bounce_fade_min_rr));
+    if (p.bounce_fade_sl_buffer_atr      !== undefined) setBounceFadeSlBuffer(String(p.bounce_fade_sl_buffer_atr));
+    if (p.bounce_fade_sl_min_atr         !== undefined) setBounceFadeSlMin(String(p.bounce_fade_sl_min_atr));
     // Reversal Zone Detector
     if (p.reversal_mode_enabled        !== undefined) setReversalEnabled(!!p.reversal_mode_enabled);
     if (p.reversal_score_threshold     !== undefined) setReversalScoreThresh(String(p.reversal_score_threshold));
@@ -1966,6 +2044,24 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     if (p.atr_pct_gate_enabled         !== undefined) setAtrPctGateEnabled(!!p.atr_pct_gate_enabled);
     if (p.atr_pct_min                  !== undefined) setAtrPctMin(String(Math.round(p.atr_pct_min * 1000) / 10));
     if (p.atr_pct_mode                 !== undefined) setAtrPctMode(p.atr_pct_mode as 'block' | 'scale');
+    // Squeeze Protection Gates
+    if (p.oi_spike_gate_enabled        !== undefined) setOiSpikeGateEnabled(!!p.oi_spike_gate_enabled);
+    if (p.oi_spike_thr                 !== undefined) setOiSpikeThr(String(p.oi_spike_thr));
+    if (p.oi_spike_mode                !== undefined) setOiSpikeMode(p.oi_spike_mode as 'block' | 'scale');
+    if (p.oi_spike_lookback            !== undefined) setOiSpikeLookback(String(p.oi_spike_lookback));
+    if (p.ls_gate_enabled              !== undefined) setLsGateEnabled(!!p.ls_gate_enabled);
+    if (p.ls_long_block_pct            !== undefined) setLsLongBlockPct(String(p.ls_long_block_pct));
+    if (p.ls_short_block_pct           !== undefined) setLsShortBlockPct(String(p.ls_short_block_pct));
+    if (p.ls_gate_mode                 !== undefined) setLsGateMode(p.ls_gate_mode as 'block' | 'scale');
+    if (p.ls_gate_scale_factor         !== undefined) setLsGateScaleFactor(String(p.ls_gate_scale_factor));
+    if (p.liq_spike_gate_enabled       !== undefined) setLiqSpikeGateEnabled(!!p.liq_spike_gate_enabled);
+    if (p.liq_spike_thr                !== undefined) setLiqSpikeThr(String(p.liq_spike_thr));
+    if (p.liq_spike_lookback           !== undefined) setLiqSpikeLookback(String(p.liq_spike_lookback));
+    if (p.liq_spike_mode               !== undefined) setLiqSpikeMode(p.liq_spike_mode as 'block' | 'scale');
+    if (p.liq_spike_scale_factor       !== undefined) setLiqSpikeScaleFactor(String(p.liq_spike_scale_factor));
+    // Weekend Gate
+    if (p.weekend_gate_block_saturday  !== undefined) setWeekendBlockSaturday(!!p.weekend_gate_block_saturday);
+    if (p.weekend_gate_block_sunday    !== undefined) setWeekendBlockSunday(!!p.weekend_gate_block_sunday);
     if (p.use_1h_lgbm_gate             !== undefined) setUse1hGate(!!p.use_1h_lgbm_gate);
     if (p.lgbm_1h_min_agreement        !== undefined) setLgbm1hMinAgreement(String(Math.round(p.lgbm_1h_min_agreement * 100)));
     if (p.lgbm_1h_block_threshold      !== undefined) setLgbm1hBlockThreshold(String(Math.round(p.lgbm_1h_block_threshold * 100)));
@@ -2224,6 +2320,15 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     // Binance Cross-Exchange CVD
     binance_cvd_enabled:           binanceCvd,
     // Pullback Entry
+    bounce_fade_enabled:            bounceFadeEnabled,
+    bounce_fade_counter_trend_only: bounceFadeCounterOnly,
+    bounce_fade_penetration_pct:    parseFloat(bounceFadePenetration) / 100,
+    bounce_fade_offset_atr:         parseFloat(bounceFadeOffsetAtr),
+    bounce_fade_window_bars:        parseInt(bounceFadeWindow),
+    bounce_fade_market_fallback:    bounceFadeFallback,
+    bounce_fade_min_rr:             parseFloat(bounceFadeMinRr),
+    bounce_fade_sl_buffer_atr:      parseFloat(bounceFadeSlBuffer),
+    bounce_fade_sl_min_atr:         parseFloat(bounceFadeSlMin),
     pullback_entry_enabled:        pullbackEnabled,
     pullback_impulse_atr_mult:     parseFloat(pullbackImpulseAtr),
     pullback_zone_atr:             parseFloat(pullbackZoneAtr),
@@ -2254,6 +2359,24 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     lgbm_1h_block_threshold:       parseFloat(lgbm1hBlockThreshold) / 100,
     atr_pct_min:                   parseFloat(atrPctMin) / 100,
     atr_pct_mode:                  atrPctMode,
+    // Squeeze Protection Gates
+    oi_spike_gate_enabled:         oiSpikeGateEnabled,
+    oi_spike_thr:                  parseFloat(oiSpikeThr),
+    oi_spike_mode:                 oiSpikeMode,
+    oi_spike_lookback:             parseInt(oiSpikeLookback),
+    ls_gate_enabled:               lsGateEnabled,
+    ls_long_block_pct:             parseFloat(lsLongBlockPct),
+    ls_short_block_pct:            parseFloat(lsShortBlockPct),
+    ls_gate_mode:                  lsGateMode,
+    ls_gate_scale_factor:          parseFloat(lsGateScaleFactor),
+    liq_spike_gate_enabled:        liqSpikeGateEnabled,
+    liq_spike_thr:                 parseFloat(liqSpikeThr),
+    liq_spike_lookback:            parseInt(liqSpikeLookback),
+    liq_spike_mode:                liqSpikeMode,
+    liq_spike_scale_factor:        parseFloat(liqSpikeScaleFactor),
+    // Weekend Gate
+    weekend_gate_block_saturday:   weekendBlockSaturday,
+    weekend_gate_block_sunday:     weekendBlockSunday,
   });
 
   const downloadConfig = () => {
@@ -2316,6 +2439,10 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
       `Path Obstruction Gate:  ${pathObstruction ? `ATTIVO — max dist contrario ${pathObstMaxDist} ATR` : 'DISATTIVATO'}`,
       `Consecutive Bars Filter:${consecBarsFilter ? ` ATTIVO — max long ${consecBarsMaxLong} bar | max short ${consecBarsMaxShort} bar` : ' DISATTIVATO'}`,
       `ATR% Volatility Gate:   ${atrPctGateEnabled ? `ATTIVO — soglia ${atrPctMin}% · modalità ${atrPctMode === 'block' ? 'Blocco Netto' : 'Riduzione Graduale'}` : 'DISATTIVATO'}`,
+      `OI Spike Gate:          ${oiSpikeGateEnabled ? `ATTIVO — soglia ${oiSpikeThr}σ · lookback ${oiSpikeLookback} bar · ${oiSpikeMode === 'block' ? 'Blocco' : 'Scale'}` : 'DISATTIVATO'}`,
+      `Long/Short Ratio Gate:  ${lsGateEnabled ? `ATTIVO — block SHORT ≥${lsLongBlockPct}% · block LONG ≤${lsShortBlockPct}% · ${lsGateMode === 'block' ? 'Blocco' : `Scale ×${lsGateScaleFactor}`}` : 'DISATTIVATO'}`,
+      `Liquidation Spike Gate: ${liqSpikeGateEnabled ? `ATTIVO — soglia ${liqSpikeThr}σ · lookback ${liqSpikeLookback} bar · ${liqSpikeMode === 'block' ? 'Blocco' : `Scale ×${liqSpikeScaleFactor}`}` : 'DISATTIVATO'}`,
+      `Weekend Gate:           ${(weekendBlockSaturday || weekendBlockSunday) ? `ATTIVO — blocca ${[weekendBlockSaturday && 'Sabato', weekendBlockSunday && 'Domenica'].filter(Boolean).join(' + ')} (UTC)` : 'DISATTIVATO'}`,
       `1H Gate (LightGBM):     ${use1hGate ? `ATTIVO — blocco <${lgbm1hBlockThreshold}% · riduzione <${lgbm1hMinAgreement}%` : 'DISATTIVATO'}`,
       '',
       '━━━ BIAS DI MERCATO ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
@@ -2326,6 +2453,7 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
       `Binance Cross-Exchange CVD: ${binanceCvd ? 'ATTIVO (taker_buy_vol → binance_cvd_slope, binance_absorption_z, cross_cvd_div)' : 'DISATTIVATO'}`,
       '',
       '━━━ PULLBACK ENTRY ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
+      `Bounce-Fade Entry:      ${bounceFadeEnabled ? `ATTIVO — penetration ${bounceFadePenetration}% · cap ${bounceFadeOffsetAtr}×ATR · window ${bounceFadeWindow} bar · ${bounceFadeFallback ? 'fallback mercato' : 'no fallback'} · minR:R ${bounceFadeMinRr}${bounceFadeCounterOnly ? ' · solo controtrend' : ''}` : 'DISATTIVATO'}`,
       `Pullback Entry:         ${pullbackEnabled ? 'ATTIVO' : 'DISATTIVATO'}`,
       `Reversal Detector:      ${reversalEnabled ? 'ATTIVO' : 'DISATTIVATO'}`,
       ...(reversalEnabled ? [
@@ -3712,6 +3840,128 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                       </div>
                     )}
                   </div>
+                  {/* ── Squeeze Protection Gates ── */}
+                  {/* OI Spike Gate */}
+                  <div className="space-y-3">
+                    <Toggle
+                      label="OI Spike Gate (Squeeze Protection)"
+                      desc="Blocca o riduce la size quando oi_delta_z supera la soglia (crowding direzionale veloce). Per SHORT: OI in rapida crescita = short affollati = rischio squeeze. Per LONG: OI in rapido calo = long in liquidazione."
+                      checked={oiSpikeGateEnabled}
+                      onChange={setOiSpikeGateEnabled}
+                    />
+                    {oiSpikeGateEnabled && (
+                      <div className="pl-1 flex flex-col gap-3">
+                        <Tooltip text="Soglia z-score di oi_delta_z oltre cui il gate si attiva. Default 2.0σ ≈ il 2% delle barre più estreme." pos="top" width="wide">
+                          <NumInput label="Soglia z-score OI" value={oiSpikeThr} onChange={setOiSpikeThr} step="0.1" min="1.0" max="4.0" unit="σ" />
+                        </Tooltip>
+                        <Tooltip text="Numero di barre 4H da considerare (usa il massimo |oi_delta_z| sulle ultime N barre via lag features). Default 2 = barra corrente + precedente (8h)." pos="top" width="wide">
+                          <NumInput label="Lookback" value={oiSpikeLookback} onChange={setOiSpikeLookback} step="1" min="1" max="6" unit="bar" />
+                        </Tooltip>
+                        <div className="flex flex-col gap-1.5">
+                          <span className="text-[9px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest">Modalità di risposta</span>
+                          <div className="flex gap-2">
+                            {(['scale', 'block'] as const).map(m => (
+                              <button key={m} onClick={() => setOiSpikeMode(m)}
+                                className={`flex-1 py-1.5 px-2 rounded-lg text-[10px] font-bold border transition-all ${oiSpikeMode === m
+                                  ? m === 'scale' ? 'bg-amber-500 text-white border-amber-500' : 'bg-red-500 text-white border-red-500'
+                                  : 'bg-white dark:bg-white/5 text-slate-500 border-slate-200 dark:border-white/10'}`}>
+                                {m === 'scale' ? '📉 Riduzione Graduale' : '🚫 Blocco Netto'}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                  {/* Long/Short Ratio Gate */}
+                  <div className="space-y-3">
+                    <Toggle
+                      label="Long/Short Ratio Gate (Squeeze Protection)"
+                      desc="Blocca o riduce la size quando il mercato è eccessivamente posizionato in una direzione (dato Coinalyze L/S). Mercato over-long ≥67% → rischio short squeeze. Disponibile solo per gli ultimi 90 giorni; oltre, il gate resta neutro."
+                      checked={lsGateEnabled}
+                      onChange={setLsGateEnabled}
+                    />
+                    {lsGateEnabled && (
+                      <div className="pl-1 flex flex-col gap-3">
+                        <Tooltip text="Blocca/riduce SHORT quando la % di account long ≥ questa soglia. Default 67% = P75 degli ultimi 90 giorni BTC." pos="top" width="wide">
+                          <NumInput label="Block SHORT se long ≥" value={lsLongBlockPct} onChange={setLsLongBlockPct} step="1" min="55" max="80" unit="%" />
+                        </Tooltip>
+                        <Tooltip text="Blocca/riduce LONG quando la % di account long ≤ questa soglia (mercato over-short). Default 33% simmetrico." pos="top" width="wide">
+                          <NumInput label="Block LONG se long ≤" value={lsShortBlockPct} onChange={setLsShortBlockPct} step="1" min="20" max="45" unit="%" />
+                        </Tooltip>
+                        {lsGateMode === 'scale' && (
+                          <Tooltip text="Fattore di riduzione della size in modalità Scale. Default ×0.50 = dimezza la size." pos="top" width="wide">
+                            <NumInput label="Scale factor" value={lsGateScaleFactor} onChange={setLsGateScaleFactor} step="0.05" min="0.20" max="0.80" unit="×" />
+                          </Tooltip>
+                        )}
+                        <div className="flex flex-col gap-1.5">
+                          <span className="text-[9px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest">Modalità di risposta</span>
+                          <div className="flex gap-2">
+                            {(['scale', 'block'] as const).map(m => (
+                              <button key={m} onClick={() => setLsGateMode(m)}
+                                className={`flex-1 py-1.5 px-2 rounded-lg text-[10px] font-bold border transition-all ${lsGateMode === m
+                                  ? m === 'scale' ? 'bg-amber-500 text-white border-amber-500' : 'bg-red-500 text-white border-red-500'
+                                  : 'bg-white dark:bg-white/5 text-slate-500 border-slate-200 dark:border-white/10'}`}>
+                                {m === 'scale' ? '📉 Riduzione Graduale' : '🚫 Blocco Netto'}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                  {/* Liquidation Spike Gate */}
+                  <div className="space-y-3">
+                    <Toggle
+                      label="Liquidation Spike Gate (Squeeze Protection)"
+                      desc="Blocca o riduce la size quando liq_short_z (per SHORT) o liq_long_z (per LONG) supera la soglia: uno squeeze è già in corso o appena terminato. Default modalità Blocco."
+                      checked={liqSpikeGateEnabled}
+                      onChange={setLiqSpikeGateEnabled}
+                    />
+                    {liqSpikeGateEnabled && (
+                      <div className="pl-1 flex flex-col gap-3">
+                        <Tooltip text="Soglia z-score delle liquidazioni oltre cui il gate si attiva. Default 2.5σ = solo spike davvero anomali." pos="top" width="wide">
+                          <NumInput label="Soglia z-score Liq" value={liqSpikeThr} onChange={setLiqSpikeThr} step="0.1" min="1.5" max="5.0" unit="σ" />
+                        </Tooltip>
+                        <Tooltip text="Barre 4H da esaminare (corrente + lag-1). Default 2." pos="top" width="wide">
+                          <NumInput label="Lookback" value={liqSpikeLookback} onChange={setLiqSpikeLookback} step="1" min="1" max="6" unit="bar" />
+                        </Tooltip>
+                        {liqSpikeMode === 'scale' && (
+                          <Tooltip text="Fattore di riduzione della size in modalità Scale. Default ×0.40." pos="top" width="wide">
+                            <NumInput label="Scale factor" value={liqSpikeScaleFactor} onChange={setLiqSpikeScaleFactor} step="0.05" min="0.20" max="0.80" unit="×" />
+                          </Tooltip>
+                        )}
+                        <div className="flex flex-col gap-1.5">
+                          <span className="text-[9px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest">Modalità di risposta</span>
+                          <div className="flex gap-2">
+                            {(['block', 'scale'] as const).map(m => (
+                              <button key={m} onClick={() => setLiqSpikeMode(m)}
+                                className={`flex-1 py-1.5 px-2 rounded-lg text-[10px] font-bold border transition-all ${liqSpikeMode === m
+                                  ? m === 'scale' ? 'bg-amber-500 text-white border-amber-500' : 'bg-red-500 text-white border-red-500'
+                                  : 'bg-white dark:bg-white/5 text-slate-500 border-slate-200 dark:border-white/10'}`}>
+                                {m === 'scale' ? '📉 Riduzione Graduale' : '🚫 Blocco Netto'}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                  {/* Weekend Gate */}
+                  <div className="space-y-3">
+                    <Toggle
+                      label="Weekend Gate — Blocca Sabato"
+                      desc="Blocca l'apertura di nuovi trade il sabato (orario UTC). Mercati tradizionali chiusi → liquidità sottile e movimenti anomali. Non chiude le posizioni aperte."
+                      checked={weekendBlockSaturday}
+                      onChange={setWeekendBlockSaturday}
+                    />
+                    <Toggle
+                      label="Weekend Gate — Blocca Domenica"
+                      desc="Blocca l'apertura di nuovi trade la domenica (orario UTC). Stessa logica del sabato. I due toggle sono indipendenti: puoi attivarne uno, l'altro o entrambi."
+                      checked={weekendBlockSunday}
+                      onChange={setWeekendBlockSunday}
+                    />
+                  </div>
                   {/* 1H LightGBM Gate */}
                   <div className="space-y-3">
                     <Toggle
@@ -3752,6 +4002,46 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                     checked={binanceCvd}
                     onChange={setBinanceCvd}
                   />
+                </div>
+              </section>
+
+              {/* ── Bounce-Fade Entry ───────────────────────────────────────────── */}
+              <section className="space-y-5">
+                <h4 className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest flex items-center gap-2">
+                  <span className="w-1.5 h-1.5 rounded-full bg-rose-500" />
+                  Bounce-Fade Entry
+                </h4>
+                <div className="space-y-4 bg-slate-50 dark:bg-white/[0.02] p-4 rounded-2xl border border-slate-100 dark:border-white/5">
+                  <Toggle
+                    label="Bounce-Fade Entry — Entry su Rimbalzi Controtendenza"
+                    desc="Su segnali controtendenza (es. short mentre il 4H rimbalza), invece di entrare subito piazza un limite ancorato alla resistenza sovrastante: entry più alto, SL stretto, R:R migliore. Fallback a mercato a scadenza se il segnale persiste. Backtestabile (fill intrabar)."
+                    checked={bounceFadeEnabled}
+                    onChange={setBounceFadeEnabled}
+                  />
+                  {bounceFadeEnabled && (
+                    <div className="space-y-4 pt-1">
+                      <Tooltip text="Frazione della distanza verso la resistenza a cui piazzare il limite. 50% = a metà strada. Più basso = riempie più spesso (entry meno ottimale); più alto = entry migliore ma più fallback. Default 50%." pos="top" width="wide">
+                        <NumInput label="Penetration verso resistenza" value={bounceFadePenetration} onChange={setBounceFadePenetration} step="5" min="20" max="80" unit="%" />
+                      </Tooltip>
+                      <Tooltip text="Cap massimo in ATR: il limite non si allontana più di N×ATR dal prezzo, anche se la resistenza è lontana. Rete di sicurezza per garantire fill. Default 0.5×ATR." pos="top" width="wide">
+                        <NumInput label="Cap offset (×ATR)" value={bounceFadeOffsetAtr} onChange={setBounceFadeOffsetAtr} step="0.1" min="0.2" max="1.5" unit="×ATR" />
+                      </Tooltip>
+                      <Tooltip text="Candele 4H di attesa prima della scadenza. 2 = 8h. Alla scadenza: fallback a mercato (se attivo) o annulla. Default 2." pos="top" width="wide">
+                        <NumInput label="Finestra (candele 4H)" value={bounceFadeWindow} onChange={setBounceFadeWindow} step="1" min="1" max="4" />
+                      </Tooltip>
+                      <Tooltip text="R:R minimo per accettare il fill al limite. Se il rimbalzo lascia un R:R sotto soglia, il trade viene annullato. Default 1.5." pos="top" width="wide">
+                        <NumInput label="R:R minimo" value={bounceFadeMinRr} onChange={setBounceFadeMinRr} step="0.1" min="1.0" max="3.0" />
+                      </Tooltip>
+                      <Tooltip text="Buffer SL sopra la resistenza, in ATR. Default 0.3×ATR." pos="top" width="wide">
+                        <NumInput label="Buffer SL (×ATR)" value={bounceFadeSlBuffer} onChange={setBounceFadeSlBuffer} step="0.1" min="0.1" max="1.0" unit="×ATR" />
+                      </Tooltip>
+                      <Tooltip text="Distanza minima dello SL dall'entry, in ATR (anti-rumore). Lo SL non sarà mai più stretto di questo. Default 0.8×ATR." pos="top" width="wide">
+                        <NumInput label="SL minimo (×ATR floor)" value={bounceFadeSlMin} onChange={setBounceFadeSlMin} step="0.1" min="0.1" max="1.5" unit="×ATR" />
+                      </Tooltip>
+                      <Toggle label="Solo segnali controtendenza" desc="Attiva il bounce-fade solo quando il segnale è opposto al momentum recente (ret_6). Se OFF, si applica a tutti i segnali." checked={bounceFadeCounterOnly} onChange={setBounceFadeCounterOnly} />
+                      <Toggle label="Fallback a mercato alla scadenza" desc="Se il limite non viene raggiunto entro la finestra e il segnale è ancora valido, entra comunque a mercato. Garantisce di non perdere segnali persistenti." checked={bounceFadeFallback} onChange={setBounceFadeFallback} />
+                    </div>
+                  )}
                 </div>
               </section>
 

@@ -173,6 +173,119 @@ async def get_coinalyze_oi(
         return pd.DataFrame()
 
 
+async def get_coinalyze_ls(
+    symbol: str = "BTC",
+    interval: str = "4hour",
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+) -> pd.DataFrame:
+    """
+    Fetch Long/Short ratio history from Coinalyze.
+    Returns DataFrame indexed by UTC timestamp with columns:
+      long_pct  — % of accounts holding long positions
+      short_pct — % of accounts holding short positions
+      ls_ratio  — long_pct / short_pct
+    """
+    if not COINALYZE_KEY:
+        log.warning("COINALYZE_API_KEY not set — returning empty L/S ratio")
+        return pd.DataFrame()
+
+    end_ts   = int((datetime.strptime(end_date, "%Y-%m-%d")
+                    .replace(tzinfo=timezone.utc).timestamp())) if end_date \
+               else int(datetime.now(timezone.utc).timestamp())
+    start_ts = int((datetime.strptime(start_date, "%Y-%m-%d")
+                    .replace(tzinfo=timezone.utc).timestamp())) if start_date \
+               else end_ts - 90 * 86400
+
+    coinalyze_symbol = f"{symbol}USDT_PERP.A"
+    try:
+        async with httpx.AsyncClient(base_url=COINALYZE_BASE, timeout=20.0) as client:
+            resp = await client.get(
+                "/long-short-ratio-history",
+                params={
+                    "symbols":  coinalyze_symbol,
+                    "interval": interval,
+                    "from":     start_ts,
+                    "to":       end_ts,
+                },
+                headers={"api_key": COINALYZE_KEY},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+        if not data or not isinstance(data, list) or not data[0].get("history"):
+            return pd.DataFrame()
+
+        rows = data[0]["history"]
+        df = pd.DataFrame([{
+            "time":      pd.Timestamp(int(r["t"]), unit="s", tz="UTC"),
+            "long_pct":  float(r["l"]),   # % long accounts
+            "short_pct": float(r["s"]),   # % short accounts
+            "ls_ratio":  float(r["r"]),   # long/short ratio
+        } for r in rows]).set_index("time").sort_index()
+        log.info("Coinalyze L/S %s: %d rows", symbol, len(df))
+        return df
+
+    except Exception as e:
+        log.warning("Coinalyze L/S fetch failed: %s", e)
+        return pd.DataFrame()
+
+
+async def get_coinalyze_liq(
+    symbol: str = "BTC",
+    interval: str = "4hour",
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+) -> pd.DataFrame:
+    """
+    Fetch liquidation history from Coinalyze.
+    Returns DataFrame indexed by UTC timestamp with columns:
+      liq_long  — long liquidations (USD)
+      liq_short — short liquidations (USD)
+    """
+    if not COINALYZE_KEY:
+        return pd.DataFrame()
+
+    end_ts   = int((datetime.strptime(end_date, "%Y-%m-%d")
+                    .replace(tzinfo=timezone.utc).timestamp())) if end_date \
+               else int(datetime.now(timezone.utc).timestamp())
+    start_ts = int((datetime.strptime(start_date, "%Y-%m-%d")
+                    .replace(tzinfo=timezone.utc).timestamp())) if start_date \
+               else end_ts - 90 * 86400
+
+    coinalyze_symbol = f"{symbol}USDT_PERP.A"
+    try:
+        async with httpx.AsyncClient(base_url=COINALYZE_BASE, timeout=20.0) as client:
+            resp = await client.get(
+                "/liquidation-history",
+                params={
+                    "symbols":  coinalyze_symbol,
+                    "interval": interval,
+                    "from":     start_ts,
+                    "to":       end_ts,
+                },
+                headers={"api_key": COINALYZE_KEY},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+        if not data or not isinstance(data, list) or not data[0].get("history"):
+            return pd.DataFrame()
+
+        rows = data[0]["history"]
+        df = pd.DataFrame([{
+            "time":      pd.Timestamp(int(r["t"]), unit="s", tz="UTC"),
+            "liq_long":  float(r.get("l", 0)),    # long liquidations (USD)
+            "liq_short": float(r.get("s", 0)),    # short liquidations (USD)
+        } for r in rows]).set_index("time").sort_index()
+        log.info("Coinalyze liquidations %s: %d rows", symbol, len(df))
+        return df
+
+    except Exception as e:
+        log.warning("Coinalyze liquidation fetch failed: %s", e)
+        return pd.DataFrame()
+
+
 async def get_best_oi(symbol: str = "BTC", start_date: Optional[str] = None, end_date: Optional[str] = None) -> pd.DataFrame:
     """Coinalyze is primary (reliable); Coinglass as fallback."""
     df = await get_coinalyze_oi(symbol, start_date=start_date, end_date=end_date)

@@ -26,6 +26,15 @@ HL_TAKER_FEE = 0.00035   # 0.035% per trade side
 FUNDING_INTERVAL_BARS = 2  # funding paid every 2×4h bars (8h cycle)
 
 
+def _safe_px(v) -> Optional[float]:
+    """Return a positive float price level from a feature value, or None."""
+    try:
+        f = float(v)
+        return f if (f > 0 and not math.isnan(f) and not math.isinf(f)) else None
+    except (TypeError, ValueError):
+        return None
+
+
 async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> dict:
     """
     Main entry point, called from FastAPI /backtest endpoint.
@@ -128,6 +137,27 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
     atr_pct_gate_enabled  = getattr(cfg, "atr_pct_gate_enabled",  False)
     atr_pct_min           = getattr(cfg, "atr_pct_min",           0.008)
     atr_pct_mode          = getattr(cfg, "atr_pct_mode",          "scale")
+    # Squeeze Protection Gates — OI Spike
+    oi_spike_gate_enabled = getattr(cfg, "oi_spike_gate_enabled", False)
+    oi_spike_thr          = getattr(cfg, "oi_spike_thr",          2.0)
+    oi_spike_mode         = getattr(cfg, "oi_spike_mode",         "scale")
+    oi_spike_lookback     = getattr(cfg, "oi_spike_lookback",     2)
+    # Squeeze Protection Gates — Long/Short Ratio
+    ls_gate_enabled       = getattr(cfg, "ls_gate_enabled",       False)
+    ls_long_block_pct     = getattr(cfg, "ls_long_block_pct",     67.0)
+    ls_short_block_pct    = getattr(cfg, "ls_short_block_pct",    33.0)
+    ls_gate_mode          = getattr(cfg, "ls_gate_mode",          "scale")
+    ls_gate_scale_factor  = getattr(cfg, "ls_gate_scale_factor",  0.50)
+    ls_lookback_bars      = getattr(cfg, "ls_lookback_bars",      1)
+    # Squeeze Protection Gates — Liquidation Spike
+    liq_spike_gate_enabled = getattr(cfg, "liq_spike_gate_enabled", False)
+    liq_spike_thr          = getattr(cfg, "liq_spike_thr",          2.5)
+    liq_spike_lookback     = getattr(cfg, "liq_spike_lookback",     2)
+    liq_spike_mode         = getattr(cfg, "liq_spike_mode",         "block")
+    liq_spike_scale_factor = getattr(cfg, "liq_spike_scale_factor", 0.40)
+    # Weekend Gate
+    weekend_gate_block_saturday = getattr(cfg, "weekend_gate_block_saturday", False)
+    weekend_gate_block_sunday   = getattr(cfg, "weekend_gate_block_sunday",   False)
     # 1H LightGBM Gate
     use_1h_lgbm_gate_bt        = getattr(cfg, "use_1h_lgbm_gate",          False)
     lgbm_1h_min_agreement_bt   = getattr(cfg, "lgbm_1h_min_agreement",     0.52)
@@ -155,6 +185,16 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
     pullback_zone_atr         = getattr(cfg, "pullback_zone_atr",         0.3)
     pullback_window_h         = getattr(cfg, "pullback_window_h",         3)
     pullback_fallback_atr     = getattr(cfg, "pullback_fallback_atr",     0.5)
+    # Bounce-Fade Entry
+    bounce_fade_enabled       = getattr(cfg, "bounce_fade_enabled",            False)
+    bounce_fade_counter_only  = getattr(cfg, "bounce_fade_counter_trend_only", True)
+    bounce_fade_penetration   = getattr(cfg, "bounce_fade_penetration_pct",    0.50)
+    bounce_fade_offset_atr    = getattr(cfg, "bounce_fade_offset_atr",         0.50)
+    bounce_fade_window        = getattr(cfg, "bounce_fade_window_bars",        2)
+    bounce_fade_fallback      = getattr(cfg, "bounce_fade_market_fallback",    True)
+    bounce_fade_min_rr        = getattr(cfg, "bounce_fade_min_rr",             1.5)
+    bounce_fade_sl_buffer     = getattr(cfg, "bounce_fade_sl_buffer_atr",      0.30)
+    bounce_fade_sl_min        = getattr(cfg, "bounce_fade_sl_min_atr",         0.80)
     # Reversal Zone Detector
     reversal_mode_enabled        = getattr(cfg, "reversal_mode_enabled",        False)
     # Fallbacks MUST match the BotConfig pydantic defaults (apps/api/main.py).
@@ -234,6 +274,25 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
         log.warning("External data fetch failed (non-blocking): %s", e)
         df_oi  = pd.DataFrame()
         df_liq = pd.DataFrame()
+
+    # ── Long/Short ratio (Coinalyze) — feed Long/Short Ratio Gate ────────────
+    df_ls_bt = pd.DataFrame()
+    if ls_gate_enabled:
+        try:
+            from services.external_data import get_coinalyze_ls
+            df_ls_bt = await get_coinalyze_ls(symbol, start_date=req.from_date, end_date=req.to_date)
+            log.info("Backtest L/S ratio: %d rows", len(df_ls_bt))
+        except Exception as _e:
+            log.warning("Backtest L/S fetch failed: %s — gate disabled for this run", _e)
+
+    # ── Liquidation history (Coinalyze) — fallback when Coinglass empty ──────
+    if liq_spike_gate_enabled and df_liq.empty:
+        try:
+            from services.external_data import get_coinalyze_liq
+            df_liq = await get_coinalyze_liq(symbol, start_date=req.from_date, end_date=req.to_date)
+            log.info("Backtest liquidations (Coinalyze): %d rows", len(df_liq))
+        except Exception as _e:
+            log.warning("Backtest liquidation fetch failed: %s", _e)
 
     # ── 1b. Historical Fear & Greed (fetched once, cached in-process) ────────
     fng_history: dict[str, float] = {}
@@ -329,6 +388,7 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
     # ── 2. Build features ────────────────────────────────────────────────────
     df_feat = build_all_features(
         df_ohlcv, df_fund, df_oi, df_liq,
+        df_ls=df_ls_bt,
         df_binance=df_binance,
         binance_cvd_enabled=binance_cvd_enabled,
         reversal_mode_enabled=reversal_mode_enabled,
@@ -410,6 +470,24 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
         atr_pct_gate_enabled=atr_pct_gate_enabled,
         atr_pct_min=atr_pct_min,
         atr_pct_mode=atr_pct_mode,
+        # Squeeze Protection Gates
+        oi_spike_gate_enabled=oi_spike_gate_enabled,
+        oi_spike_thr=oi_spike_thr,
+        oi_spike_mode=oi_spike_mode,
+        oi_spike_lookback=oi_spike_lookback,
+        ls_gate_enabled=ls_gate_enabled,
+        ls_long_block_pct=ls_long_block_pct,
+        ls_short_block_pct=ls_short_block_pct,
+        ls_gate_mode=ls_gate_mode,
+        ls_gate_scale_factor=ls_gate_scale_factor,
+        ls_lookback_bars=ls_lookback_bars,
+        liq_spike_gate_enabled=liq_spike_gate_enabled,
+        liq_spike_thr=liq_spike_thr,
+        liq_spike_lookback=liq_spike_lookback,
+        liq_spike_mode=liq_spike_mode,
+        liq_spike_scale_factor=liq_spike_scale_factor,
+        weekend_gate_block_saturday=weekend_gate_block_saturday,
+        weekend_gate_block_sunday=weekend_gate_block_sunday,
         # Feature A: Exhaustion Guard proportional boost
         exhaustion_prop_enabled=exhaustion_prop_enabled,
         exhaustion_prop_scale=exhaustion_prop_scale,
@@ -446,6 +524,7 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
     equity        = capital
     position      = None   # {side, entry, sl, tp, size_usd, bar_idx, partial_done, entry_atr}
     pending_pb    = None   # pending pullback dict when pullback_entry_enabled
+    pending_bf    = None   # pending bounce-fade dict when bounce_fade_enabled
     pending_rev   = None   # pending reversal dict when reversal_entry_mode == "limit_retest"
     trades        = []
     equity_curve  = [{"bar": 0, "equity": equity}]
@@ -479,6 +558,15 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
         "gate_daily_rsi":           0,
         "gate_vol_climax":          0,
         "gate_1h_block":            0,
+        # Squeeze Protection Gates
+        "gate_oi_spike":            0,
+        "gate_ls_ratio":            0,
+        "gate_liq_spike":           0,
+        "mod_oi_spike_scale":       0,
+        "mod_ls_ratio_scale":       0,
+        "mod_liq_spike_scale":      0,
+        # Weekend Gate
+        "gate_weekend":             0,
         # Bias / threshold modifiers
         "mod_mtf_alignment":        0,
         "mod_regime_bias":          0,
@@ -514,6 +602,11 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
         "pb_filled_zone":           0,
         "pb_filled_fallback":       0,
         "pb_decayed":               0,
+        # Bounce-Fade Entry
+        "bf_created":               0,
+        "bf_filled_limit":          0,
+        "bf_market_fallback":       0,
+        "bf_abandoned":             0,
         # Reversal Zone Detector
         "rev_signals":              0,
         "rev_pending_set":          0,
@@ -686,6 +779,97 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                 else:
                     param_stats["pb_decayed"] += 1
                 pending_pb = None
+
+        # ── Pending bounce-fade: check fill/expiry BEFORE funding and position mgmt ──
+        if pending_bf is not None and position is None:
+            bf       = pending_bf
+            _bf_high = float(row.get("high", row["close"]))
+            _bf_low  = float(row.get("low",  row["close"]))
+            _bf_atr  = bf["atr_at_signal"]
+            # track running bounce extreme for the SL anchor
+            bf["bounce_extreme"] = (
+                max(bf["bounce_extreme"], _bf_high) if bf["direction"] == "short"
+                else min(bf["bounce_extreme"], _bf_low)
+            )
+            _bf_reached = (
+                (bf["direction"] == "short" and _bf_high >= bf["entry_limit"]) or
+                (bf["direction"] == "long"  and _bf_low  <= bf["entry_limit"])
+            )
+
+            if _bf_reached:
+                _bf_entry = bf["entry_limit"]
+                _sl_buf   = bf["sl_buffer_atr"] * _bf_atr
+                _sl_min   = bf["sl_min_atr"]    * _bf_atr
+                if bf["direction"] == "short":
+                    _bf_sl = max(bf["bounce_extreme"], bf["resistance"]) + _sl_buf
+                    _bf_sl = max(_bf_sl, _bf_entry + _sl_min)
+                    _bf_rr = (_bf_entry - bf["orig_tp"]) / (_bf_sl - _bf_entry) if _bf_sl > _bf_entry else 0.0
+                else:
+                    _bf_sl = min(bf["bounce_extreme"], bf["resistance"]) - _sl_buf
+                    _bf_sl = min(_bf_sl, _bf_entry - _sl_min)
+                    _bf_rr = (bf["orig_tp"] - _bf_entry) / (_bf_entry - _bf_sl) if _bf_entry > _bf_sl else 0.0
+
+                if _bf_rr < bf["min_rr"]:
+                    param_stats["bf_abandoned"] += 1
+                    pending_bf = None
+                else:
+                    fee_entry = bf["orig_size_usd"] * HL_TAKER_FEE
+                    equity   -= fee_entry
+                    position  = {
+                        "side":              bf["direction"],
+                        "entry":             _bf_entry,
+                        "sl":                _bf_sl,
+                        "tp":                bf["orig_tp"],
+                        "size_usd":          bf["orig_size_usd"],
+                        "bar_idx":           i,
+                        "entry_atr":         _bf_atr,
+                        "partial_done":      False,
+                        "sl_trailing_active": False,
+                        "high_water":        _bf_entry,
+                        "be_sl_applied":     False,
+                        "lgbm_strikes":      0,
+                        "fee_entry":         fee_entry,
+                        "funding_paid":      0.0,
+                        "entry_mode":        "bounce_fade",
+                        "origin":            "trend",
+                    }
+                    param_stats["bf_filled_limit"] += 1
+                    pending_bf = None
+
+            elif i >= bf["expires_bar"]:
+                # Expiry: market fallback (re-anchored to this bar's close) or abandon
+                if bf["market_fallback"]:
+                    _fb_entry = float(row["close"])
+                    if bf["direction"] == "short":
+                        _fb_sl = _fb_entry + bf["orig_sl_dist"]
+                        _fb_tp = _fb_entry - bf["orig_tp_dist"]
+                    else:
+                        _fb_sl = _fb_entry - bf["orig_sl_dist"]
+                        _fb_tp = _fb_entry + bf["orig_tp_dist"]
+                    fee_entry = bf["orig_size_usd"] * HL_TAKER_FEE
+                    equity   -= fee_entry
+                    position  = {
+                        "side":              bf["direction"],
+                        "entry":             _fb_entry,
+                        "sl":                _fb_sl,
+                        "tp":                _fb_tp,
+                        "size_usd":          bf["orig_size_usd"],
+                        "bar_idx":           i,
+                        "entry_atr":         _bf_atr,
+                        "partial_done":      False,
+                        "sl_trailing_active": False,
+                        "high_water":        _fb_entry,
+                        "be_sl_applied":     False,
+                        "lgbm_strikes":      0,
+                        "fee_entry":         fee_entry,
+                        "funding_paid":      0.0,
+                        "entry_mode":        "bounce_fade_fallback",
+                        "origin":            "trend",
+                    }
+                    param_stats["bf_market_fallback"] += 1
+                else:
+                    param_stats["bf_abandoned"] += 1
+                pending_bf = None
 
         # Inject RegimeDetector signal — update every 4 bars (matching live cadence).
         if _bt_regime_detector is not None and i % 4 == 0 and i >= 120:
@@ -1012,6 +1196,7 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                 current_price=cur_px,
                 avg_funding=avg_funding_bt,
                 covariates=covars_bt,
+                bar_time=row.name,
             )
 
             # ── 1H LightGBM Gate (mirrors execution._cycle logic) ────────────
@@ -1120,6 +1305,10 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                 if "GATE: ATR_PCT"           in _line: param_stats["gate_atr_pct"]           += 1; break
                 if "GATE: Daily RSI"         in _line: param_stats["gate_daily_rsi"]         += 1; break
                 if "GATE: VolClimax"         in _line: param_stats["gate_vol_climax"]         += 1; break
+                if "GATE: OI_SPIKE"          in _line: param_stats["gate_oi_spike"]          += 1; break
+                if "GATE: LS_RATIO"          in _line: param_stats["gate_ls_ratio"]          += 1; break
+                if "GATE: LIQ_SPIKE"         in _line: param_stats["gate_liq_spike"]         += 1; break
+                if "GATE: WEEKEND"           in _line: param_stats["gate_weekend"]           += 1; break
                 if "1H gate BLOCK"           in _line: param_stats["gate_1h_block"]           += 1; break
             # Modifier loop: per-evaluation flags avoid double-count from multi-line modifiers
             # (e.g. ExhaustionGuard adds up to 2 lines when both long and short conditions fire).
@@ -1147,6 +1336,12 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                     param_stats["mod_c2_inversion"]     += 1; _mods_seen.add("mod_c2_inv")
                 if "1H gate REDUCE"   in _line and "mod_1h" not in _mods_seen:
                     param_stats["mod_1h_reduce"]        += 1; _mods_seen.add("mod_1h")
+                if "OI_SPIKE_SCALE"   in _line and "mod_oi_spike" not in _mods_seen:
+                    param_stats["mod_oi_spike_scale"]   += 1; _mods_seen.add("mod_oi_spike")
+                if "LS_RATIO_SCALE"   in _line and "mod_ls_ratio" not in _mods_seen:
+                    param_stats["mod_ls_ratio_scale"]   += 1; _mods_seen.add("mod_ls_ratio")
+                if "LIQ_SPIKE_SCALE"  in _line and "mod_liq_spike" not in _mods_seen:
+                    param_stats["mod_liq_spike_scale"]  += 1; _mods_seen.add("mod_liq_spike")
             if result.action == "long":
                 param_stats["signals_long"]  += 1
                 if result.size_factor < 0.99: param_stats["mod_counter_trend_size"] += 1
@@ -1156,8 +1351,8 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
             else:
                 param_stats["no_trade"] += 1
 
-            if result.action != "no_trade" and pending_pb is not None:
-                # Already in pullback wait mode — skip new signal
+            if result.action != "no_trade" and (pending_pb is not None or pending_bf is not None):
+                # Already in pullback / bounce-fade wait mode — skip new signal
                 pass
             elif result.action != "no_trade":
                 close_price = float(row["close"])
@@ -1232,6 +1427,64 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                 ):
                     param_stats["tp_ob"] += 1
                 effective_size_usd = params.size_usd * result.size_factor
+
+                # ── Bounce-Fade Entry simulation ──────────────────────────────
+                # Counter-trend signal → resistance-anchored limit entry. Checked
+                # BEFORE pullback; if it creates a pending, skip the immediate entry.
+                # Mirror of execution._create_pending_bounce_fade.
+                if (
+                    bounce_fade_enabled
+                    and not getattr(result, "_is_reversal", False)
+                    and pending_bf is None
+                ):
+                    _bf_ret6 = float(result.features_snapshot.get("ret_6") or 0.0)
+                    _bf_counter = (result.action == "short" and _bf_ret6 > 0) or \
+                                  (result.action == "long"  and _bf_ret6 < 0)
+                    if _bf_counter or not bounce_fade_counter_only:
+                        _bf_cap   = bounce_fade_offset_atr * atr
+                        _bf_ema50 = close_price - float(result.features_snapshot.get("ema50_dist") or 0.0) * atr
+                        if result.action == "short":
+                            _bf_cands = [lv for lv in (
+                                _safe_px(result.features_snapshot.get("ob_bear_top_px")),
+                                _safe_px(result.features_snapshot.get("fvg_bear_bot_px")),
+                                _safe_px(result.features_snapshot.get("swing_high_px")),
+                                _bf_ema50,
+                            ) if lv and close_price < lv < close_price * 1.05]
+                            _bf_res    = min(_bf_cands) if _bf_cands else close_price + _bf_cap
+                            _bf_offset = min(_bf_cap, bounce_fade_penetration * (_bf_res - close_price))
+                            _bf_limit  = close_price + _bf_offset
+                        else:
+                            _bf_cands = [lv for lv in (
+                                _safe_px(result.features_snapshot.get("ob_bull_bot_px")),
+                                _safe_px(result.features_snapshot.get("fvg_bull_top_px")),
+                                _safe_px(result.features_snapshot.get("swing_low_px")),
+                                _bf_ema50,
+                            ) if lv and close_price * 0.95 < lv < close_price]
+                            _bf_res    = max(_bf_cands) if _bf_cands else close_price - _bf_cap
+                            _bf_offset = min(_bf_cap, bounce_fade_penetration * (close_price - _bf_res))
+                            _bf_limit  = close_price - _bf_offset
+
+                        if _bf_offset > 0:
+                            pending_bf = {
+                                "direction":      result.action,
+                                "close_4h":       close_price,
+                                "atr_at_signal":  atr,
+                                "entry_limit":    _bf_limit,
+                                "resistance":     _bf_res,
+                                "bounce_extreme": close_price,
+                                "orig_tp":        params.take_profit,
+                                "orig_tp_dist":   abs(params.take_profit - close_price),
+                                "orig_sl_dist":   abs(params.stop_loss   - close_price),
+                                "orig_size_usd":  effective_size_usd,
+                                "sl_buffer_atr":  bounce_fade_sl_buffer,
+                                "sl_min_atr":     bounce_fade_sl_min,
+                                "min_rr":         bounce_fade_min_rr,
+                                "expires_bar":    i + bounce_fade_window,
+                                "market_fallback": bounce_fade_fallback,
+                            }
+                            param_stats["bf_created"] += 1
+                            continue  # wait for the bounce-fade fill / fallback
+
                 # ── Pullback Entry simulation ─────────────────────────────────
                 # Skip pullback for reversal trades: they have their own entry logic (pending_rev).
                 if pullback_entry_enabled and not getattr(result, "_is_reversal", False):
@@ -1411,6 +1664,11 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
         "pb_filled_zone":         pullback_entry_enabled,
         "pb_filled_fallback":     pullback_entry_enabled,
         "pb_decayed":             pullback_entry_enabled,
+        # Bounce-Fade Entry
+        "bf_created":             bounce_fade_enabled,
+        "bf_filled_limit":        bounce_fade_enabled,
+        "bf_market_fallback":     bounce_fade_enabled,
+        "bf_abandoned":           bounce_fade_enabled,
         # Reversal Zone Detector
         "rev_signals":            reversal_mode_enabled,
         "rev_pending_set":        reversal_mode_enabled and reversal_entry_mode == "limit_retest",
@@ -1427,6 +1685,15 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
         "gate_vol_climax":        vol_climax_gate_enabled,
         "mod_c2_inversion":       c2_inversion_gate_enabled,
         "pm_exhaust_max_hold":    exhaustion_max_hold_enabled,
+        # Squeeze Protection Gates
+        "gate_oi_spike":          oi_spike_gate_enabled and oi_spike_mode == "block",
+        "gate_ls_ratio":          ls_gate_enabled and ls_gate_mode == "block",
+        "gate_liq_spike":         liq_spike_gate_enabled and liq_spike_mode == "block",
+        "mod_oi_spike_scale":     oi_spike_gate_enabled and oi_spike_mode == "scale",
+        "mod_ls_ratio_scale":     ls_gate_enabled and ls_gate_mode == "scale",
+        "mod_liq_spike_scale":    liq_spike_gate_enabled and liq_spike_mode == "scale",
+        # Weekend Gate
+        "gate_weekend":           weekend_gate_block_saturday or weekend_gate_block_sunday,
     }
 
     # ── Reversal stats (separati da trend stats) ─────────────────────────────
