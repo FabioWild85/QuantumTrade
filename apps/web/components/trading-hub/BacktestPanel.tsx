@@ -55,6 +55,7 @@ interface ParamStats {
   gate_atr_pct: number;
   gate_daily_rsi?: number;
   gate_vol_climax?: number;
+  gate_1h_block?: number;
   // bias/modifiers
   mod_mtf_alignment: number;
   mod_regime_bias: number;
@@ -68,6 +69,7 @@ interface ParamStats {
   mod_sweep_conf_bonus: number;
   mod_exhaustion_prop?: number;
   mod_c2_inversion?: number;
+  mod_1h_reduce?: number;
   pm_exhaust_max_hold?: number;
   // structural SL/TP overrides
   sl_structural_ob: number;
@@ -808,6 +810,7 @@ const ParamActivity: React.FC<{ ps: ParamStats; cfg?: Record<string, boolean> }>
         { key: 'gate_atr_pct',          label: 'ATR% Volatility Gate (bassa volatilità, fee drag)', count: ps.gate_atr_pct ?? 0, pct: pct(ps.gate_atr_pct ?? 0) },
         { key: 'gate_daily_rsi',        label: 'Daily RSI Gate (RSI giornaliero estremo — capitolazione/euforia)', count: ps.gate_daily_rsi ?? 0, pct: pct(ps.gate_daily_rsi ?? 0) },
         { key: 'gate_vol_climax',       label: 'Volume Climax Gate (volume 2.5σ + RSI oversold — capitolazione)', count: ps.gate_vol_climax ?? 0, pct: pct(ps.gate_vol_climax ?? 0) },
+        { key: 'gate_1h_block',         label: '1H Gate BLOCK (modello 1H disaccorda con segnale 4H)',             count: ps.gate_1h_block ?? 0,   pct: pct(ps.gate_1h_block ?? 0) },
       ],
     },
     {
@@ -826,6 +829,7 @@ const ParamActivity: React.FC<{ ps: ParamStats; cfg?: Record<string, boolean> }>
         { key: 'mod_sweep_conf_bonus',   label: 'Sweep Confluenza direzionale (bonus -0.03)',       count: ps.mod_sweep_conf_bonus,   pct: pct(ps.mod_sweep_conf_bonus) },
         { key: 'mod_exhaustion_prop',    label: 'ExhaustionGuard Proporzionale (boost extra per ret_48 estremo)', count: ps.mod_exhaustion_prop ?? 0, pct: pct(ps.mod_exhaustion_prop ?? 0) },
         { key: 'mod_c2_inversion',       label: 'C2 Inversion Gate (C2 forecast opposto al segnale → +0.10 threshold)', count: ps.mod_c2_inversion ?? 0, pct: pct(ps.mod_c2_inversion ?? 0) },
+        { key: 'mod_1h_reduce',          label: '1H Gate REDUCE ×0.70 (modello 1H incerto, size ridotta)',             count: ps.mod_1h_reduce ?? 0, pct: pct(ps.mod_1h_reduce ?? 0) },
       ],
     },
     {
@@ -1782,6 +1786,10 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   const [atrPctGateEnabled, setAtrPctGateEnabled] = useState(false);
   const [atrPctMin,         setAtrPctMin]         = useState('0.8');  // shown as % in UI
   const [atrPctMode,        setAtrPctMode]         = useState<'block' | 'scale'>('scale');
+  // 1H LightGBM Gate
+  const [use1hGate,            setUse1hGate]            = useState(false);
+  const [lgbm1hMinAgreement,   setLgbm1hMinAgreement]   = useState('52');   // shown as %
+  const [lgbm1hBlockThreshold, setLgbm1hBlockThreshold] = useState('45');   // shown as %
   const [compareMode,         setCompareMode]         = useState(false);
 
   // ── Regime quick-selector ────────────────────────────────────────────────────
@@ -1958,6 +1966,9 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     if (p.atr_pct_gate_enabled         !== undefined) setAtrPctGateEnabled(!!p.atr_pct_gate_enabled);
     if (p.atr_pct_min                  !== undefined) setAtrPctMin(String(Math.round(p.atr_pct_min * 1000) / 10));
     if (p.atr_pct_mode                 !== undefined) setAtrPctMode(p.atr_pct_mode as 'block' | 'scale');
+    if (p.use_1h_lgbm_gate             !== undefined) setUse1hGate(!!p.use_1h_lgbm_gate);
+    if (p.lgbm_1h_min_agreement        !== undefined) setLgbm1hMinAgreement(String(Math.round(p.lgbm_1h_min_agreement * 100)));
+    if (p.lgbm_1h_block_threshold      !== undefined) setLgbm1hBlockThreshold(String(Math.round(p.lgbm_1h_block_threshold * 100)));
   }, []);
 
   useEffect(() => {
@@ -2238,6 +2249,9 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     reversal_ret48_extreme:        parseFloat(reversalRet48Extreme) / 100,
     reversal_bars_in_regime_min:   parseInt(reversalBarsInRegime),
     atr_pct_gate_enabled:          atrPctGateEnabled,
+    use_1h_lgbm_gate:              use1hGate,
+    lgbm_1h_min_agreement:         parseFloat(lgbm1hMinAgreement) / 100,
+    lgbm_1h_block_threshold:       parseFloat(lgbm1hBlockThreshold) / 100,
     atr_pct_min:                   parseFloat(atrPctMin) / 100,
     atr_pct_mode:                  atrPctMode,
   });
@@ -2302,6 +2316,7 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
       `Path Obstruction Gate:  ${pathObstruction ? `ATTIVO — max dist contrario ${pathObstMaxDist} ATR` : 'DISATTIVATO'}`,
       `Consecutive Bars Filter:${consecBarsFilter ? ` ATTIVO — max long ${consecBarsMaxLong} bar | max short ${consecBarsMaxShort} bar` : ' DISATTIVATO'}`,
       `ATR% Volatility Gate:   ${atrPctGateEnabled ? `ATTIVO — soglia ${atrPctMin}% · modalità ${atrPctMode === 'block' ? 'Blocco Netto' : 'Riduzione Graduale'}` : 'DISATTIVATO'}`,
+      `1H Gate (LightGBM):     ${use1hGate ? `ATTIVO — blocco <${lgbm1hBlockThreshold}% · riduzione <${lgbm1hMinAgreement}%` : 'DISATTIVATO'}`,
       '',
       '━━━ BIAS DI MERCATO ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
       `Funding Rate Bias:      ${fundingGate ? `ATTIVO — lookback ${fundingGateLookback} bar · high ${(parseFloat(fundingHighThr)*10000).toFixed(1)}bps · extreme ${(parseFloat(fundingExtremeThr)*10000).toFixed(1)}bps · Δ${fundingBiasDelta}` : 'DISATTIVATO'}`,
@@ -3694,6 +3709,40 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                               : 'Nessun trade quando ATR% < soglia. Uscita immediata come il gate ADX.'}
                           </p>
                         </div>
+                      </div>
+                    )}
+                  </div>
+                  {/* 1H LightGBM Gate */}
+                  <div className="space-y-3">
+                    <Toggle
+                      label="1H LightGBM Gate"
+                      desc="Applica il modello 1H (lgbm_1h_latest.pkl) come filtro di conferma sul segnale 4H. Per ogni barra 4H usa l'ultima barra 1H chiusa senza lookahead. Richiede il modello 1H addestrato. BLOCK: trade bloccato. REDUCE: size ×0.70."
+                      checked={use1hGate}
+                      onChange={setUse1hGate}
+                    />
+                    {use1hGate && (
+                      <div className="pl-1 flex flex-col gap-3">
+                        <Tooltip text="Soglia di BLOCCO: se P(direzione)_1H < questa soglia il trade è bloccato del tutto. Default 45% = il modello 1H deve dare almeno 45% di probabilità nella direzione del segnale 4H." pos="top" width="wide">
+                          <NumInput
+                            label="Soglia Blocco 1H"
+                            value={lgbm1hBlockThreshold}
+                            onChange={setLgbm1hBlockThreshold}
+                            step="1" min="30" max="50"
+                            unit="%"
+                          />
+                        </Tooltip>
+                        <Tooltip text="Accordo Minimo: se P(direzione)_1H è tra Soglia Blocco e questo valore, il trade è permesso ma con size ridotta a ×0.70. Default 52% = piena size solo se modello 1H supera il 52%." pos="top" width="wide">
+                          <NumInput
+                            label="Accordo Minimo 1H (size piena)"
+                            value={lgbm1hMinAgreement}
+                            onChange={setLgbm1hMinAgreement}
+                            step="1" min="50" max="70"
+                            unit="%"
+                          />
+                        </Tooltip>
+                        <p className="text-[9px] text-slate-400 dark:text-slate-500 leading-relaxed">
+                          Fasce: P &lt; {lgbm1hBlockThreshold}% → blocco · {lgbm1hBlockThreshold}%–{lgbm1hMinAgreement}% → size ×0.70 · P ≥ {lgbm1hMinAgreement}% → size piena
+                        </p>
                       </div>
                     )}
                   </div>

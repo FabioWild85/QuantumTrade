@@ -179,9 +179,12 @@ class RegimeDetector:
             )
 
         elif adx >= 22:
-            # Strong ADX but near-flat slope — coiling or breakout imminent
+            # Strong ADX but near-flat slope — coiling or breakout imminent.
+            # High-energy coiling (ADX > 40) is more uncertain than mild coiling:
+            # confidence decreases as ADX rises above 40 (max −0.13 at ADX=90).
             regime     = "sideways"
-            confidence = 0.48
+            confidence = 0.48 - max(0.0, (adx - 40.0) * 0.003) if adx > 40 else 0.48
+            confidence = max(0.35, confidence)
             reasoning.append(
                 f"SIDEWAYS (coiling): ADX {adx:.1f} ≥ 22, slope near-zero ({trend_slope:+.3f}%/bar)"
             )
@@ -207,14 +210,20 @@ class RegimeDetector:
         # ── Transition override (guide §1 — topping pattern) ──────────────
         # ADX peaked >35 in the last 12 bars AND is now falling fast → regime ending.
         # Examples from guide: Ago 2025 ATH push, Ott 2025 $126k false breakout.
+        # Extended to cover high-energy "sideways (coiling)" with ADX > 40: when
+        # ADX is very high but slope is flat and the ADX is declining, the prior
+        # trend is exhausting itself — the same transition pattern as uptrend/downtrend.
         adx_recent_12 = adx_series.iloc[-12:].dropna()
         adx_peak_12   = float(adx_recent_12.max()) if len(adx_recent_12) > 0 else adx
-        if adx_peak_12 > 35 and adx_slope < -0.8 and regime in ("uptrend", "downtrend"):
+        _coiling_transition = regime == "sideways" and adx > 40
+        _transition_eligible = regime in ("uptrend", "downtrend") or _coiling_transition
+        if adx_peak_12 > 35 and adx_slope < -0.5 and _transition_eligible:
             regime     = "transition"
             confidence = min(0.82, 0.55 + abs(adx_slope) * 0.08)
             reasoning.append(
                 f"TRANSITION: ADX peaked {adx_peak_12:.1f} within 12 bars, "
                 f"now declining {adx_slope:+.2f}/bar"
+                + (" [high-energy coiling]" if _coiling_transition else "")
             )
 
         # ── Bars in same regime (consecutive count) ────────────────────────

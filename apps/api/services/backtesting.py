@@ -15,7 +15,7 @@ import numpy as np
 import pandas as pd
 
 from services.hyperliquid_data import HyperliquidData
-from services.smc import build_all_features
+from services.smc import build_all_features, build_4h_context_for_1h
 from services.decision import DecisionEngine, DecisionResult, compute_qt_score
 from services.risk import RiskManager, apply_structural_sl, apply_fvg_sl, apply_swing_sl
 from services.trainer import load_correct_model
@@ -128,6 +128,10 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
     atr_pct_gate_enabled  = getattr(cfg, "atr_pct_gate_enabled",  False)
     atr_pct_min           = getattr(cfg, "atr_pct_min",           0.008)
     atr_pct_mode          = getattr(cfg, "atr_pct_mode",          "scale")
+    # 1H LightGBM Gate
+    use_1h_lgbm_gate_bt        = getattr(cfg, "use_1h_lgbm_gate",          False)
+    lgbm_1h_min_agreement_bt   = getattr(cfg, "lgbm_1h_min_agreement",     0.52)
+    lgbm_1h_block_threshold_bt = getattr(cfg, "lgbm_1h_block_threshold",   0.45)
     # Feature A: Exhaustion Guard proportional boost
     exhaustion_prop_enabled = getattr(cfg, "exhaustion_prop_enabled", False)
     exhaustion_prop_scale   = getattr(cfg, "exhaustion_prop_scale",   0.06)
@@ -260,6 +264,67 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                 log.info("Binance CVD data for backtest: %d candles", len(df_binance))
             except Exception as _bnc_err:
                 log.warning("Binance CVD fetch for backtest failed (non-blocking): %s", _bnc_err)
+
+    # ── 1d. 1H LightGBM gate — pre-compute feature matrix (once, before main loop) ──
+    # The gate is applied per 4H bar via a timestamp lookup (no API call per bar).
+    # Strict no-lookahead: for each 4H bar at T, only 1H rows with index < T are used.
+    _lgbm_1h_model_bt    = None
+    _lgbm_1h_features_bt = None
+    _df_1h_feat_bt       = None   # 1H feature DataFrame indexed by UTC timestamp
+
+    if use_1h_lgbm_gate_bt:
+        try:
+            from services.trainer      import load_1h_model
+            from services.binance_data import get_ohlcv_binance as _get_1h_binance
+
+            _1h_model_result = load_1h_model()
+            if _1h_model_result is None:
+                log.warning("1H gate backtest: lgbm_1h_latest.pkl not found — gate disabled for this run")
+                use_1h_lgbm_gate_bt = False
+            else:
+                _lgbm_1h_model_bt, _lgbm_1h_features_bt = _1h_model_result
+                log.info("1H gate backtest: model loaded (%d features)", len(_lgbm_1h_features_bt))
+
+                # Fetch 1H OHLCV from Binance (covers old and recent periods alike).
+                # Buffer: 300h before dt_from so after .iloc[64:] warmup-trim there are
+                # still ~236 1H rows (≈10 days) before the first 4H backtest bar.
+                # Without this buffer the mask (_df_1h_feat_bt.index < bar_ts) is always
+                # False for early bars because the 1H data would start at dt_from — same
+                # timestamp as the first 4H bar — leaving the gate silently inactive.
+                _1h_buf_dt = dt_from - timedelta(hours=300)
+                _df_1h_raw_bt = await _get_1h_binance(
+                    symbol, "1h",
+                    start_date=_1h_buf_dt.strftime("%Y-%m-%d"),
+                    end_date=req.to_date,
+                )
+                log.info(
+                    "1H gate backtest: %d 1H candles (%s → %s)",
+                    len(_df_1h_raw_bt),
+                    _df_1h_raw_bt.index[0].date(),
+                    _df_1h_raw_bt.index[-1].date(),
+                )
+
+                # Reuse df_fund already fetched above (HL hourly funding; ffill handles gaps).
+                # Pass empty df_oi / df_liq — OI is 4H-only, not needed by the 1H gate model.
+                _df_1h_feat_full = build_all_features(
+                    _df_1h_raw_bt, df_fund, pd.DataFrame(), pd.DataFrame()
+                )
+                _df_1h_feat_full = build_4h_context_for_1h(_df_1h_feat_full)
+                # Drop warmup rows (mirrors live: execution.py uses .iloc[64:] on 1H data)
+                _df_1h_feat_bt = _df_1h_feat_full.iloc[64:].copy()
+
+                log.info(
+                    "1H gate backtest: feature matrix ready — %d rows × %d cols",
+                    len(_df_1h_feat_bt), _df_1h_feat_bt.shape[1],
+                )
+
+        except Exception as _1h_setup_exc:
+            log.warning(
+                "1H gate backtest setup failed — gate disabled for this run: %s", _1h_setup_exc
+            )
+            use_1h_lgbm_gate_bt  = False
+            _lgbm_1h_model_bt    = None
+            _df_1h_feat_bt       = None
 
     # ── 2. Build features ────────────────────────────────────────────────────
     df_feat = build_all_features(
@@ -413,6 +478,7 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
         "gate_atr_pct":             0,
         "gate_daily_rsi":           0,
         "gate_vol_climax":          0,
+        "gate_1h_block":            0,
         # Bias / threshold modifiers
         "mod_mtf_alignment":        0,
         "mod_regime_bias":          0,
@@ -426,6 +492,7 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
         "mod_sweep_conf_bonus":     0,
         "mod_exhaustion_prop":      0,
         "mod_c2_inversion":         0,
+        "mod_1h_reduce":            0,
         "pm_exhaust_max_hold":      0,
         # Entry — structural SL/TP overrides
         "sl_structural_ob":         0,
@@ -947,6 +1014,52 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                 covariates=covars_bt,
             )
 
+            # ── 1H LightGBM Gate (mirrors execution._cycle logic) ────────────
+            # Active only when: gate is enabled, model loaded, no position open, and the
+            # decision engine produced a directional signal (long or short).
+            # Lookup: last closed 1H bar with index strictly < current 4H bar timestamp
+            # guarantees zero lookahead (same semantics as live .iloc[:-1] on 1H data).
+            if (
+                use_1h_lgbm_gate_bt
+                and _lgbm_1h_model_bt is not None
+                and _df_1h_feat_bt is not None
+                and position is None
+                and result.action in ("long", "short")
+            ):
+                try:
+                    _bar_ts  = df_feat.index[i]
+                    _1h_mask = _df_1h_feat_bt.index < _bar_ts
+                    if _1h_mask.any():
+                        _1h_row  = _df_1h_feat_bt[_1h_mask].iloc[-1]
+                        _avail   = [f for f in (_lgbm_1h_features_bt or []) if f in _1h_row.index]
+                        if _avail:
+                            _1h_X   = pd.DataFrame([_1h_row[_avail].fillna(0)])
+                            _p1h    = float(_lgbm_1h_model_bt.predict_proba(_1h_X)[0, 1])
+                            _p_dir  = _p1h if result.action == "long" else (1.0 - _p1h)
+
+                            if _p_dir < lgbm_1h_block_threshold_bt:
+                                _blocked_action = result.action
+                                result.action = "no_trade"
+                                result.reasoning.append(
+                                    f"1H gate BLOCK: P({_blocked_action})_1h={_p_dir:.3f} "
+                                    f"< {lgbm_1h_block_threshold_bt}"
+                                )
+                                # param_stats counted exclusively by the reasoning-string
+                                # parser below (same pattern as all other gates)
+
+                            elif _p_dir < lgbm_1h_min_agreement_bt:
+                                result.size_factor = (result.size_factor or 1.0) * 0.70
+                                result.reasoning.append(
+                                    f"1H gate REDUCE ×0.70: P({result.action})_1h={_p_dir:.3f} "
+                                    f"< {lgbm_1h_min_agreement_bt}"
+                                )
+                                # param_stats counted exclusively by the reasoning-string
+                                # parser below (same pattern as all other modifiers)
+
+                except Exception as _1h_bt_exc:
+                    # Fail-safe: gate skipped, trade proceeds normally (same as live)
+                    log.debug("1H gate backtest error at bar %d: %s", i, _1h_bt_exc)
+
             # ── Reversal Zone Detection (mirrors live _cycle logic) ───────────
             _rev_res = None  # reset each bar; used by build_pending_reversal below
             if _bt_rev_detector is not None and pending_rev is None:
@@ -1007,6 +1120,7 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                 if "GATE: ATR_PCT"           in _line: param_stats["gate_atr_pct"]           += 1; break
                 if "GATE: Daily RSI"         in _line: param_stats["gate_daily_rsi"]         += 1; break
                 if "GATE: VolClimax"         in _line: param_stats["gate_vol_climax"]         += 1; break
+                if "1H gate BLOCK"           in _line: param_stats["gate_1h_block"]           += 1; break
             # Modifier loop: per-evaluation flags avoid double-count from multi-line modifiers
             # (e.g. ExhaustionGuard adds up to 2 lines when both long and short conditions fire).
             _mods_seen: set = set()
@@ -1031,6 +1145,8 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                     param_stats["mod_exhaustion_prop"]  += 1; _mods_seen.add("mod_exh_prop")
                 if "C2 InversionGate" in _line and "mod_c2_inv" not in _mods_seen:
                     param_stats["mod_c2_inversion"]     += 1; _mods_seen.add("mod_c2_inv")
+                if "1H gate REDUCE"   in _line and "mod_1h" not in _mods_seen:
+                    param_stats["mod_1h_reduce"]        += 1; _mods_seen.add("mod_1h")
             if result.action == "long":
                 param_stats["signals_long"]  += 1
                 if result.size_factor < 0.99: param_stats["mod_counter_trend_size"] += 1
@@ -1266,6 +1382,8 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
         "gate_path_obstruction":  path_obstruction_enabled,
         "gate_consec_bars":       consec_bars_filter_enabled,
         "gate_atr_pct":           atr_pct_gate_enabled and atr_pct_mode == "block",
+        "gate_1h_block":          use_1h_lgbm_gate_bt and lgbm_1h_block_threshold_bt > 0,
+        "mod_1h_reduce":          use_1h_lgbm_gate_bt and lgbm_1h_min_agreement_bt > 0,
         # Modifiers
         "mod_mtf_alignment":      mtf_alignment_enabled,
         "mod_regime_bias":        regime_bias_enabled,

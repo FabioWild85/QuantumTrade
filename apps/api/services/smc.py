@@ -259,10 +259,23 @@ def build_mtf_features(df: pd.DataFrame) -> pd.DataFrame:
     }).dropna()
 
     daily["d_ema20"]     = ta.trend.EMAIndicator(daily["close"], 20).ema_indicator()
-    daily["d_adx"]       = ta.trend.ADXIndicator(daily["high"], daily["low"], daily["close"], 14).adx()
     daily["d_rsi"]       = ta.momentum.RSIIndicator(daily["close"], 14).rsi()
     daily["d_atr_daily"] = ta.volatility.AverageTrueRange(daily["high"], daily["low"], daily["close"], 14).average_true_range()
     daily["d_macd_hist"] = ta.trend.MACD(daily["close"]).macd_diff()
+
+    # ta 0.11.0 ADXIndicator._run() writes to adx_series[window], so it needs
+    # len(input) >= 2*window (28 for window=14). With limit=720 1H bars → ~30 daily
+    # bars this is normally satisfied, but guard here to prevent the IndexError that
+    # occurs when exactly 27 daily bars are produced (640h / 24 = 26.67 days).
+    _adx_min = 2 * 14  # 28
+    if len(daily) >= _adx_min:
+        daily["d_adx"] = ta.trend.ADXIndicator(daily["high"], daily["low"], daily["close"], 14).adx()
+    else:
+        log.warning(
+            "build_mtf_features: only %d daily bars — skipping ADX(14) to avoid IndexError "
+            "(need >= %d); d_adx set to 0.0", len(daily), _adx_min
+        )
+        daily["d_adx"] = 0.0
 
     daily["d_regime"] = np.where(
         (daily["close"] > daily["d_ema20"]) & (daily["d_adx"] > 20),  1,

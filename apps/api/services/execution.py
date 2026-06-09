@@ -1530,13 +1530,13 @@ class ExecutionEngine:
             and result.action in ("long", "short")
         ):
             try:
-                df_1h_raw  = await self._hl.get_ohlcv(SYMBOL, "1h", limit=640)
+                df_1h_raw  = await self._hl.get_ohlcv(SYMBOL, "1h", limit=720)
                 # Drop the forming 1H candle for the same reason as the 4H cycle:
                 # the just-opened candle has near-zero volume and corrupts the
                 # volume-derived features on the bar the 1H gate evaluates.
                 if len(df_1h_raw) >= 2:
                     df_1h_raw = df_1h_raw.iloc[:-1]
-                df_1h_fund = await self._hl.get_funding_history(SYMBOL, hours=640)
+                df_1h_fund = await self._hl.get_funding_history(SYMBOL, hours=720)
                 df_1h_feat = build_all_features(
                     df_1h_raw, df_1h_fund, pd.DataFrame(), pd.DataFrame()
                 )

@@ -399,21 +399,28 @@ class DecisionEngine:
         # High positive funding = market over-long → raise long threshold.
         # High negative funding = market over-short → lower long threshold.
         # Effect doubles at extreme levels (2× multiplier).
+        #
+        # HyperLiquid settles funding every hour; avg_funding is therefore a
+        # per-hour rate.  The UI thresholds are expressed in bps/8h (matching
+        # Binance convention), so we convert to the 8h-equivalent before
+        # comparing. The log also reports the 8h-equivalent so the value matches
+        # what the UI displays (raw × 10000).
         if self.funding_gate_enabled and avg_funding != 0.0:
-            _fund_mult = 2.0 if abs(avg_funding) > self.funding_extreme_thr else 1.0
+            avg_funding_8h = avg_funding * 8          # per-hour → per-8h equivalent
+            _fund_mult = 2.0 if abs(avg_funding_8h) > self.funding_extreme_thr else 1.0
             _fund_adj  = self.funding_bias_delta * _fund_mult
-            if avg_funding > self.funding_high_thr:
+            if avg_funding_8h > self.funding_high_thr:
                 threshold_long  += _fund_adj
                 threshold_short -= _fund_adj
                 reasoning.append(
-                    f"FundingBias: avg={avg_funding * 10000:.2f}bps/8h (×{_fund_mult:.0f}) "
+                    f"FundingBias: avg={avg_funding_8h * 10000:.2f}bps/8h (×{_fund_mult:.0f}) "
                     f"— over-long market → long +{_fund_adj:.2f}, short −{_fund_adj:.2f}"
                 )
-            elif avg_funding < -self.funding_high_thr:
+            elif avg_funding_8h < -self.funding_high_thr:
                 threshold_long  -= _fund_adj
                 threshold_short += _fund_adj
                 reasoning.append(
-                    f"FundingBias: avg={avg_funding * 10000:.2f}bps/8h (×{_fund_mult:.0f}) "
+                    f"FundingBias: avg={avg_funding_8h * 10000:.2f}bps/8h (×{_fund_mult:.0f}) "
                     f"— over-short market → long −{_fund_adj:.2f}, short +{_fund_adj:.2f}"
                 )
 
