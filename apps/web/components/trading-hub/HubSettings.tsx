@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Tooltip } from './Tooltip';
 
+import { apiFetch } from '../../services/authService';
 export const HubSettings: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   const [walletAddress, setWalletAddress] = useState('');
   const [agentResult, setAgentResult]     = useState<string | null>(null);
@@ -16,13 +17,13 @@ export const HubSettings: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   const [hlTestnet, setHlTestnet] = useState<boolean | null>(null);
 
   useEffect(() => {
-    fetch(`${apiBase}/bot`)
+    apiFetch(`${apiBase}/bot`)
       .then(r => r.ok ? r.json() : null)
       .then(d => { if (d?.mode) setMode(d.mode); })
       .catch(() => {})
       .finally(() => setModeLoading(false));
 
-    fetch(`${apiBase}/bot/status`)
+    apiFetch(`${apiBase}/bot/status`)
       .then(r => r.ok ? r.json() : null)
       .then(s => { if (s) setHlTestnet(s.hl_testnet ?? true); })
       .catch(() => {});
@@ -33,10 +34,10 @@ export const HubSettings: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     setModeSaving(true);
     try {
       // Fetch full config first to avoid overwriting other params
-      const r = await fetch(`${apiBase}/bot`);
+      const r = await apiFetch(`${apiBase}/bot`);
       const fullConfig = r.ok ? await r.json() : {};
       const updated = { ...fullConfig, mode };
-      const res = await fetch(`${apiBase}/bot`, {
+      const res = await apiFetch(`${apiBase}/bot`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(updated),
@@ -59,7 +60,7 @@ export const HubSettings: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     }
     setConnecting(true);
     try {
-      const r = await fetch(`${apiBase}/wallet/connect`, {
+      const r = await apiFetch(`${apiBase}/wallet/connect`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ address: walletAddress }),
@@ -81,7 +82,7 @@ export const HubSettings: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     if (!confirm('Crea un agent wallet su Hyperliquid testnet? (chiave salvata cifrata su Supabase)')) return;
     setConnecting(true);
     try {
-      const r = await fetch(`${apiBase}/wallet/agent`, {
+      const r = await apiFetch(`${apiBase}/wallet/agent`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ main_address: walletAddress, agent_name: 'trading-hub-agent' }),
@@ -256,7 +257,7 @@ export const HubSettings: React.FC<{ apiBase: string }> = ({ apiBase }) => {
           <button
             onClick={async () => {
               if (!confirm('KILL SWITCH: chiude tutto immediatamente. Sei sicuro?')) return;
-              const r = await fetch(`${apiBase}/bot/kill`, { method: 'POST' });
+              const r = await apiFetch(`${apiBase}/bot/kill`, { method: 'POST' });
               const d = await r.json();
               alert(`Kill completato. Posizioni chiuse: ${d.positions_closed}. Ordini cancellati: ${d.orders_cancelled}.`);
             }}

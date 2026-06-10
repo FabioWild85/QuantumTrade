@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { Tooltip } from './Tooltip';
 
+import { apiFetch } from '../../services/authService';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type RegimeName = 'uptrend' | 'downtrend' | 'sideways' | 'flat' | 'transition';
@@ -136,8 +137,8 @@ export const RegimePanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   const fetchData = useCallback(async () => {
     try {
       const [r1, r2] = await Promise.all([
-        fetch(`${apiBase}/regime/current`,       { signal: AbortSignal.timeout(8000) }),
-        fetch(`${apiBase}/regime/history?limit=48`, { signal: AbortSignal.timeout(8000) }),
+        apiFetch(`${apiBase}/regime/current`,       { signal: AbortSignal.timeout(8000) }),
+        apiFetch(`${apiBase}/regime/history?limit=48`, { signal: AbortSignal.timeout(8000) }),
       ]);
       if (r1.ok) setData(await r1.json());
       else        setError('API error');

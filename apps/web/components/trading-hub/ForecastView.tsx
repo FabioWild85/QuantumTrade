@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Tooltip } from './Tooltip';
 
+import { apiFetch } from '../../services/authService';
 interface FanData {
   p10: number[];
   p25: number[];
@@ -38,7 +39,7 @@ export const ForecastView: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     setLoading(true);
     setError(null);
     try {
-      const r = await fetch(`${apiBase}/forecast?symbol=BTC&horizon=3`);
+      const r = await apiFetch(`${apiBase}/forecast?symbol=BTC&horizon=3`);
       if (!r.ok) throw new Error(await r.text());
       setData(await r.json());
     } catch (e: any) {

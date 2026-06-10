@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 
+import { apiFetch } from '../../services/authService';
 interface ServerEvent {
   id: string;
   time: string;
@@ -58,7 +59,7 @@ export const ServerLogs: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   const fetchEvents = useCallback(async () => {
     setLoading(true);
     try {
-      const r = await fetch(`${apiBase}/events?limit=200`, { signal: AbortSignal.timeout(5000) });
+      const r = await apiFetch(`${apiBase}/events?limit=200`, { signal: AbortSignal.timeout(5000) });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const data: ServerEvent[] = await r.json();
       setEvents(data);

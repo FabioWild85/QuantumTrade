@@ -37,6 +37,7 @@ aiofiles>=23.2.0
 
 # Security
 cryptography>=42.0.0
+bcrypt>=4.0.0
 
 # External Data
 yfinance>=0.2.40

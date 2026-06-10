@@ -11,6 +11,7 @@ import { RegimePanel } from './RegimePanel';
 import { ReversalPanel } from './ReversalPanel';
 import { ServerStatus } from './ServerStatus';
 
+import { apiFetch } from '../../services/authService';
 type HubPage = 'monitor' | 'forecast' | 'config' | 'trades' | 'backtest' | 'regime' | 'reversal' | 'logs' | 'server' | 'settings';
 
 const VALID_PAGES: HubPage[] = ['monitor', 'forecast', 'config', 'trades', 'backtest', 'regime', 'reversal', 'logs', 'server', 'settings'];
@@ -339,7 +340,7 @@ const StatusBadge: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     let active = true;
     const check = async () => {
       try {
-        const r = await fetch(`${apiBase}/health`, { signal: AbortSignal.timeout(8000) });
+        const r = await apiFetch(`${apiBase}/health`, { signal: AbortSignal.timeout(8000) });
         if (r.ok && active) {
           const d = await r.json();
           setStatus('online');

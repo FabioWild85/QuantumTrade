@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Tooltip } from './Tooltip';
 
+import { apiFetch } from '../../services/authService';
 interface Config {
   sl_atr_mult: number;
   tp_atr_mult: number;
@@ -566,7 +567,7 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
 
   const loadFeatureImportance = () => {
     setFeatImportanceLoading(true);
-    fetch(`${apiBase}/model/feature-importance`)
+    apiFetch(`${apiBase}/model/feature-importance`)
       .then(r => r.ok ? r.json() : null)
       .then(d => d && setFeatImportance(d))
       .catch(() => {})
@@ -574,21 +575,21 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   };
 
   const loadPruningStats = () => {
-    fetch(`${apiBase}/model/pruning-stats`)
+    apiFetch(`${apiBase}/model/pruning-stats`)
       .then(r => r.ok ? r.json() : null)
       .then(d => d && setPruningStats(d))
       .catch(() => {});
   };
 
   const loadCalibratorStats = () => {
-    fetch(`${apiBase}/calibrator/stats`)
+    apiFetch(`${apiBase}/calibrator/stats`)
       .then(r => r.ok ? r.json() : null)
       .then(d => d && setCalibratorStats(d))
       .catch(() => {});
   };
 
   const loadModelRegistry = () => {
-    fetch(`${apiBase}/model/registry`)
+    apiFetch(`${apiBase}/model/registry`)
       .then(r => r.ok ? r.json() : null)
       .then(d => d?.models && setModelRegistry(d.models))
       .catch(() => {});
@@ -621,7 +622,7 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
       };
       if (gate1hFromDate) body.from_date = gate1hFromDate;
 
-      const r = await fetch(`${apiBase}/retrain/1h`, {
+      const r = await apiFetch(`${apiBase}/retrain/1h`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -646,7 +647,7 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     setCalibratorRefitting(true);
     setCalibratorRefitResult(null);
     try {
-      const r = await fetch(`${apiBase}/calibrator/refit`, { method: 'POST' });
+      const r = await apiFetch(`${apiBase}/calibrator/refit`, { method: 'POST' });
       const data = await r.json();
       setCalibratorRefitResult(data);
       loadCalibratorStats();
@@ -661,7 +662,7 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     if (!confirm(`Rollback al modello:\n${filename}\n\nIl modello corrente (lgbm_latest.pkl) verrà sostituito. Il bot ricaricherà il modello automaticamente.`)) return;
     setRollingBack(filename);
     try {
-      const r = await fetch(`${apiBase}/model/rollback/${encodeURIComponent(filename)}`, { method: 'POST' });
+      const r = await apiFetch(`${apiBase}/model/rollback/${encodeURIComponent(filename)}`, { method: 'POST' });
       const data = await r.json();
       if (data.status === 'ok') {
         alert(`✓ Rollback completato.\nModello attivo: ${filename}`);
@@ -677,11 +678,11 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   };
 
   useEffect(() => {
-    fetch(`${apiBase}/bot`)
+    apiFetch(`${apiBase}/bot`)
       .then(r => r.ok ? r.json() : null)
       .then(d => d && setConfig(c => ({ ...c, ...d })))
       .catch(e => console.error('[BotConfig] GET /bot failed:', e));
-    fetch(`${apiBase}/bot/status`)
+    apiFetch(`${apiBase}/bot/status`)
       .then(r => r.ok ? r.json() : null)
       .then(s => {
         if (!s) return;
@@ -695,12 +696,12 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     loadPruningStats();
     loadCalibratorStats();
     setMacroEventsLoading(true);
-    fetch(`${apiBase}/macro-events?days=60`)
+    apiFetch(`${apiBase}/macro-events?days=60`)
       .then(r => r.ok ? r.json() : null)
       .then(d => d && setMacroEvents(d.events ?? []))
       .catch(e => console.error('[BotConfig] GET /macro-events failed:', e))
       .finally(() => setMacroEventsLoading(false));
-    fetch(`${apiBase}/presets`)
+    apiFetch(`${apiBase}/presets`)
       .then(r => r.ok ? r.json() : [])
       .then(d => setPresets(Array.isArray(d) ? d : []))
       .catch(e => console.error('[BotConfig] GET /presets failed:', e));
@@ -721,7 +722,7 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
         return;
       }
       try {
-        const r = await fetch(`${apiBase}/retrain/status`);
+        const r = await apiFetch(`${apiBase}/retrain/status`);
         if (!r.ok) return;
         const d = await r.json();
         const last = d.last_retrain;
@@ -747,10 +748,10 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     setRetraining(true);
     setRetrainResult(null);
     let prevTrainedAt: string | null = null;
-    try { prevTrainedAt = (await (await fetch(`${apiBase}/retrain/status`)).json()).last_retrain?.trained_at ?? null; } catch { /* ok */ }
+    try { prevTrainedAt = (await (await apiFetch(`${apiBase}/retrain/status`)).json()).last_retrain?.trained_at ?? null; } catch { /* ok */ }
     let backgroundPolling = false;
     try {
-      const r = await fetch(`${apiBase}/retrain`, {
+      const r = await apiFetch(`${apiBase}/retrain`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ use_optuna: config.use_optuna, optuna_n_trials: config.optuna_n_trials }),
@@ -799,10 +800,10 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     setRetraining(true);
     setRetrainResult(null);
     let prevTrainedAt: string | null = null;
-    try { prevTrainedAt = (await (await fetch(`${apiBase}/retrain/status`)).json()).last_retrain?.trained_at ?? null; } catch { /* ok */ }
+    try { prevTrainedAt = (await (await apiFetch(`${apiBase}/retrain/status`)).json()).last_retrain?.trained_at ?? null; } catch { /* ok */ }
     let backgroundPolling = false;
     try {
-      const r = await fetch(`${apiBase}/retrain`, {
+      const r = await apiFetch(`${apiBase}/retrain`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -841,7 +842,7 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     if (!confirm(`Salva configurazione in modalità ${config.mode.toUpperCase()}?`)) return;
     setLoading(true);
     try {
-      const r = await fetch(`${apiBase}/bot`, {
+      const r = await apiFetch(`${apiBase}/bot`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(config),

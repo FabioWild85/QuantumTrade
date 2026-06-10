@@ -12,9 +12,18 @@ import { TrendReversal } from './components/TrendReversal';
 import { LoadingScreen } from './components/LoadingScreen';
 import { MarketSynthesis } from './components/MarketSynthesis';
 import { ScrollToTop } from './components/ScrollToTop';
+import { LoginPage } from './components/LoginPage';
 import { generateMarketAnalysis } from './services/geminiService';
 import { getTechnicalData } from './services/cryptoDataService';
+import { isAuthenticated } from './services/authService';
 import { MarketReport } from './types';
+
+// ─── Guard route ─────────────────────────────────────────────────────────────
+
+const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  if (!isAuthenticated()) return <Navigate to="/login" replace />;
+  return <>{children}</>;
+};
 
 type AssetSymbol = 'BTC' | 'ETH' | 'SOL';
 const VALID_ASSETS: AssetSymbol[] = ['BTC', 'ETH', 'SOL'];
@@ -414,10 +423,11 @@ const App: React.FC = () => {
     <>
       <ScrollToTop />
       <Routes>
-        <Route path="/" element={<DashboardHome isDarkMode={isDarkMode} toggleTheme={toggleTheme} />} />
-        <Route path="/analysis/:asset" element={<AnalysisReport isDarkMode={isDarkMode} toggleTheme={toggleTheme} />} />
+        <Route path="/login" element={<LoginPage isDarkMode={isDarkMode} toggleTheme={toggleTheme} />} />
+        <Route path="/" element={<ProtectedRoute><DashboardHome isDarkMode={isDarkMode} toggleTheme={toggleTheme} /></ProtectedRoute>} />
+        <Route path="/analysis/:asset" element={<ProtectedRoute><AnalysisReport isDarkMode={isDarkMode} toggleTheme={toggleTheme} /></ProtectedRoute>} />
         <Route path="/hub" element={<Navigate to="/hub/monitor" replace />} />
-        <Route path="/hub/:page" element={<TradingHubTab isDarkMode={isDarkMode} toggleTheme={toggleTheme} />} />
+        <Route path="/hub/:page" element={<ProtectedRoute><TradingHubTab isDarkMode={isDarkMode} toggleTheme={toggleTheme} /></ProtectedRoute>} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </>

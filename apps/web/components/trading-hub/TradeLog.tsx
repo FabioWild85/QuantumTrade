@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Tooltip } from './Tooltip';
 
+import { apiFetch } from '../../services/authService';
 interface Trade {
   id: string;
   side: string;
@@ -72,7 +73,7 @@ export const TradeLog: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     if (tradeEvents[tradeId] !== undefined) return; // already loaded
     setLoadingEvents(tradeId);
     try {
-      const r = await fetch(`${apiBase}/trade-events?trade_id=${tradeId}&limit=50`);
+      const r = await apiFetch(`${apiBase}/trade-events?trade_id=${tradeId}&limit=50`);
       const raw = r.ok ? await r.json() : [];
       const data: TradeEvent[] = (Array.isArray(raw) ? raw : []).filter(Boolean);
       setTradeEvents(prev => ({ ...prev, [tradeId]: data }));
@@ -98,7 +99,7 @@ export const TradeLog: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   const clearHistory = async () => {
     setClearLoading(true);
     try {
-      await fetch(`${apiBase}/trades`, { method: 'DELETE' });
+      await apiFetch(`${apiBase}/trades`, { method: 'DELETE' });
       setTrades([]);
       setLogs([]);
       setTradeEvents({});
@@ -115,7 +116,7 @@ export const TradeLog: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     if (!deleteTradeId) return;
     setDeleteLoading(true);
     try {
-      await fetch(`${apiBase}/trades/${deleteTradeId}`, { method: 'DELETE' });
+      await apiFetch(`${apiBase}/trades/${deleteTradeId}`, { method: 'DELETE' });
       setTrades((prev: Trade[]) => prev.filter(t => t.id !== deleteTradeId));
       setTradeEvents((prev: Record<string, TradeEvent[]>) => { const n = { ...prev }; delete n[deleteTradeId]; return n; });
       if (expandedTrade === deleteTradeId) setExpandedTrade(null);
@@ -131,8 +132,8 @@ export const TradeLog: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   useEffect(() => {
     setLoading(true);
     Promise.all([
-      fetch(`${apiBase}/trades?limit=100`).then(r => r.ok ? r.json() : []),
-      fetch(`${apiBase}/inference-logs?limit=30`).then(r => r.ok ? r.json() : []),
+      apiFetch(`${apiBase}/trades?limit=100`).then(r => r.ok ? r.json() : []),
+      apiFetch(`${apiBase}/inference-logs?limit=30`).then(r => r.ok ? r.json() : []),
     ]).then(([t, l]) => {
       setTrades((Array.isArray(t) ? t : []).filter(Boolean));
       setLogs((Array.isArray(l) ? l : []).filter(Boolean));

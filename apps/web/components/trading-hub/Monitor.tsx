@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Tooltip } from './Tooltip';
 
+import { apiFetch } from '../../services/authService';
 // Returns seconds until next 4h candle close (00:00, 04:00, 08:00, 12:00, 16:00, 20:00 UTC)
 function secsToNext4h(): number {
   const now = Date.now();
@@ -267,11 +268,11 @@ export const Monitor: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   const fetchAll = async () => {
     try {
       const [s, l, e, ev, la] = await Promise.all([
-        fetch(`${apiBase}/bot/status`).then(r => r.ok ? r.json() : null),
-        fetch(`${apiBase}/inference-logs?limit=5`).then(r => r.ok ? r.json() : []),
-        fetch(`${apiBase}/equity?limit=100`).then(r => r.ok ? r.json() : []),
-        fetch(`${apiBase}/events?limit=50&since=${new Date(Date.now() - 48 * 3600_000).toISOString()}`).then(r => r.ok ? r.json() : []),
-        fetch(`${apiBase}/live/account`).then(r => r.ok ? r.json() : null),
+        apiFetch(`${apiBase}/bot/status`).then(r => r.ok ? r.json() : null),
+        apiFetch(`${apiBase}/inference-logs?limit=5`).then(r => r.ok ? r.json() : []),
+        apiFetch(`${apiBase}/equity?limit=100`).then(r => r.ok ? r.json() : []),
+        apiFetch(`${apiBase}/events?limit=50&since=${new Date(Date.now() - 48 * 3600_000).toISOString()}`).then(r => r.ok ? r.json() : []),
+        apiFetch(`${apiBase}/live/account`).then(r => r.ok ? r.json() : null),
       ]);
       setStatus(s);
       statusRef.current = s;
@@ -313,7 +314,7 @@ export const Monitor: React.FC<{ apiBase: string }> = ({ apiBase }) => {
             return next.slice(-200);   // keep last 200 points
           });
           // Also refresh status when equity changes (new cycle completed)
-          fetch(`${apiBase}/bot/status`).then(r => r.ok ? r.json() : null).then(s => {
+          apiFetch(`${apiBase}/bot/status`).then(r => r.ok ? r.json() : null).then(s => {
             if (s) { setStatus(s); statusRef.current = s; }
           });
         } catch {}
@@ -346,7 +347,7 @@ export const Monitor: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   const startBot = async (mode: 'paper' | 'live') => {
     setStarting(true);
     try {
-      await fetch(`${apiBase}/bot/start`, {
+      await apiFetch(`${apiBase}/bot/start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ mode }),
@@ -356,7 +357,7 @@ export const Monitor: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   };
 
   const stopBot = async () => {
-    await fetch(`${apiBase}/bot/stop`, { method: 'POST' });
+    await apiFetch(`${apiBase}/bot/stop`, { method: 'POST' });
     setTimeout(fetchAll, 500);
   };
 
@@ -367,7 +368,7 @@ export const Monitor: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     variant: 'danger',
     onConfirm: async () => {
       setModal(null);
-      await fetch(`${apiBase}/bot/kill`, { method: 'POST' });
+      await apiFetch(`${apiBase}/bot/kill`, { method: 'POST' });
       setTimeout(fetchAll, 500);
     },
   });
@@ -379,7 +380,7 @@ export const Monitor: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     variant: 'warning',
     onConfirm: async () => {
       setModal(null);
-      await fetch(`${apiBase}/bot/position/close`, { method: 'POST' });
+      await apiFetch(`${apiBase}/bot/position/close`, { method: 'POST' });
       setTimeout(fetchAll, 800);
     },
   });
@@ -388,7 +389,7 @@ export const Monitor: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     setManualLoading(true);
     setManualResult(null);
     try {
-      const r = await fetch(`${apiBase}/bot/trade/manual`, {
+      const r = await apiFetch(`${apiBase}/bot/trade/manual`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -692,7 +693,7 @@ export const Monitor: React.FC<{ apiBase: string }> = ({ apiBase }) => {
         const hasOB = pb.ob_order_id !== null;
         const cancelPb = async () => {
           try {
-            await fetch('/pullback/cancel', { method: 'POST' });
+            await apiFetch('/pullback/cancel', { method: 'POST' });
           } catch (_) {}
         };
         return (

@@ -10,11 +10,16 @@ import threading
 import time as _time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Literal, Optional
 
+import bcrypt as _bcrypt
 import httpx
 import psutil
+from jose import JWTError, jwt
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from starlette.responses import JSONResponse
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
@@ -26,6 +31,50 @@ from services.notifications import TelegramNotifier
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s — %(message)s")
 log = logging.getLogger("trading_hub")
+
+# ─── Auth ────────────────────────────────────────────────────────────────────
+
+_SECRET_KEY = os.getenv("SECRET_KEY", "")
+if not _SECRET_KEY:
+    raise RuntimeError("SECRET_KEY must be set in .env — run: python3 -c \"import secrets; print(secrets.token_hex(32))\"")
+
+_JWT_ALGORITHM = "HS256"
+_JWT_EXPIRE_DAYS = 7
+
+
+def _hash_password(password: str) -> str:
+    return _bcrypt.hashpw(password.encode(), _bcrypt.gensalt()).decode()
+
+
+def _verify_password(password: str, hashed: str) -> bool:
+    return _bcrypt.checkpw(password.encode(), hashed.encode())
+
+
+def _verify_jwt(token: str) -> bool:
+    try:
+        jwt.decode(token, _SECRET_KEY, algorithms=[_JWT_ALGORITHM])
+        return True
+    except JWTError:
+        return False
+
+
+def _create_token(username: str) -> str:
+    expire = datetime.now(timezone.utc) + timedelta(days=_JWT_EXPIRE_DAYS)
+    return jwt.encode({"sub": username, "exp": expire}, _SECRET_KEY, algorithm=_JWT_ALGORITHM)
+
+
+class _AuthMiddleware(BaseHTTPMiddleware):
+    _PUBLIC = {"/health", "/auth/login", "/docs", "/openapi.json", "/redoc"}
+
+    async def dispatch(self, request: Request, call_next):
+        if request.url.path in self._PUBLIC:
+            return await call_next(request)
+        auth_header = request.headers.get("Authorization", "")
+        token = auth_header.removeprefix("Bearer ").strip() if auth_header.startswith("Bearer ") else ""
+        if not token or not _verify_jwt(token):
+            return JSONResponse({"detail": "Non autenticato"}, status_code=401)
+        return await call_next(request)
+
 
 # ─── Singleton engine (one bot, one process) ────────────────────────────────
 
@@ -83,12 +132,16 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Auth middleware inner, CORS outer — così CORS headers sono presenti anche sulle 401
+app.add_middleware(_AuthMiddleware)
+
+_allowed_origins = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "http://localhost:3000").split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_allowed_origins,
     allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
 
@@ -107,6 +160,31 @@ async def health():
         "cycle_count":      status.get("cycle_count", 0),
         "backtest_running": backtest_running,
     }
+
+
+# ─── Auth login (public) ─────────────────────────────────────────────────────
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+@app.post("/auth/login")
+async def auth_login(body: LoginRequest):
+    db = get_supabase()
+    result = await run_db(lambda: db.table("users")
+                          .select("password_hash")
+                          .eq("username", body.username)
+                          .eq("is_active", True)
+                          .execute())
+    if not result.data:
+        raise HTTPException(status_code=401, detail="Credenziali non valide")
+    stored_hash = result.data[0]["password_hash"]
+    if not _verify_password(body.password, stored_hash):
+        raise HTTPException(status_code=401, detail="Credenziali non valide")
+    token = _create_token(body.username)
+    log.info("Login riuscito per utente: %s", body.username)
+    return {"access_token": token, "token_type": "bearer"}
 
 
 # ─── Wallet ──────────────────────────────────────────────────────────────────

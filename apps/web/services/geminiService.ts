@@ -1,11 +1,12 @@
 import { MarketReport, Sentiment, TechnicalAnalysis } from "../types";
 import { cacheService } from "./cacheService";
 
+import { apiFetch } from './authService';
 // ─── Backend proxy (la GEMINI_API_KEY resta lato server, mai nel bundle JS) ──
 const API_BASE = import.meta.env.DEV ? 'http://localhost:8000' : '/api';
 
 async function callGemini(model: string, body: object): Promise<any> {
-  const res = await fetch(`${API_BASE}/ai/gemini`, {
+  const res = await apiFetch(`${API_BASE}/ai/gemini`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ model, ...body }),

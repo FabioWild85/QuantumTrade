@@ -1,5 +1,6 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
+import { logout } from '../services/authService';
 
 interface Props {
   isDarkMode: boolean;
@@ -43,6 +44,18 @@ export const Header: React.FC<Props> = ({ isDarkMode, toggleTheme }) => {
             </svg>
             <span>AI Trading Hub</span>
           </Link>
+
+          {/* Logout */}
+          <button
+            onClick={logout}
+            className="hidden sm:flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 text-slate-500 dark:text-slate-400 hover:bg-red-50 dark:hover:bg-red-500/10 hover:text-red-600 dark:hover:text-red-400 transition-colors border border-slate-200 dark:border-white/5 text-xs font-medium"
+            aria-label="Logout"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+            </svg>
+            <span>Esci</span>
+          </button>
 
           {/* Dark Mode Toggle */}
           <button

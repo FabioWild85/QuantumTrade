@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Tooltip } from './Tooltip';
 
+import { apiFetch } from '../../services/authService';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 interface ReversalComponents {
@@ -106,7 +107,7 @@ export const ReversalPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
 
   const fetchCurrent = useCallback(async () => {
     try {
-      const r = await fetch(`${apiBase}/reversal/current`, { signal: AbortSignal.timeout(8000) });
+      const r = await apiFetch(`${apiBase}/reversal/current`, { signal: AbortSignal.timeout(8000) });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const d: ReversalCurrentResponse = await r.json();
       setData(d);
@@ -121,7 +122,7 @@ export const ReversalPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
 
   const fetchHistory = useCallback(async () => {
     try {
-      const r = await fetch(`${apiBase}/reversal/history?limit=20`, { signal: AbortSignal.timeout(8000) });
+      const r = await apiFetch(`${apiBase}/reversal/history?limit=20`, { signal: AbortSignal.timeout(8000) });
       if (!r.ok) return;
       const d = await r.json();
       setHistory(d.history || []);
@@ -130,7 +131,7 @@ export const ReversalPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
 
   useEffect(() => {
     // Fetch score threshold from bot config once on mount
-    fetch(`${apiBase}/bot`).then(r => r.json()).then(d => {
+    apiFetch(`${apiBase}/bot`).then(r => r.json()).then(d => {
       if (typeof d?.reversal_score_threshold === 'number') setScoreThreshold(d.reversal_score_threshold);
     }).catch(() => {});
     fetchCurrent();

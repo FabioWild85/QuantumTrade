@@ -1,6 +1,7 @@
 import { TechnicalAnalysis, OrderBookAnalysis, VolatilityMetrics, EthereumSpecificData, TrendStructure, CycleMetrics, ShortTermAnalysis, Sentiment, Candle, MacroAsset } from '../types';
 import { calculateLastRSI, calculateRSIArray, calculateEMA, calculateMACD, calculateSMA, calculateBollingerBands, calculateATR, calculatePearsonCorrelation } from '../utils/indicators';
 
+import { apiFetch } from './authService';
 const detectRsiDivergence = (prices: number[], rsiValues: number[], lookback: number = 28): 'Bullish' | 'Bearish' | 'None' => {
   if (prices.length < lookback || rsiValues.length < lookback) return 'None';
 
@@ -32,7 +33,7 @@ const detectRsiDivergence = (prices: number[], rsiValues: number[], lookback: nu
 // Helper for safe fetching to prevent Promise.all failure
 const safeFetchJson = async (url: string) => {
     try {
-        const res = await fetch(url);
+        const res = await apiFetch(url);
         const json = await res.json();
         return Array.isArray(json) ? json : [];
     } catch (e) {
@@ -43,7 +44,7 @@ const safeFetchJson = async (url: string) => {
 
 const safeFetchObject = async (url: string) => {
     try {
-        const res = await fetch(url);
+        const res = await apiFetch(url);
         return await res.json();
     } catch (e) {
         return null;
@@ -54,7 +55,7 @@ const safeFetchObject = async (url: string) => {
 const fetchYahooMacro = async (ticker: string): Promise<{ price: number; changePercent: number; history: number[] } | null> => {
   try {
     const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?interval=1d&range=2mo`;
-    const res = await fetch(url, { headers: { Accept: 'application/json' } });
+    const res = await apiFetch(url, { headers: { Accept: 'application/json' } });
     if (!res.ok) return null;
     const data = await res.json();
     const result = data?.chart?.result?.[0];
@@ -257,7 +258,7 @@ export const getTechnicalData = async (symbol: 'BTC' | 'ETH' | 'SOL'): Promise<P
       await Promise.allSettled([
         // Blockchair: gas estimate + burn 24h — free, no key
         (async () => {
-          const res = await fetch('https://api.blockchair.com/ethereum/stats');
+          const res = await apiFetch('https://api.blockchair.com/ethereum/stats');
           const data = await res.json();
           const d = data?.data;
           if (d) {
@@ -276,7 +277,7 @@ export const getTechnicalData = async (symbol: 'BTC' | 'ETH' | 'SOL'): Promise<P
 
         // Lido: staking APY — free, no key, real-time
         (async () => {
-          const res = await fetch('https://eth-api.lido.fi/v1/protocol/steth/apr/last');
+          const res = await apiFetch('https://eth-api.lido.fi/v1/protocol/steth/apr/last');
           const data = await res.json();
           if (data?.data?.apr != null) {
             stakingApy = parseFloat(data.data.apr.toFixed(2));

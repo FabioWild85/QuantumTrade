@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 
+import { apiFetch } from '../../services/authService';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 interface CpuInfo {
@@ -205,7 +206,7 @@ export const ServerStatus: React.FC<{ apiBase: string }> = ({ apiBase }) => {
 
   const fetchData = useCallback(async () => {
     try {
-      const r = await fetch(`${apiBase}/server/status`, { signal: AbortSignal.timeout(6000) });
+      const r = await apiFetch(`${apiBase}/server/status`, { signal: AbortSignal.timeout(6000) });
       if (!r.ok) { setError(`HTTP ${r.status}`); return; }
       const d: ServerData = await r.json();
       setData(d);

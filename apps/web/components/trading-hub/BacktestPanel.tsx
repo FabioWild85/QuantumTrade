@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Tooltip } from './Tooltip';
 
+import { apiFetch } from '../../services/authService';
 interface BacktestStats {
   total_trades: number;
   win_rate: number;
@@ -656,7 +657,7 @@ async function runJob(
   body: object,
   signal?: AbortSignal,
 ): Promise<BacktestResult> {
-  const startRes = await fetch(`${apiBase}/backtest`, {
+  const startRes = await apiFetch(`${apiBase}/backtest`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -682,7 +683,7 @@ async function runJob(
     t = setInterval(async () => {
       if (signal?.aborted) { cleanup(); return; }
       try {
-        const r = await fetch(`${apiBase}/backtest/${job_id}`, { signal });
+        const r = await apiFetch(`${apiBase}/backtest/${job_id}`, { signal });
         const job = await r.json();
         if (job.status === 'done') {
           signal?.removeEventListener('abort', onAbort);
@@ -717,7 +718,7 @@ async function reconnectJob(apiBase: string, job_id: string, signal?: AbortSigna
     t = setInterval(async () => {
       if (signal?.aborted) { cleanup(); return; }
       try {
-        const r = await fetch(`${apiBase}/backtest/${job_id}`, { signal });
+        const r = await apiFetch(`${apiBase}/backtest/${job_id}`, { signal });
         const job = await r.json();
         if (job.status === 'done') {
           signal?.removeEventListener('abort', onAbort);
@@ -1193,7 +1194,7 @@ const HistoryTab: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   const fetchHistory = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch(`${apiBase}/backtest-history`);
+      const res = await apiFetch(`${apiBase}/backtest-history`);
       const data = await res.json();
       setItems(Array.isArray(data) ? data : (data.items ?? []));
     } catch {
@@ -1215,7 +1216,7 @@ const HistoryTab: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     if (item && !item.result) {
       setLoadingDetailId(itemId);
       try {
-        const res  = await fetch(`${apiBase}/backtest-history/${itemId}`);
+        const res  = await apiFetch(`${apiBase}/backtest-history/${itemId}`);
         const data = await res.json();
         // API returns { ..., results: BacktestResult, config: Record<string,any> }
         const fullResult: BacktestResult | undefined = data.results ?? data.result;
@@ -1231,7 +1232,7 @@ const HistoryTab: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   const handleDelete = async (id: string) => {
     setDeletingId(id);
     try {
-      await fetch(`${apiBase}/backtest-history/${id}`, { method: 'DELETE' });
+      await apiFetch(`${apiBase}/backtest-history/${id}`, { method: 'DELETE' });
       setItems(prev => prev.filter(item => item.id !== id));
       if (expandedId === id) setExpandedId(null);
     } finally {
@@ -1243,7 +1244,7 @@ const HistoryTab: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     if (!confirm('Svuotare l\'intero archivio? Tutti i report verranno eliminati definitivamente.')) return;
     setClearingAll(true);
     try {
-      await fetch(`${apiBase}/backtest-history`, { method: 'DELETE' });
+      await apiFetch(`${apiBase}/backtest-history`, { method: 'DELETE' });
       setItems([]);
       setExpandedId(null);
     } finally {
@@ -1261,7 +1262,7 @@ const HistoryTab: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     setEditingId(null);
     if (!name) return;
     try {
-      await fetch(`${apiBase}/backtest-history/${id}`, {
+      await apiFetch(`${apiBase}/backtest-history/${id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name }),
@@ -1618,14 +1619,14 @@ const SavePresetModal: React.FC<SavePresetModalProps> = ({ mode, preset, params,
     setError('');
     try {
       if (mode === 'save') {
-        const res = await fetch(`${apiBase}/presets`, {
+        const res = await apiFetch(`${apiBase}/presets`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ name: trimmed, params }),
         });
         if (!res.ok) throw new Error(await res.text());
       } else {
-        const res = await fetch(`${apiBase}/presets/${preset!.id}`, {
+        const res = await apiFetch(`${apiBase}/presets/${preset!.id}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ name: trimmed }),
@@ -1645,7 +1646,7 @@ const SavePresetModal: React.FC<SavePresetModalProps> = ({ mode, preset, params,
     if (!preset) return;
     setDeleting(true);
     try {
-      await fetch(`${apiBase}/presets/${preset.id}`, { method: 'DELETE' });
+      await apiFetch(`${apiBase}/presets/${preset.id}`, { method: 'DELETE' });
       onSaved();
       onClose();
     } finally {
@@ -2158,7 +2159,7 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   }, []);
 
   useEffect(() => {
-    fetch(`${apiBase}/bot/backtest`)
+    apiFetch(`${apiBase}/bot/backtest`)
       .then(r => r.json())
       .then(applyConfig)
       .catch(() => {/* silent — use defaults */});
@@ -2166,7 +2167,7 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
 
   // ── Reconnect to a job that was running before a page refresh ────────────────
   useEffect(() => {
-    fetch(`${apiBase}/backtest/active`)
+    apiFetch(`${apiBase}/backtest/active`)
       .then(r => r.json())
       .then(({ job_id }: { job_id: string | null }) => {
         if (!job_id) { sessionStorage.removeItem('bt_active_job'); return; }
@@ -2195,7 +2196,7 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     abortCtrlRef.current = null;
     activeJobRef.current = null;
     if (jobId) {
-      try { await fetch(`${apiBase}/backtest/${jobId}`, { method: 'DELETE' }); } catch {}
+      try { await apiFetch(`${apiBase}/backtest/${jobId}`, { method: 'DELETE' }); } catch {}
     }
     sessionStorage.removeItem('bt_active_job');
     setStatus('idle');
@@ -2214,7 +2215,7 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
 
   // Fetch presets on mount
   useEffect(() => {
-    fetch(`${apiBase}/presets`)
+    apiFetch(`${apiBase}/presets`)
       .then(r => r.json())
       .then(setPresets)
       .catch(() => {});
@@ -2249,7 +2250,7 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   };
 
   const fetchPresets = useCallback(() => {
-    fetch(`${apiBase}/presets`)
+    apiFetch(`${apiBase}/presets`)
       .then(r => r.json())
       .then(setPresets)
       .catch(() => {});
@@ -2270,7 +2271,7 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   const loadFromLive = async () => {
     setDrawerLoading(true);
     try {
-      const r = await fetch(`${apiBase}/bot`);
+      const r = await apiFetch(`${apiBase}/bot`);
       const p = await r.json();
       applyConfig(p);
     } finally {
@@ -2286,7 +2287,7 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   const saveAsDefault = async () => {
     setDrawerSaving(true);
     try {
-      const r = await fetch(`${apiBase}/bot/backtest`, {
+      const r = await apiFetch(`${apiBase}/bot/backtest`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(buildConfig(true)),
@@ -4906,7 +4907,7 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
         onClose={() => setShowSaveModal(false)}
         onSaved={() => {
           if (saveModalMode === 'rename' && saveModalPreset) {
-            fetch(`${apiBase}/presets`)
+            apiFetch(`${apiBase}/presets`)
               .then(r => r.json())
               .then((ps: Preset[]) => {
                 setPresets(ps);
