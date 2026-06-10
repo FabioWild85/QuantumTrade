@@ -78,6 +78,7 @@ interface BotStatus {
     be_sl_enabled?: boolean;
     partial_tp_enabled?: boolean;
     trailing_sl_enabled?: boolean;
+    chronos_enabled?: boolean;
     [key: string]: unknown;
   };
   last_cycle_signals?: {
@@ -928,6 +929,7 @@ export const Monitor: React.FC<{ apiBase: string }> = ({ apiBase }) => {
           mode={status?.mode ?? 'paper'}
           lgbmConfirmBars={status?.config?.lgbm_exit_confirm_bars ?? 2}
           beSlEnabled={status?.config?.be_sl_enabled ?? false}
+          chronosEnabled={!!(status?.config?.chronos_enabled ?? true)}
           lastCycleSignals={status?.last_cycle_signals ?? null}
           trendMeter={status?.trend_meter ?? null}
           trendExitEnabled={!!(status?.config?.trend_exit_enabled)}
@@ -1281,7 +1283,7 @@ function parseBold(text: string): React.ReactNode[] {
   );
 }
 
-function buildTradeNarrative(pos: Position): string {
+function buildTradeNarrative(pos: Position, chronosEnabled: boolean): string {
   const isLong = pos.side === 'long';
   const lines  = pos.entry_reasoning ?? [];
 
@@ -1345,7 +1347,8 @@ function buildTradeNarrative(pos: Position): string {
   let p = '';
 
   // Opening: direction + AI confidence
-  p += `Il bot ha aperto una posizione **${isLong ? 'LONG (rialzista)' : 'SHORT (ribassista)'}** su Bitcoin perché i due modelli di intelligenza artificiale (LightGBM e Chronos) concordano con una **probabilità del ${confPct}%** che il prezzo si muova ${isLong ? 'al rialzo' : 'al ribasso'} nelle prossime ore. `;
+  const modelsLabel = chronosEnabled ? 'LightGBM e Chronos' : 'LightGBM';
+  p += `Il bot ha aperto una posizione **${isLong ? 'LONG (rialzista)' : 'SHORT (ribassista)'}** su Bitcoin perché ${chronosEnabled ? 'i due modelli di intelligenza artificiale' : 'il modello di intelligenza artificiale'} (${modelsLabel}) ${chronosEnabled ? 'concordano' : 'stima'} con una **probabilità del ${confPct}%** che il prezzo si muova ${isLong ? 'al rialzo' : 'al ribasso'} nelle prossime ore. `;
 
   // Regime context
   if (regimeText) {
@@ -1381,8 +1384,8 @@ function buildTradeNarrative(pos: Position): string {
     }
   }
 
-  // C2 price target
-  if (c2Target !== null) {
+  // C2 price target — only show when Chronos is enabled (otherwise c2_p50 = mark_price, non è una previsione reale)
+  if (chronosEnabled && c2Target !== null) {
     p += `Il modello Chronos stima un prezzo mediano di **$${c2Target.toLocaleString('en-US', { maximumFractionDigits: 0 })}** come riferimento per il prossimo ciclo. `;
   }
 
@@ -1543,6 +1546,7 @@ interface LiveTradeCardProps {
   mode: string;
   lgbmConfirmBars: number;
   beSlEnabled: boolean;
+  chronosEnabled: boolean;
   lastCycleSignals: LastCycleSignals | null;
   trendMeter: TrendMeterData | null;
   trendExitEnabled: boolean;
@@ -1554,7 +1558,7 @@ const LiveTradeCard: React.FC<LiveTradeCardProps> = ({
   pos, markPrice, unrealizedPnl, unrealizedPct,
   distToSL, distToTP, distToSLPct, distToTPPct,
   slProgressPct, ptpProgressPct, distToPTP, distToPTPPct,
-  positionDurationH, mode, lgbmConfirmBars, beSlEnabled,
+  positionDurationH, mode, lgbmConfirmBars, beSlEnabled, chronosEnabled,
   lastCycleSignals, trendMeter, trendExitEnabled, trendExitConfirmBars, onClose,
 }) => {
   const isLong    = pos.side === 'long';
@@ -1822,7 +1826,7 @@ const LiveTradeCard: React.FC<LiveTradeCardProps> = ({
           <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-3">Perché Aperto</p>
           {/* Natural language narrative */}
           <p className="text-[12px] text-slate-600 dark:text-slate-300 leading-relaxed mb-4">
-            {parseBold(buildTradeNarrative(pos))}
+            {parseBold(buildTradeNarrative(pos, chronosEnabled))}
           </p>
           {/* Technical details — collapsible */}
           <details className="group">

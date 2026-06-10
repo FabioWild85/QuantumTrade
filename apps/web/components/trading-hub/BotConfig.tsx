@@ -213,6 +213,14 @@ interface Config {
   reversal_bars_in_regime_min: number;
   reversal_consec_bars_min: number;
   reversal_ema50_dist_extreme: number;
+  // Re-entry on TP
+  reentry_on_tp_enabled: boolean;
+  reentry_min_lgbm_pct: number;
+  reentry_1h_confirm_enabled: boolean;
+  reentry_min_1h_pct: number;
+  reentry_size_factor: number;
+  reentry_sl_atr_mult: number;
+  reentry_tp_atr_mult: number;
 }
 
 const DEFAULTS: Config = {
@@ -424,6 +432,14 @@ const DEFAULTS: Config = {
   reversal_bars_in_regime_min: 20,      // lowered from 40: targets 2-5 day moves, not macro regimes
   reversal_consec_bars_min: 5,
   reversal_ema50_dist_extreme: 3.0,
+  // Re-entry on TP
+  reentry_on_tp_enabled: false,
+  reentry_min_lgbm_pct: 0.68,
+  reentry_1h_confirm_enabled: true,
+  reentry_min_1h_pct: 0.55,
+  reentry_size_factor: 0.65,
+  reentry_sl_atr_mult: 1.5,
+  reentry_tp_atr_mult: 3.5,
 };
 
 interface PruningMetrics {
@@ -1897,6 +1913,114 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
             </div>
           )}
         </div>
+      </Section>
+
+      {/* Re-entry on TP */}
+      <Section title="Re-entry on TP" description="Riapre nella stessa direzione subito dopo un Take Profit, applicando una conferma 1H e parametri di rischio dedicati (SL/TP piu stretti, size ridotta). Utile per cavalcare trend forti senza aspettare la prossima candela 4H.">
+        <div className={`flex flex-col gap-3 mb-6 pb-6 border-b transition-colors duration-200 ${config.reentry_on_tp_enabled ? 'border-emerald-200 dark:border-emerald-500/25' : 'border-slate-100 dark:border-white/5'}`}>
+          <label className="flex items-center gap-3 cursor-pointer group">
+            <div className="relative">
+              <input type="checkbox" className="sr-only" checked={config.reentry_on_tp_enabled} onChange={e => setConfig(c => ({ ...c, reentry_on_tp_enabled: e.target.checked }))} />
+              <div className={`w-10 h-5 rounded-full transition-all duration-300 ${config.reentry_on_tp_enabled ? 'bg-emerald-600' : 'bg-slate-200 dark:bg-white/10'}`} />
+              <div className={`absolute top-1 left-1 w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.reentry_on_tp_enabled ? 'translate-x-5' : ''}`} />
+            </div>
+            <div>
+              <p className={`text-sm font-bold transition-colors ${config.reentry_on_tp_enabled ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-800 dark:text-slate-200 group-hover:text-emerald-600 dark:group-hover:text-emerald-400'}`}>
+                Re-entry on TP
+                {config.reentry_on_tp_enabled && <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-emerald-100 dark:bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 uppercase tracking-wider">Attivo</span>}
+              </p>
+              <p className="text-[11px] text-slate-400 dark:text-slate-500 mt-0.5">
+                {config.reentry_on_tp_enabled
+                  ? `LGBM min ${(config.reentry_min_lgbm_pct * 100).toFixed(0)}% · size ×${config.reentry_size_factor} · SL ${config.reentry_sl_atr_mult}×ATR · TP ${config.reentry_tp_atr_mult}×ATR`
+                  : 'Disattivato — nessuna riapertura dopo TP'}
+              </p>
+            </div>
+          </label>
+        </div>
+
+        {config.reentry_on_tp_enabled && (
+          <div className="flex flex-col gap-5">
+            <label className="flex items-center gap-3 cursor-pointer">
+              <div className="relative">
+                <input type="checkbox" className="sr-only" checked={config.reentry_1h_confirm_enabled} onChange={e => setConfig(c => ({ ...c, reentry_1h_confirm_enabled: e.target.checked }))} />
+                <div className={`w-8 h-4 rounded-full transition-all duration-300 ${config.reentry_1h_confirm_enabled ? 'bg-emerald-600' : 'bg-slate-200 dark:bg-white/10'}`} />
+                <div className={`absolute top-0.5 left-0.5 w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.reentry_1h_confirm_enabled ? 'translate-x-4' : ''}`} />
+              </div>
+              <div>
+                <p className="text-[10px] font-bold text-slate-700 dark:text-slate-300">Conferma Gate 1H</p>
+                <p className="text-[9px] text-slate-400 dark:text-slate-500">Richiede conferma del modello 1H prima di riaprire. Raccomandato ON.</p>
+              </div>
+            </label>
+
+            <div>
+              <Tooltip text="Soglia minima LGBM 4H nella direzione del re-entry. Garantisce che il segnale di trend sia ancora forte al momento della riapertura." width="wide" pos="top">
+                <p className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest mb-3">
+                  LGBM 4H min — <span className="text-emerald-600 dark:text-emerald-400">{(config.reentry_min_lgbm_pct * 100).toFixed(0)}%</span>
+                </p>
+              </Tooltip>
+              <input type="range" min={55} max={85} step={1} value={Math.round(config.reentry_min_lgbm_pct * 100)}
+                onChange={e => setConfig(c => ({ ...c, reentry_min_lgbm_pct: Number(e.target.value) / 100 }))}
+                className="w-full accent-emerald-500" />
+              <div className="flex justify-between text-[9px] text-slate-400 mt-1"><span>55%</span><span>85%</span></div>
+            </div>
+
+            {config.reentry_1h_confirm_enabled && (
+              <div>
+                <Tooltip text="Soglia minima del modello 1H nella direzione del re-entry. Filtra i casi in cui il momentum intracandle non supporta la riapertura." width="wide" pos="top">
+                  <p className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest mb-3">
+                    Gate 1H min — <span className="text-emerald-600 dark:text-emerald-400">{(config.reentry_min_1h_pct * 100).toFixed(0)}%</span>
+                  </p>
+                </Tooltip>
+                <input type="range" min={50} max={75} step={1} value={Math.round(config.reentry_min_1h_pct * 100)}
+                  onChange={e => setConfig(c => ({ ...c, reentry_min_1h_pct: Number(e.target.value) / 100 }))}
+                  className="w-full accent-emerald-500" />
+                <div className="flex justify-between text-[9px] text-slate-400 mt-1"><span>50%</span><span>75%</span></div>
+              </div>
+            )}
+
+            <div>
+              <Tooltip text="Moltiplicatore di size rispetto alla size normale calcolata da RiskEngine. Riduce l'esposizione perché il re-entry avviene senza una nuova chiusura 4H." width="wide" pos="top">
+                <p className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest mb-3">
+                  Size Factor — <span className="text-emerald-600 dark:text-emerald-400">×{config.reentry_size_factor.toFixed(2)}</span>
+                </p>
+              </Tooltip>
+              <input type="range" min={30} max={100} step={5} value={Math.round(config.reentry_size_factor * 100)}
+                onChange={e => setConfig(c => ({ ...c, reentry_size_factor: Number(e.target.value) / 100 }))}
+                className="w-full accent-emerald-500" />
+              <div className="flex justify-between text-[9px] text-slate-400 mt-1"><span>×0.30</span><span>×1.00</span></div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <Tooltip text="Moltiplicatore ATR per lo Stop Loss del re-entry. Piu stretto del normale (default 1.5×) perche il re-entry e eseguito senza struttura fresca." width="wide" pos="top">
+                  <p className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest mb-3">
+                    SL — <span className="text-rose-500">{config.reentry_sl_atr_mult.toFixed(1)}×ATR</span>
+                  </p>
+                </Tooltip>
+                <input type="range" min={5} max={30} step={1} value={Math.round(config.reentry_sl_atr_mult * 10)}
+                  onChange={e => setConfig(c => ({ ...c, reentry_sl_atr_mult: Number(e.target.value) / 10 }))}
+                  className="w-full accent-rose-500" />
+                <div className="flex justify-between text-[9px] text-slate-400 mt-1"><span>0.5×</span><span>3.0×</span></div>
+              </div>
+              <div>
+                <Tooltip text="Moltiplicatore ATR per il Take Profit del re-entry. Piu conservativo del normale (default 3.5×) per chiudere velocemente il guadagno." width="wide" pos="top">
+                  <p className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest mb-3">
+                    TP — <span className="text-emerald-500">{config.reentry_tp_atr_mult.toFixed(1)}×ATR</span>
+                  </p>
+                </Tooltip>
+                <input type="range" min={10} max={80} step={5} value={Math.round(config.reentry_tp_atr_mult * 10)}
+                  onChange={e => setConfig(c => ({ ...c, reentry_tp_atr_mult: Number(e.target.value) / 10 }))}
+                  className="w-full accent-emerald-500" />
+                <div className="flex justify-between text-[9px] text-slate-400 mt-1"><span>1.0×</span><span>8.0×</span></div>
+              </div>
+            </div>
+
+            <div className="p-2 rounded-lg bg-emerald-50 dark:bg-emerald-500/5 border border-emerald-100 dark:border-emerald-500/15">
+              <p className="text-[9px] text-emerald-700 dark:text-emerald-300 font-medium">SL strutturale, FVG-SL e pullback entry disabilitati per il re-entry (nessuna nuova candela 4H chiusa). Il re-entry usa ATR puro per SL e TP. Bounce-fade entry disabilitato.</p>
+              <p className="text-[9px] text-slate-400 dark:text-slate-500 mt-1">Backtestabile: il motore di backtest applica la stessa logica incluso il gate 1H. Statistiche: reentry_triggered / reentry_blocked_lgbm / reentry_blocked_1h nei param_stats.</p>
+            </div>
+          </div>
+        )}
       </Section>
 
       {/* Regime Bias */}

@@ -29,6 +29,7 @@ interface BacktestTrade {
   reason: string;
   holding_bars: number;
   bar: number;
+  origin?: string;
   _levEq?: number;
   _bankrupt?: boolean;
 }
@@ -113,6 +114,10 @@ interface ParamStats {
   rev_pending_expired?: number;
   rev_conflict_block?: number;
   rev_trend_boost?: number;
+  // re-entry on TP
+  reentry_triggered?: number;
+  reentry_blocked_lgbm?: number;
+  reentry_blocked_1h?: number;
 }
 
 interface BacktestResult {
@@ -347,9 +352,16 @@ const TradeTable: React.FC<{ trades: BacktestTrade[]; showLevEquity?: boolean; i
           {t.funding_paid !== undefined ? (t.funding_paid < 0 ? `+$${Math.abs(t.funding_paid).toFixed(1)}` : `$${t.funding_paid.toFixed(1)}`) : '—'}
         </td>
         <td className="px-4 py-2">
-          <span className={`px-2 py-0.5 rounded-lg text-[9px] font-bold uppercase tracking-wider border ${reasonStyle[t.reason] ?? 'bg-slate-50 dark:bg-white/5 text-slate-500 border-slate-200 dark:border-white/10'}`}>
-            {t.reason.replace(/_/g, ' ')}
-          </span>
+          <div className="flex items-center gap-1 flex-wrap">
+            <span className={`px-2 py-0.5 rounded-lg text-[9px] font-bold uppercase tracking-wider border ${reasonStyle[t.reason] ?? 'bg-slate-50 dark:bg-white/5 text-slate-500 border-slate-200 dark:border-white/10'}`}>
+              {t.reason.replace(/_/g, ' ')}
+            </span>
+            {t.origin === 'reentry' && (
+              <span className="px-1.5 py-0.5 rounded text-[8px] font-bold uppercase tracking-wider bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-500/25">
+                re-entry
+              </span>
+            )}
+          </div>
         </td>
         <td className="px-4 py-2 text-right text-slate-400 dark:text-slate-500 font-mono">{t.holding_bars * 4}h</td>
       </tr>
@@ -779,9 +791,15 @@ const ConfigSummary: React.FC<{ config: Record<string, any> }> = ({ config: c })
 };
 
 // ── Parameter Activity Report ─────────────────────────────────────────────────
-const ParamActivity: React.FC<{ ps: ParamStats; cfg?: Record<string, boolean> }> = ({ ps, cfg }) => {
+const ParamActivity: React.FC<{ ps: ParamStats; cfg?: Record<string, boolean>; trades?: BacktestTrade[] }> = ({ ps, cfg, trades: allTrades }) => {
   const total  = ps.bars_evaluated || 1;
   const trades = (ps.signals_long ?? 0) + (ps.signals_short ?? 0);
+
+  // Re-entry win/loss: only FULL closes (exclude partial_tp — they're sub-records of the same position)
+  const reentryClosings = (allTrades ?? []).filter(t => t.origin === 'reentry' && t.reason !== 'partial_tp');
+  const reentryWins     = reentryClosings.filter(t => t.pnl_pct > 0).length;
+  const reentryLosses   = reentryClosings.filter(t => t.pnl_pct < 0).length;
+  const reentryWinRate  = reentryClosings.length > 0 ? Math.round(reentryWins / reentryClosings.length * 100) : null;
 
   // isOn: true = enabled in backtest settings, false = disabled (hidden from report)
   // When param_config is not available (old backtest result), show all rows.
@@ -931,6 +949,19 @@ const ParamActivity: React.FC<{ ps: ParamStats; cfg?: Record<string, boolean> }>
           { key: 'rev_pending_triggered',label: 'Pending triggerati (retest raggiunto → trade aperto)',            count: ps.rev_pending_triggered ?? 0, pct: (ps.rev_pending_set ?? 0) > 0 ? pct(ps.rev_pending_triggered ?? 0, ps.rev_pending_set!) : 0, note: (ps.rev_pending_set ?? 0) > 0 ? `${pct(ps.rev_pending_triggered ?? 0, ps.rev_pending_set!)}% dei pending` : undefined },
           { key: 'rev_pending_expired',  label: 'Pending scaduti (retest non raggiunto nel periodo)',              count: ps.rev_pending_expired ?? 0,   pct: (ps.rev_pending_set ?? 0) > 0 ? pct(ps.rev_pending_expired ?? 0, ps.rev_pending_set!) : 0,  note: (ps.rev_pending_set ?? 0) > 0 ? `${pct(ps.rev_pending_expired ?? 0, ps.rev_pending_set!)}% dei pending` : undefined },
         ] : []),
+      ],
+    }] : []),
+    // Re-entry on TP: shown when enabled OR when at least one re-entry fired
+    ...((isOn('reentry_triggered') || isOn('reentry_blocked_lgbm') || (ps.reentry_triggered ?? 0) > 0 || (ps.reentry_blocked_lgbm ?? 0) > 0 || (ps.reentry_blocked_1h ?? 0) > 0) ? [{
+      title: 'Re-entry on TP',
+      color: 'border-emerald-200 dark:border-emerald-500/20',
+      dot: 'bg-emerald-500',
+      rows: [
+        { key: 'reentry_triggered',    alwaysShow: true, label: 'Re-entry aperti (TP colpito → stesso lato riaperto)', count: ps.reentry_triggered ?? 0,    pct: ps.exit_take_profit > 0 ? pct(ps.reentry_triggered ?? 0, ps.exit_take_profit) : 0, note: ps.exit_take_profit > 0 ? `${pct(ps.reentry_triggered ?? 0, ps.exit_take_profit)}% dei TP` : undefined },
+        { key: 'reentry_wins',         alwaysShow: true, label: `Chiusi in profitto${reentryWinRate !== null ? ` — win rate ${reentryWinRate}%` : ''}`, count: reentryWins,   pct: reentryClosings.length > 0 ? pct(reentryWins,   reentryClosings.length) : 0, note: reentryClosings.length > 0 ? `${pct(reentryWins, reentryClosings.length)}% dei re-entry` : undefined },
+        { key: 'reentry_losses',       alwaysShow: true, label: 'Chiusi in perdita',                                   count: reentryLosses, pct: reentryClosings.length > 0 ? pct(reentryLosses, reentryClosings.length) : 0, note: reentryClosings.length > 0 ? `${pct(reentryLosses, reentryClosings.length)}% dei re-entry` : undefined },
+        { key: 'reentry_blocked_lgbm', alwaysShow: true, label: 'Bloccati — LGBM 4H sotto soglia (trend indebolito)',  count: ps.reentry_blocked_lgbm ?? 0, pct: (ps.reentry_triggered ?? 0) + (ps.reentry_blocked_lgbm ?? 0) + (ps.reentry_blocked_1h ?? 0) > 0 ? pct(ps.reentry_blocked_lgbm ?? 0, (ps.reentry_triggered ?? 0) + (ps.reentry_blocked_lgbm ?? 0) + (ps.reentry_blocked_1h ?? 0)) : 0, note: undefined },
+        { key: 'reentry_blocked_1h',   alwaysShow: true, label: 'Bloccati — Gate 1H sotto soglia (momentum 1H debole)', count: ps.reentry_blocked_1h ?? 0,   pct: (ps.reentry_triggered ?? 0) + (ps.reentry_blocked_lgbm ?? 0) + (ps.reentry_blocked_1h ?? 0) > 0 ? pct(ps.reentry_blocked_1h ?? 0, (ps.reentry_triggered ?? 0) + (ps.reentry_blocked_lgbm ?? 0) + (ps.reentry_blocked_1h ?? 0)) : 0, note: undefined },
       ],
     }] : []),
   ];
@@ -1129,7 +1160,7 @@ const HistoryResultCard: React.FC<{ result: BacktestResult; config?: Record<stri
         </div>
       )}
       {/* Parameter Activity Report */}
-      {result.param_stats && <ParamActivity ps={result.param_stats} cfg={result.param_config} />}
+      {result.param_stats && <ParamActivity ps={result.param_stats} cfg={result.param_config} trades={result.trades} />}
     </div>
   );
 };
@@ -1143,6 +1174,7 @@ const HistoryTab: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   const [editingId, setEditingId]     = useState<string | null>(null);
   const [editingName, setEditingName] = useState('');
   const [deletingId, setDeletingId]   = useState<string | null>(null);
+  const [clearingAll, setClearingAll] = useState(false);
 
   const fetchHistory = useCallback(async () => {
     setLoading(true);
@@ -1193,6 +1225,18 @@ const HistoryTab: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     }
   };
 
+  const handleClearAll = async () => {
+    if (!confirm('Svuotare l\'intero archivio? Tutti i report verranno eliminati definitivamente.')) return;
+    setClearingAll(true);
+    try {
+      await fetch(`${apiBase}/backtest-history`, { method: 'DELETE' });
+      setItems([]);
+      setExpandedId(null);
+    } finally {
+      setClearingAll(false);
+    }
+  };
+
   const handleRenameStart = (item: HistoryItem) => {
     setEditingId(item.id);
     setEditingName(item.name ?? '');
@@ -1237,15 +1281,29 @@ const HistoryTab: React.FC<{ apiBase: string }> = ({ apiBase }) => {
       {/* Toolbar */}
       <div className="flex items-center justify-between mb-4">
         <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest">{items.length} Report Disponibili</span>
-        <button
-          onClick={fetchHistory}
-          className="flex items-center gap-2 px-4 py-2 text-[10px] font-bold uppercase tracking-widest bg-white dark:bg-white/5 hover:bg-slate-50 dark:hover:bg-white/10 border border-slate-100 dark:border-white/10 rounded-xl text-slate-500 dark:text-slate-400 transition-all shadow-sm active:scale-95"
-        >
-          <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-            <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-          </svg>
-          Sincronizza
-        </button>
+        <div className="flex items-center gap-2">
+          {items.length > 0 && (
+            <button
+              onClick={handleClearAll}
+              disabled={clearingAll}
+              className="flex items-center gap-2 px-4 py-2 text-[10px] font-bold uppercase tracking-widest bg-white dark:bg-white/5 hover:bg-rose-50 dark:hover:bg-rose-500/10 border border-slate-100 dark:border-white/10 hover:border-rose-200 dark:hover:border-rose-500/30 rounded-xl text-slate-500 dark:text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 transition-all shadow-sm active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+              </svg>
+              {clearingAll ? 'Pulizia…' : 'Svuota Archivio'}
+            </button>
+          )}
+          <button
+            onClick={fetchHistory}
+            className="flex items-center gap-2 px-4 py-2 text-[10px] font-bold uppercase tracking-widest bg-white dark:bg-white/5 hover:bg-slate-50 dark:hover:bg-white/10 border border-slate-100 dark:border-white/10 rounded-xl text-slate-500 dark:text-slate-400 transition-all shadow-sm active:scale-95"
+          >
+            <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+            </svg>
+            Sincronizza
+          </button>
+        </div>
       </div>
 
       {items.length === 0 ? (
@@ -1828,6 +1886,14 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   const [reversalTrendHoldOnly,  setReversalTrendHoldOnly]  = useState(true);
   const [reversalGuardOnly,      setReversalGuardOnly]      = useState(false);
   const [reversalAdxPeakMin,    setReversalAdxPeakMin]    = useState('30');
+  // Re-entry on TP
+  const [reentryEnabled,         setReentryEnabled]         = useState(false);
+  const [reentryMinLgbm,         setReentryMinLgbm]         = useState('68');   // shown as %
+  const [reentry1hConfirm,       setReentry1hConfirm]       = useState(true);
+  const [reentryMin1h,           setReentryMin1h]           = useState('55');   // shown as %
+  const [reentrySize,            setReentrySize]            = useState('65');   // shown as %
+  const [reentrySlAtr,           setReentrySlAtr]           = useState('1.5');
+  const [reentryTpAtr,           setReentryTpAtr]           = useState('3.5');
   const [reversalRet48Extreme,  setReversalRet48Extreme]  = useState('6');   // shown as % in UI
   const [reversalBarsInRegime,  setReversalBarsInRegime]  = useState('20');
   // ATR% Volatility Gate
@@ -2039,6 +2105,14 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     if (p.reversal_trend_hold_only     !== undefined) setReversalTrendHoldOnly(!!p.reversal_trend_hold_only);
     if (p.reversal_guard_only          !== undefined) setReversalGuardOnly(!!p.reversal_guard_only);
     if (p.reversal_adx_peak_min        !== undefined) setReversalAdxPeakMin(String(p.reversal_adx_peak_min));
+    // Re-entry on TP
+    if (p.reentry_on_tp_enabled        !== undefined) setReentryEnabled(!!p.reentry_on_tp_enabled);
+    if (p.reentry_min_lgbm_pct         !== undefined) setReentryMinLgbm(String(Math.round(p.reentry_min_lgbm_pct * 100)));
+    if (p.reentry_1h_confirm_enabled   !== undefined) setReentry1hConfirm(!!p.reentry_1h_confirm_enabled);
+    if (p.reentry_min_1h_pct           !== undefined) setReentryMin1h(String(Math.round(p.reentry_min_1h_pct * 100)));
+    if (p.reentry_size_factor          !== undefined) setReentrySize(String(Math.round(p.reentry_size_factor * 100)));
+    if (p.reentry_sl_atr_mult          !== undefined) setReentrySlAtr(String(p.reentry_sl_atr_mult));
+    if (p.reentry_tp_atr_mult          !== undefined) setReentryTpAtr(String(p.reentry_tp_atr_mult));
     if (p.reversal_ret48_extreme       !== undefined) setReversalRet48Extreme(String(Math.round(p.reversal_ret48_extreme * 100)));
     if (p.reversal_bars_in_regime_min  !== undefined) setReversalBarsInRegime(String(p.reversal_bars_in_regime_min));
     if (p.atr_pct_gate_enabled         !== undefined) setAtrPctGateEnabled(!!p.atr_pct_gate_enabled);
@@ -2353,6 +2427,14 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     reversal_adx_peak_min:         parseFloat(reversalAdxPeakMin),
     reversal_ret48_extreme:        parseFloat(reversalRet48Extreme) / 100,
     reversal_bars_in_regime_min:   parseInt(reversalBarsInRegime),
+    // Re-entry on TP
+    reentry_on_tp_enabled:         reentryEnabled,
+    reentry_min_lgbm_pct:          parseFloat(reentryMinLgbm) / 100,
+    reentry_1h_confirm_enabled:    reentry1hConfirm,
+    reentry_min_1h_pct:            parseFloat(reentryMin1h) / 100,
+    reentry_size_factor:           parseFloat(reentrySize) / 100,
+    reentry_sl_atr_mult:           parseFloat(reentrySlAtr),
+    reentry_tp_atr_mult:           parseFloat(reentryTpAtr),
     atr_pct_gate_enabled:          atrPctGateEnabled,
     use_1h_lgbm_gate:              use1hGate,
     lgbm_1h_min_agreement:         parseFloat(lgbm1hMinAgreement) / 100,
@@ -2470,6 +2552,17 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
         `  Profondità pullback:  ${pullbackZoneAtr}×ATR (ritracciamento target dalla chiusura 4H)`,
         `  Finestra attesa:      ${pullbackWindowH}h (${Math.max(1, Math.ceil(parseInt(pullbackWindowH) / 4))} bar 4H)`,
         `  Limite fallback:      ${pullbackFallbackAtr}×ATR (oltre → segnale decade)`,
+      ] : []),
+      '',
+      '━━━ RE-ENTRY ON TP ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
+      `Re-entry on TP:         ${reentryEnabled ? 'ATTIVO' : 'DISATTIVATO'}`,
+      ...(reentryEnabled ? [
+        `  Conferma Gate 1H:     ${reentry1hConfirm ? 'ON' : 'OFF'}`,
+        `  LGBM 4H min:          ${reentryMinLgbm}%`,
+        ...(reentry1hConfirm ? [`  Gate 1H min:          ${reentryMin1h}%`] : []),
+        `  Size factor:          ×${(parseFloat(reentrySize) / 100).toFixed(2)} (${reentrySize}% della size normale)`,
+        `  SL / TP:              ${reentrySlAtr}×ATR / ${reentryTpAtr}×ATR`,
+        `  Structural SL:        DISABILITATO (nessuna nuova candela 4H al re-entry)`,
       ] : []),
     ];
     // ── NOTA MANUTENZIONE ─────────────────────────────────────────────────────
@@ -3532,7 +3625,7 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                 })()}
 
                 {/* Parameter Activity Report */}
-                {result.param_stats && <ParamActivity ps={result.param_stats} cfg={result.param_config} />}
+                {result.param_stats && <ParamActivity ps={result.param_stats} cfg={result.param_config} trades={result.trades} />}
               </>
             );
           })()}
@@ -4252,6 +4345,84 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                         checked={reversalGuardOnly}
                         onChange={setReversalGuardOnly}
                       />
+                    </div>
+                  )}
+                </div>
+              </section>
+
+              {/* ── Re-entry on TP ─────────────────────────────────────────────── */}
+              <section className="space-y-5">
+                <h4 className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest flex items-center gap-2">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                  Re-entry on TP
+                </h4>
+                <div className="space-y-4 bg-slate-50 dark:bg-white/[0.02] p-4 rounded-2xl border border-slate-100 dark:border-white/5">
+                  <Toggle
+                    label="Re-entry on TP"
+                    desc="Riapre nella stessa direzione subito dopo un TP, con conferma 1H e parametri di rischio ridotti."
+                    checked={reentryEnabled}
+                    onChange={setReentryEnabled}
+                  />
+                  {reentryEnabled && (
+                    <div className="space-y-4 pt-1">
+                      <Toggle
+                        label="Conferma Gate 1H"
+                        desc="Richiede conferma del modello 1H prima di riaprire. Raccomandato ON."
+                        checked={reentry1hConfirm}
+                        onChange={setReentry1hConfirm}
+                      />
+                      <div>
+                        <p className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest mb-2">
+                          LGBM 4H min — <span className="text-emerald-500">{reentryMinLgbm}%</span>
+                        </p>
+                        <input type="range" min={55} max={85} step={1} value={reentryMinLgbm}
+                          onChange={e => setReentryMinLgbm(e.target.value)}
+                          className="w-full accent-emerald-500" />
+                        <div className="flex justify-between text-[9px] text-slate-400 mt-1"><span>55%</span><span>85%</span></div>
+                      </div>
+                      {reentry1hConfirm && (
+                        <div>
+                          <p className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest mb-2">
+                            Gate 1H min — <span className="text-emerald-500">{reentryMin1h}%</span>
+                          </p>
+                          <input type="range" min={50} max={75} step={1} value={reentryMin1h}
+                            onChange={e => setReentryMin1h(e.target.value)}
+                            className="w-full accent-emerald-500" />
+                          <div className="flex justify-between text-[9px] text-slate-400 mt-1"><span>50%</span><span>75%</span></div>
+                        </div>
+                      )}
+                      <div>
+                        <p className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest mb-2">
+                          Size Factor — <span className="text-emerald-500">×{(parseFloat(reentrySize) / 100).toFixed(2)}</span>
+                        </p>
+                        <input type="range" min={30} max={100} step={5} value={reentrySize}
+                          onChange={e => setReentrySize(e.target.value)}
+                          className="w-full accent-emerald-500" />
+                        <div className="flex justify-between text-[9px] text-slate-400 mt-1"><span>×0.30</span><span>×1.00</span></div>
+                      </div>
+                      <div className="grid grid-cols-2 gap-4">
+                        <div>
+                          <p className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest mb-2">
+                            SL — <span className="text-rose-500">{reentrySlAtr}×ATR</span>
+                          </p>
+                          <input type="range" min={5} max={30} step={1} value={Math.round(parseFloat(reentrySlAtr) * 10)}
+                            onChange={e => setReentrySlAtr(String(parseInt(e.target.value) / 10))}
+                            className="w-full accent-rose-500" />
+                          <div className="flex justify-between text-[9px] text-slate-400 mt-1"><span>0.5×</span><span>3.0×</span></div>
+                        </div>
+                        <div>
+                          <p className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest mb-2">
+                            TP — <span className="text-emerald-500">{reentryTpAtr}×ATR</span>
+                          </p>
+                          <input type="range" min={10} max={80} step={5} value={Math.round(parseFloat(reentryTpAtr) * 10)}
+                            onChange={e => setReentryTpAtr(String(parseInt(e.target.value) / 10))}
+                            className="w-full accent-emerald-500" />
+                          <div className="flex justify-between text-[9px] text-slate-400 mt-1"><span>1.0×</span><span>8.0×</span></div>
+                        </div>
+                      </div>
+                      <p className="text-[9px] text-emerald-700 dark:text-emerald-300/70 bg-emerald-50 dark:bg-emerald-500/5 border border-emerald-100 dark:border-emerald-500/15 rounded-lg p-2">
+                        SL strutturale, FVG-SL e pullback disabilitati per il re-entry (nessuna nuova candela 4H). Statistica nei param_stats: reentry_triggered / reentry_blocked_lgbm / reentry_blocked_1h.
+                      </p>
                     </div>
                   )}
                 </div>

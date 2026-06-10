@@ -392,6 +392,28 @@ class BotConfig(BaseModel):
     reversal_retest_wick_pct:    float = Field(0.25,  ge=0.0,  le=1.0)  # was 0.50; R:R 1.88 vs 1.49 at 0.50
     reversal_retest_expiry_bars: int   = Field(3,     ge=1,    le=6)    # was 2; 12h window instead of 8h
     reversal_guard_only:         bool  = Field(False)                   # True → solo conflict-block, niente trade contro trend
+    # ── Re-entry on TP ────────────────────────────────────────────────────────
+    # After TP is hit, immediately re-open in the same direction if:
+    # — 4H LGBM signal is still strong (>= reentry_min_lgbm_pct)
+    # — 1H gate confirms direction (>= reentry_min_1h_pct, if enabled)
+    # Uses a tighter ATR-based SL (no structural) and reduced size.
+    reentry_on_tp_enabled:      bool  = Field(False)
+    reentry_min_lgbm_pct:       float = Field(0.68, ge=0.55, le=0.85,
+                                               description="Min 4H LGBM directional probability to re-enter. "
+                                               "Higher = more selective, fewer re-entries.")
+    reentry_1h_confirm_enabled: bool  = Field(True,
+                                               description="Require 1H LightGBM gate confirmation before re-opening. "
+                                               "Strongly recommended to avoid chasing exhausted moves.")
+    reentry_min_1h_pct:         float = Field(0.55, ge=0.50, le=0.75,
+                                               description="Min 1H gate directional probability.")
+    reentry_size_factor:        float = Field(0.65, ge=0.30, le=1.00,
+                                               description="Position size multiplier vs normal (0.65 = 65% of normal size). "
+                                               "Smaller because the signal is stale — no fresh 4H bar.")
+    reentry_sl_atr_mult:        float = Field(1.5,  ge=0.50, le=3.00,
+                                               description="ATR multiplier for re-entry SL. Intentionally tighter than the "
+                                               "original trade (structural SL is skipped — too far from new entry).")
+    reentry_tp_atr_mult:        float = Field(3.5,  ge=1.00, le=8.00,
+                                               description="ATR multiplier for re-entry TP.")
 
 
 class StartBotRequest(BaseModel):
@@ -1361,6 +1383,13 @@ async def backtest_history_rename(record_id: str, body: dict):
     db = get_supabase()
     db.table("backtest_results").update({"name": body.get("name", "")}).eq("id", record_id).execute()
     return {"status": "ok"}
+
+
+@app.delete("/backtest-history")
+async def backtest_history_delete_all():
+    db = get_supabase()
+    db.table("backtest_results").delete().gt("created_at", "2000-01-01").execute()
+    return {"status": "cleared"}
 
 
 @app.delete("/backtest-history/{record_id}")

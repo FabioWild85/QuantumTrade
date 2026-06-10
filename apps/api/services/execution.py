@@ -351,6 +351,17 @@ class BotConfig:
         self.reversal_retest_wick_pct     = kw.get("reversal_retest_wick_pct",     0.25)   # was 0.50; R:R 1.88 vs 1.49 at 0.50
         self.reversal_retest_expiry_bars  = kw.get("reversal_retest_expiry_bars",  3)      # was 2; 12h window instead of 8h
         self.reversal_guard_only          = kw.get("reversal_guard_only",          False)  # True → solo conflict-block, niente trade contro trend
+        # ── Re-entry on TP ────────────────────────────────────────────────────
+        # When TP is hit, run a quick 1H confirmation check and re-open in the
+        # same direction with a tighter ATR-based SL and reduced size.
+        # Structural SL is intentionally skipped (no fresh 4H bar available).
+        self.reentry_on_tp_enabled      = kw.get("reentry_on_tp_enabled",      False)
+        self.reentry_min_lgbm_pct       = kw.get("reentry_min_lgbm_pct",       0.68)   # min 4H LGBM directional probability
+        self.reentry_1h_confirm_enabled = kw.get("reentry_1h_confirm_enabled",  True)   # require 1H gate before re-opening
+        self.reentry_min_1h_pct         = kw.get("reentry_min_1h_pct",          0.55)   # min 1H directional probability
+        self.reentry_size_factor        = kw.get("reentry_size_factor",          0.65)  # position size relative to normal (less confidence → less risk)
+        self.reentry_sl_atr_mult        = kw.get("reentry_sl_atr_mult",          1.5)   # ATR mult for SL (tighter than original 2.0)
+        self.reentry_tp_atr_mult        = kw.get("reentry_tp_atr_mult",          3.5)   # ATR mult for TP
 
     def model_dump(self) -> dict:
         return self.__dict__
@@ -3372,7 +3383,22 @@ class ExecutionEngine:
         except Exception as exc:
             log.warning("Equity/trade snapshot write failed: %s", exc)
 
+        # Snapshot re-entry data BEFORE clearing position (data needed by the task)
+        _reentry_task_data = None
+        if reason == "take_profit" and getattr(self.config, "reentry_on_tp_enabled", False):
+            _reentry_task_data = {
+                "exit_price":    exit_price,
+                "closed_side":   side,
+                "atr_at_signal": self._position.get("entry_atr") or exit_price * 0.01,
+                "last_signals":  copy.copy(self._last_cycle_signals),
+            }
+
         self._position = None
+
+        # Schedule re-entry check as a background task so it runs after the
+        # DB writes above complete and self._position is guaranteed None.
+        if _reentry_task_data is not None:
+            asyncio.create_task(self._check_reentry_after_tp(**_reentry_task_data))
 
         # Clear persisted position state now that the trade is closed
         if self.mode == "paper":
@@ -3388,6 +3414,144 @@ class ExecutionEngine:
                 db.table("bot_configs").update({"params": existing}).eq("name", "default").execute()
             except Exception as exc:
                 log.warning("Could not clear live position state: %s", exc)
+
+    # ── Re-entry on TP ───────────────────────────────────────────────────────
+
+    async def _check_reentry_after_tp(
+        self,
+        exit_price: float,
+        closed_side: str,
+        atr_at_signal: float,
+        last_signals: dict,
+    ) -> None:
+        """
+        Called as a background task immediately after a TP exit.
+        Re-opens in the same direction if:
+          1. 4H LGBM signal is still strong (>= reentry_min_lgbm_pct)
+          2. 1H gate confirms direction (>= reentry_min_1h_pct, if enabled)
+          3. No position is currently open (race-condition guard)
+
+        Uses reentry_sl_atr_mult (tighter, ATR-only — no structural SL) and
+        reentry_size_factor (reduced, since no fresh 4H bar has closed).
+        """
+        cfg = self.config
+
+        if not getattr(cfg, "reentry_on_tp_enabled", False):
+            return
+        if self._position is not None:
+            return  # another trade opened between TP and this task
+
+        # ── 1. Check 4H LGBM signal strength ─────────────────────────────────
+        if last_signals is None:
+            log.info("ReEntry: no last_cycle_signals — skip")
+            return
+
+        lgbm_pct_raw = last_signals.get("lgbm_pct", 50.0)
+        # Directional probability in the closed trade's direction
+        lgbm_dir_pct = lgbm_pct_raw if closed_side == "long" else (100.0 - lgbm_pct_raw)
+        min_lgbm_pct = cfg.reentry_min_lgbm_pct * 100.0
+
+        if lgbm_dir_pct < min_lgbm_pct:
+            log.info(
+                "ReEntry: 4H LGBM too weak for %s: %.1f%% < %.1f%% required — skip",
+                closed_side.upper(), lgbm_dir_pct, min_lgbm_pct,
+            )
+            return
+
+        # ── 2. 1H confirmation gate ───────────────────────────────────────────
+        p1h_dir = 0.5  # fallback neutral
+        if getattr(cfg, "reentry_1h_confirm_enabled", True):
+            if self._lgbm_1h is None:
+                log.info("ReEntry: 1H model not loaded — skip (confirm required)")
+                return
+            try:
+                df_1h_raw = await self._hl.get_ohlcv(SYMBOL, "1h", limit=120)
+                if len(df_1h_raw) >= 2:
+                    df_1h_raw = df_1h_raw.iloc[:-1]  # drop forming candle (no lookahead)
+                df_1h_feat = build_all_features(df_1h_raw)
+                p1h_raw  = self._get_lgbm_1h_prob(df_1h_feat)
+                p1h_dir  = p1h_raw if closed_side == "long" else (1.0 - p1h_raw)
+                min_1h   = getattr(cfg, "reentry_min_1h_pct", 0.55)
+                if p1h_dir < min_1h:
+                    log.info(
+                        "ReEntry: 1H gate failed P(%s)=%.3f < %.3f — skip",
+                        closed_side, p1h_dir, min_1h,
+                    )
+                    return
+                log.debug("ReEntry: 1H gate OK P(%s)=%.3f", closed_side, p1h_dir)
+            except Exception as exc:
+                log.warning("ReEntry: 1H fetch/inference failed (%s) — skip", exc)
+                return  # strict: if required and failed, don't re-enter blind
+
+        # ── 3. Guard: still no position after async I/O ───────────────────────
+        if self._position is not None:
+            log.info("ReEntry: position opened by concurrent path — skip")
+            return
+        allowed, block_reason = self._risk.can_trade()
+        if not allowed:
+            log.info("ReEntry: risk gate blocked (%s) — skip", block_reason)
+            return
+
+        # ── 4. Build mock DecisionResult ─────────────────────────────────────
+        ensemble_pct = last_signals.get("ensemble_pct", lgbm_dir_pct)
+        reasoning = [
+            f"[REENTRY] TP @ {exit_price:.0f} — re-entering {closed_side.upper()}",
+            f"4H LGBM {closed_side}: {lgbm_dir_pct:.1f}%  "
+            f"1H gate: {p1h_dir * 100:.1f}%  "
+            f"size_factor: {cfg.reentry_size_factor:.2f}",
+        ]
+        _mock_result = DecisionResult(
+            action               = closed_side,
+            confidence           = ensemble_pct / 100.0,
+            reasoning            = reasoning,
+            features_snapshot    = {},
+            directional_prob     = ensemble_pct / 100.0,
+            forecast_p10         = 0.0,
+            forecast_p50         = exit_price,
+            forecast_p90         = 0.0,
+            forecast_uncertainty = 0.0,
+            size_factor          = cfg.reentry_size_factor,
+        )
+
+        # ── 5. Config override: tighter ATR SL, no structural SL ─────────────
+        _reentry_cfg = copy.copy(cfg)
+        _reentry_cfg.sl_atr_mult          = cfg.reentry_sl_atr_mult
+        _reentry_cfg.tp_atr_mult          = cfg.reentry_tp_atr_mult
+        _reentry_cfg.structural_sl_enabled = False   # no fresh 4H bar → structure stale
+        _reentry_cfg.fvg_sl_enabled        = False
+        _reentry_cfg.swing_sl_enabled      = False
+        _reentry_cfg.pullback_entry_enabled = False  # no pullback on re-entry
+        _reentry_cfg.bounce_fade_enabled    = False
+
+        # ── 6. Snap: use latest WS mark or exit_price as reference ───────────
+        _mark = self._ws.latest_mark or exit_price
+        _snap = {"mark_price": _mark}
+
+        log.info(
+            "ReEntry: opening %s @ ~%.2f | 4H=%.1f%% 1H=%.1f%% "
+            "size=%.0f%% SL=%.1f×ATR TP=%.1f×ATR",
+            closed_side.upper(), _mark,
+            lgbm_dir_pct, p1h_dir * 100,
+            cfg.reentry_size_factor * 100,
+            cfg.reentry_sl_atr_mult, cfg.reentry_tp_atr_mult,
+        )
+
+        try:
+            await self._open_position(
+                _mock_result,
+                snap         = _snap,
+                atr          = atr_at_signal,
+                inference_id = None,
+                cfg          = _reentry_cfg,
+            )
+            # Tag position so UI/logs can distinguish re-entries from fresh signals
+            if self._position is not None:
+                self._position["is_reentry"]    = True
+                self._position["reentry_origin"] = exit_price
+                if self.mode == "paper":
+                    self._save_paper_position()
+        except Exception as exc:
+            log.error("ReEntry: _open_position failed: %s", exc, exc_info=True)
 
     # ── Pullback Entry methods ────────────────────────────────────────────────
 

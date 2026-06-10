@@ -213,6 +213,14 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
     reversal_retest_wick_pct     = getattr(cfg, "reversal_retest_wick_pct",     0.25)
     reversal_retest_expiry_bars  = getattr(cfg, "reversal_retest_expiry_bars",  3)
     reversal_guard_only          = getattr(cfg, "reversal_guard_only",          False)
+    # Re-entry on TP
+    reentry_on_tp_enabled      = getattr(cfg, "reentry_on_tp_enabled",      False)
+    reentry_min_lgbm_pct       = getattr(cfg, "reentry_min_lgbm_pct",       0.68)
+    reentry_1h_confirm_enabled = getattr(cfg, "reentry_1h_confirm_enabled",  True)
+    reentry_min_1h_pct         = getattr(cfg, "reentry_min_1h_pct",          0.55)
+    reentry_size_factor        = getattr(cfg, "reentry_size_factor",          0.65)
+    reentry_sl_atr_mult        = getattr(cfg, "reentry_sl_atr_mult",          1.5)
+    reentry_tp_atr_mult        = getattr(cfg, "reentry_tp_atr_mult",          3.5)
     fng_extreme_fear_thr  = getattr(cfg, "fng_extreme_fear_thr",  20.0)
     fng_fear_thr          = getattr(cfg, "fng_fear_thr",          35.0)
     fng_greed_thr         = getattr(cfg, "fng_greed_thr",         65.0)
@@ -597,6 +605,10 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
         "exit_stop_loss":           0,
         "exit_take_profit":         0,
         "exit_end_of_period":       0,
+        # Re-entry on TP
+        "reentry_triggered":        0,
+        "reentry_blocked_lgbm":     0,
+        "reentry_blocked_1h":       0,
         # Pullback entry
         "pb_activated":             0,
         "pb_filled_zone":           0,
@@ -631,6 +643,9 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
             raise RuntimeError("backtest_cancelled")
         row = df_feat.iloc[i]
         features = row.to_dict()
+        _tp_just_hit    = False   # reset each bar; set True only when TP fires this bar
+        _tp_closed_side = None
+        _tp_atr_at_signal = None
 
         # ── Pending reversal: check limit-retest fill/expiry ────────────────────
         if pending_rev is not None and position is None:
@@ -1107,7 +1122,13 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                     "origin":     position.get("origin", "trend"),
                 })
                 equity_curve.append({"bar": i, "equity": round(equity, 2)})
+                # Tag TP exit so the new-signal block can apply re-entry logic
+                _tp_just_hit      = not hit_sl  # hit_tp is True here
+                _tp_closed_side   = side
+                _tp_atr_at_signal = position.get("entry_atr", atr)
                 position = None
+            else:
+                _tp_just_hit = False
 
         # ── New signal decision ───────────────────────────────────────────────
         if position is None and i >= 64:  # skip warm-up rows
@@ -1351,6 +1372,42 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
             else:
                 param_stats["no_trade"] += 1
 
+            # ── Re-entry on TP: eligibility check when TP fired this bar ────────
+            # Runs before the trade-open block so it can veto or tag the signal.
+            # Only applies when the signal direction matches the just-closed side
+            # (i.e. system wants to re-enter in the same direction immediately).
+            _is_reentry = False
+            if _tp_just_hit and reentry_on_tp_enabled and result.action == _tp_closed_side:
+                lgbm_dir_p = lgbm_p if result.action == "long" else (1.0 - lgbm_p)
+                if lgbm_dir_p < reentry_min_lgbm_pct:
+                    param_stats["reentry_blocked_lgbm"] += 1
+                    result.action = "no_trade"
+                elif reentry_1h_confirm_enabled and _lgbm_1h_model_bt is not None and _df_1h_feat_bt is not None:
+                    try:
+                        _bar_ts  = df_feat.index[i]
+                        _1h_mask = _df_1h_feat_bt.index < _bar_ts
+                        if _1h_mask.any():
+                            _1h_row  = _df_1h_feat_bt[_1h_mask].iloc[-1]
+                            _avail   = [f for f in (_lgbm_1h_features_bt or []) if f in _1h_row.index]
+                            if _avail:
+                                _1h_X   = pd.DataFrame([_1h_row[_avail].fillna(0)])
+                                _p1h    = float(_lgbm_1h_model_bt.predict_proba(_1h_X)[0, 1])
+                                _p1h_d  = _p1h if result.action == "long" else (1.0 - _p1h)
+                                if _p1h_d < reentry_min_1h_pct:
+                                    param_stats["reentry_blocked_1h"] += 1
+                                    result.action = "no_trade"
+                                else:
+                                    _is_reentry = True
+                            else:
+                                result.action = "no_trade"
+                        else:
+                            result.action = "no_trade"
+                    except Exception as _re1h_exc:
+                        log.debug("Re-entry 1H gate error at bar %d: %s", i, _re1h_exc)
+                        result.action = "no_trade"
+                else:
+                    _is_reentry = True
+
             if result.action != "no_trade" and (pending_pb is not None or pending_bf is not None):
                 # Already in pullback / bounce-fade wait mode — skip new signal
                 pass
@@ -1369,6 +1426,9 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                 if _is_rev_now:
                     risk.sl_atr_mult = reversal_sl_atr_mult
                     risk.tp_atr_mult = reversal_tp_atr_mult
+                if _is_reentry:
+                    risk.sl_atr_mult = reentry_sl_atr_mult
+                    risk.tp_atr_mult = reentry_tp_atr_mult
 
                 params = risk.calculate_trade_params(
                     side=result.action,
@@ -1396,27 +1456,28 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                     swing_high_px=float(v) if (v := result.features_snapshot.get("swing_high_px")) is not None and pd.notna(v) and float(v) > 0 else None,
                     swing_low_px=float(v) if (v := result.features_snapshot.get("swing_low_px")) is not None and pd.notna(v) and float(v) > 0 else None,
                 )
-                # Restore original risk multipliers after reversal override
-                if _is_rev_now:
+                # Restore original risk multipliers after reversal / re-entry override
+                if _is_rev_now or _is_reentry:
                     risk.sl_atr_mult = _orig_risk_sl
                     risk.tp_atr_mult = _orig_risk_tp
 
                 # Structural SL: mirror live execution — place SL behind OB when within 2%.
-                if structural_sl_enabled:
+                # Skipped for re-entry: no fresh 4H bar closed, structural levels are stale.
+                if structural_sl_enabled and not _is_reentry:
                     _sl_applied, _ = apply_structural_sl(
                         params, result.features_snapshot, close_price,
                         ob_buffer_pct=ob_buffer_pct,
                         ob_buffer_min_atr=ob_buffer_min_atr,
                     )
                     if _sl_applied: param_stats["sl_structural_ob"] += 1
-                if fvg_sl_enabled:
+                if fvg_sl_enabled and not _is_reentry:
                     _fvg_applied, _ = apply_fvg_sl(
                         params, result.features_snapshot, close_price,
                         ob_buffer_pct=ob_buffer_pct,
                         ob_buffer_min_atr=ob_buffer_min_atr,
                     )
                     if _fvg_applied: param_stats["sl_fvg"] += 1
-                if swing_sl_enabled:
+                if swing_sl_enabled and not _is_reentry:
                     _sw_applied, _ = apply_swing_sl(
                         params, result.features_snapshot, close_price,
                     )
@@ -1427,6 +1488,8 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                 ):
                     param_stats["tp_ob"] += 1
                 effective_size_usd = params.size_usd * result.size_factor
+                if _is_reentry:
+                    effective_size_usd = params.size_usd * reentry_size_factor
 
                 # ── Bounce-Fade Entry simulation ──────────────────────────────
                 # Counter-trend signal → resistance-anchored limit entry. Checked
@@ -1435,6 +1498,7 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                 if (
                     bounce_fade_enabled
                     and not getattr(result, "_is_reversal", False)
+                    and not _is_reentry
                     and pending_bf is None
                 ):
                     _bf_ret6 = float(result.features_snapshot.get("ret_6") or 0.0)
@@ -1487,7 +1551,7 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
 
                 # ── Pullback Entry simulation ─────────────────────────────────
                 # Skip pullback for reversal trades: they have their own entry logic (pending_rev).
-                if pullback_entry_enabled and not getattr(result, "_is_reversal", False):
+                if pullback_entry_enabled and not getattr(result, "_is_reversal", False) and not _is_reentry:
                     # Impulso = corpo candela (abs(close-open)), NON range totale (high-low).
                     # Il range include doji e shadow che non indicano un vero impulso direzionale.
                     _open_bt = float(row.get("open", close_price))
@@ -1556,6 +1620,8 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                 # Immediate entry (pullback not enabled or impulse below threshold)
                 _is_rev_entry = getattr(result, "_is_reversal", False)
                 _exhaust_triggered = getattr(result, "_exhaustion_triggered", False)
+                if _is_reentry:
+                    param_stats["reentry_triggered"] += 1
                 fee_entry = effective_size_usd * HL_TAKER_FEE
                 equity   -= fee_entry
                 position  = {
@@ -1574,8 +1640,9 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                     "fee_entry":         fee_entry,
                     "funding_paid":      0.0,
                     "entry_mode":        "reversal_close" if _is_rev_entry else "immediate",
-                    "origin":            "reversal" if _is_rev_entry else "trend",
+                    "origin":            "reentry" if _is_reentry else ("reversal" if _is_rev_entry else "trend"),
                     "is_reversal":       _is_rev_entry,
+                    "is_reentry":        _is_reentry,
                     "rev_sl_atr_mult":   reversal_sl_atr_mult if _is_rev_entry else sl_atr_mult,
                     "rev_max_hold":      reversal_max_hold_bars_val,
                     # Feature E: Exhaustion Max Hold
@@ -1749,6 +1816,12 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
             record["name"] = _name
         db = get_supabase()
         db.table("backtest_results").insert(record).execute()
+        # Keep only the 50 most recent records
+        rows = db.table("backtest_results").select("id").order("created_at", desc=True).execute()
+        ids = [r["id"] for r in (rows.data or [])]
+        if len(ids) > 50:
+            for old_id in ids[50:]:
+                db.table("backtest_results").delete().eq("id", old_id).execute()
     except Exception as exc:
         log.warning("Backtest save to DB failed: %s", exc)
 
