@@ -17,8 +17,8 @@ Il progetto è un sistema di trading algoritmico BTC-PERP su Hyperliquid (backen
 
 | # | Area | Problema | Gravità | Urgenza |
 |---|------|----------|---------|---------|
-| S1 | Sicurezza | API senza alcuna autenticazione (controllo bot/ordini live esposto) | 🔴 Critica | Immediata |
-| S2 | Sicurezza | CORS `allow_origins=["*"]` su control-plane di trading | 🔴 Critica | Immediata |
+| S1 | Sicurezza | API senza alcuna autenticazione (controllo bot/ordini live esposto) | ✅ Risolto | — |
+| S2 | Sicurezza | CORS `allow_origins=["*"]` su control-plane di trading | ✅ Risolto | — |
 | S3 | Sicurezza | API key (Gemini, FMP) iniettate nel bundle client → esposte pubblicamente | ✅ Risolto | — |
 | S4 | Sicurezza | Chiavi reali presenti in `.env.local` (controllare rotazione/leak) | ✅ Risolto¹ | — |
 | B1 | Bug funzionale | `create_agent_wallet`: approvazione agent su HL commentata → wallet inutilizzabile | 🟠 Alta | Alta |

@@ -51,6 +51,8 @@ class _StubClient:
         def eq(self, *a, **kw): return self
         def gte(self, *a, **kw): return self
         def lte(self, *a, **kw): return self
+        def gt(self, *a, **kw): return self
+        def lt(self, *a, **kw): return self
         def order(self, *a, **kw): return self
         def limit(self, *a, **kw): return self
 

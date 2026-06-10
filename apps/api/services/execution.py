@@ -148,8 +148,10 @@ class BotConfig:
         self.trend_exit_confirm_bars  = kw.get("trend_exit_confirm_bars",  2)
         self.trend_exit_min_hold_bars = kw.get("trend_exit_min_hold_bars", 2)
         # ── Advanced signal controls ──────────────────────────────────────────
-        self.chronos_enabled         = kw.get("chronos_enabled",         True)
-        self.chronos_weight          = kw.get("chronos_weight",          0.40)
+        self.chronos_enabled              = kw.get("chronos_enabled",              True)
+        self.chronos_weight               = kw.get("chronos_weight",               0.40)
+        self.chronos_calendar_covariates  = kw.get("chronos_calendar_covariates",  False)
+        self.chronos_premium_covariate    = kw.get("chronos_premium_covariate",    False)
         self.adx_gate_enabled        = kw.get("adx_gate_enabled",        True)
         self.sweep_gate_enabled      = kw.get("sweep_gate_enabled",      True)
         self.sweep_gate_directional  = kw.get("sweep_gate_directional",  False)
@@ -210,6 +212,7 @@ class BotConfig:
         self.consec_bars_max_long      = kw.get("consec_bars_max_long",      8)
         self.consec_bars_max_short     = kw.get("consec_bars_max_short",     8)
         # Walk-forward & retraining parameters
+        self.auto_retrain_enabled    = kw.get("auto_retrain_enabled",    True)
         self.retrain_every_n_cycles  = kw.get("retrain_every_n_cycles",  120)
         self.wf_n_splits             = kw.get("wf_n_splits",             5)
         self.wf_purge_gap            = kw.get("wf_purge_gap",            5)
@@ -331,11 +334,11 @@ class BotConfig:
         # Sotto-componenti
         self.reversal_ob_dist_max         = kw.get("reversal_ob_dist_max",         2.0)
         self.reversal_consec_bars_min     = kw.get("reversal_consec_bars_min",     5)
-        self.reversal_adx_peak_min        = kw.get("reversal_adx_peak_min",        35.0)   # was 32; >32 fires 33.7% of bars (too common)
+        self.reversal_adx_peak_min        = kw.get("reversal_adx_peak_min",        30.0)   # was 35; ADX>35 too rare on BTC 4H for short-term moves
         self.reversal_ema50_dist_extreme  = kw.get("reversal_ema50_dist_extreme",  3.0)
-        self.reversal_ret48_extreme       = kw.get("reversal_ret48_extreme",       0.08)
+        self.reversal_ret48_extreme       = kw.get("reversal_ret48_extreme",       0.06)   # was 0.08; 6% in 8 days already significant on BTC
         self.reversal_transition_risk_min = kw.get("reversal_transition_risk_min", 0.55)
-        self.reversal_bars_in_regime_min  = kw.get("reversal_bars_in_regime_min",  40)
+        self.reversal_bars_in_regime_min  = kw.get("reversal_bars_in_regime_min",  20)    # was 40; targets 2-5 day moves, not macro regimes
         self.reversal_funding_extreme_thr = kw.get("reversal_funding_extreme_thr", 0.000028)  # was 0.00025; P90/48 on actual BTC data
         self.reversal_absorption_z        = kw.get("reversal_absorption_z",        1.8)
         self.reversal_wick_threshold      = kw.get("reversal_wick_threshold",      0.50)   # was 0.60; 7.4% → 14.6% of bars

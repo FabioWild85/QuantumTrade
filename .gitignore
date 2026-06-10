@@ -40,3 +40,11 @@ apps/api/.env
 
 # Claude Code settings (contiene comandi con token/credenziali)
 .claude/settings.json
+
+# Modelli ML e artefatti di training (generati a runtime, non versionare)
+apps/api/models/
+
+# Dati storici e artefatti di ricerca nella cartella poc/
+poc/*.parquet
+poc/*.png
+poc/*.ipynb
