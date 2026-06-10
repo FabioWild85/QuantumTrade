@@ -35,6 +35,18 @@ def _safe_px(v) -> Optional[float]:
         return None
 
 
+_HL_MM_RATE = 0.005  # Maintenance margin rate BTC isolated margin (HL)
+
+
+def _liq_price(side: str, entry: float, leverage: int) -> float:
+    """Hyperliquid isolated margin liquidation price (backtest only — avoids ExecutionEngine import)."""
+    if leverage <= 1:
+        return 0.0
+    if side == "long":
+        return entry * (1.0 - 1.0 / leverage + _HL_MM_RATE)
+    return entry * (1.0 + 1.0 / leverage - _HL_MM_RATE)
+
+
 async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> dict:
     """
     Main entry point, called from FastAPI /backtest endpoint.
@@ -226,6 +238,7 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
     fng_greed_thr         = getattr(cfg, "fng_greed_thr",         65.0)
     fng_extreme_greed_thr = getattr(cfg, "fng_extreme_greed_thr", 80.0)
     fng_bias_delta        = getattr(cfg, "fng_bias_delta",        0.03)
+    lev                   = max(getattr(cfg, "leverage", 1), 1)
 
     hl = HyperliquidData()
 
@@ -604,6 +617,7 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
         # Trade exit reasons
         "exit_stop_loss":           0,
         "exit_take_profit":         0,
+        "exit_liquidation":         0,
         "exit_end_of_period":       0,
         # Re-entry on TP
         "reentry_triggered":        0,
@@ -686,6 +700,8 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                         "is_reversal":        True,
                         "rev_sl_atr_mult":    reversal_sl_atr_mult,
                         "rev_max_hold":       reversal_max_hold_bars_val,
+                        "leverage":           lev,
+                        "liq_px":             _liq_price(_rp["direction"], _rev_entry_px, lev),
                     }
                     pending_rev = None
 
@@ -751,6 +767,8 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                     "fee_entry":         fee_entry,
                     "funding_paid":      0.0,
                     "entry_mode":        "pullback",
+                    "leverage":          lev,
+                    "liq_px":            _liq_price(pb_dir, _entry_px, lev),
                 }
                 pending_pb = None
             elif i >= pending_pb["expires_bar"]:
@@ -790,6 +808,8 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                         "fee_entry":         fee_entry,
                         "funding_paid":      0.0,
                         "entry_mode":        "pullback_fallback",
+                        "leverage":          lev,
+                        "liq_px":            _liq_price(pb_dir, _entry_px, lev),
                     }
                 else:
                     param_stats["pb_decayed"] += 1
@@ -847,6 +867,8 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                         "funding_paid":      0.0,
                         "entry_mode":        "bounce_fade",
                         "origin":            "trend",
+                        "leverage":          lev,
+                        "liq_px":            _liq_price(bf["direction"], _bf_entry, lev),
                     }
                     param_stats["bf_filled_limit"] += 1
                     pending_bf = None
@@ -880,6 +902,8 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                         "funding_paid":      0.0,
                         "entry_mode":        "bounce_fade_fallback",
                         "origin":            "trend",
+                        "leverage":          lev,
+                        "liq_px":            _liq_price(bf["direction"], _fb_entry, lev),
                     }
                     param_stats["bf_market_fallback"] += 1
                 else:
@@ -995,15 +1019,53 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                         "funding_paid": round(funding_used, 2),
                         "reason": "partial_tp", "holding_bars": i - position["bar_idx"], "bar": i,
                         "origin": position.get("origin", "trend"),
+                        "date": str(row.name.date()) if hasattr(row.name, "date") else "",
+                        "equity_after": round(equity, 2),
                     })
                     equity_curve.append({"bar": i, "equity": round(equity, 2)})
 
             bars_held      = i - position["bar_idx"]
             already_closed = False
 
+            # ── Liquidation check (massima priorità — prima di lgbm/max_hold/SL) ─
+            _bt_liq = position.get("liq_px", 0.0)
+            if _bt_liq > 0.0 and not already_closed:
+                _bar_low  = float(row.get("low",  row["close"]))
+                _bar_high = float(row.get("high", row["close"]))
+                _hit_liq = (
+                    (side == "long"  and _bar_low  <= _bt_liq) or
+                    (side == "short" and _bar_high >= _bt_liq)
+                )
+                if _hit_liq:
+                    param_stats["exit_liquidation"] = param_stats.get("exit_liquidation", 0) + 1
+                    pnl_pct_liq = (
+                        (_bt_liq - entry) / entry * 100 if side == "long"
+                        else (entry - _bt_liq) / entry * 100
+                    )
+                    pnl_usd_liq = position["size_usd"] * pnl_pct_liq / 100
+                    fee_liq     = position["size_usd"] * HL_TAKER_FEE
+                    equity     += pnl_usd_liq - fee_liq
+                    entry_fee_used = position.get("fee_entry", 0.0)
+                    funding_used   = position.get("funding_paid", 0.0)
+                    trades.append({
+                        "side": side, "entry": entry, "exit": _bt_liq,
+                        "pnl_pct": round(pnl_pct_liq, 4),
+                        "pnl_usd": round(pnl_usd_liq - fee_liq - entry_fee_used - funding_used, 2),
+                        "fee_entry": round(entry_fee_used, 2),
+                        "funding_paid": round(funding_used, 2),
+                        "reason": "liquidation", "holding_bars": bars_held, "bar": i,
+                        "origin": position.get("origin", "trend"),
+                        "leverage": position.get("leverage", 1),
+                        "date": str(row.name.date()) if hasattr(row.name, "date") else "",
+                        "equity_after": round(equity, 2),
+                    })
+                    equity_curve.append({"bar": i, "equity": round(equity, 2)})
+                    position       = None
+                    already_closed = True
+
             # ── LightGBM mid-trade exit (consecutive-bar confirmation) ─────────
             # Skip lgbm_exit for reversal trades — LGBM is trend-following and would exit early
-            if lgbm_exit_enabled and bars_held >= lgbm_exit_min_hold_bars and not position.get("is_reversal"):
+            if lgbm_exit_enabled and not already_closed and position is not None and bars_held >= lgbm_exit_min_hold_bars and not position.get("is_reversal"):
                 row_x          = X_all.iloc[[i]]
                 lgbm_p_current = float(lgbm_model.predict_proba(row_x)[0, 1])
                 if enhanced_exit_enabled and use_chronos:
@@ -1037,6 +1099,8 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                         "holding_bars": bars_held,
                         "bar":         i,
                         "origin":      position.get("origin", "trend"),
+                        "date": str(row.name.date()) if hasattr(row.name, "date") else "",
+                        "equity_after": round(equity, 2),
                     })
                     equity_curve.append({"bar": i, "equity": round(equity, 2)})
                     position       = None
@@ -1078,6 +1142,8 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                     "holding_bars": bars_held,
                     "bar":         i,
                     "origin":      position.get("origin", "trend"),
+                    "date": str(row.name.date()) if hasattr(row.name, "date") else "",
+                    "equity_after": round(equity, 2),
                 })
                 equity_curve.append({"bar": i, "equity": round(equity, 2)})
                 position       = None
@@ -1120,6 +1186,8 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                     "holding_bars": i - position["bar_idx"],
                     "bar":        i,
                     "origin":     position.get("origin", "trend"),
+                    "date": str(row.name.date()) if hasattr(row.name, "date") else "",
+                    "equity_after": round(equity, 2),
                 })
                 equity_curve.append({"bar": i, "equity": round(equity, 2)})
                 # Tag TP exit so the new-signal block can apply re-entry logic
@@ -1435,6 +1503,7 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                     entry_price=close_price,
                     atr=atr,
                     equity_usd=equity,
+                    leverage=lev,
                     sl_atr=atr_sl,
                     c2_p10=c2_out.get("c2_p10") if _needs_quantiles else None,
                     c2_p90=c2_out.get("c2_p90") if _needs_quantiles else None,
@@ -1652,6 +1721,8 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                         else None
                     ),
                     "is_exhaust_hold":   _exhaust_triggered and exhaustion_max_hold_enabled,
+                    "leverage":          lev,
+                    "liq_px":            _liq_price(result.action, close_price, lev),
                 }
 
     # ── 6. Close any open position at last price ──────────────────────────────
@@ -1678,6 +1749,8 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
             "reason": "end_of_period", "holding_bars": len(df_feat) - position["bar_idx"],
             "bar": len(df_feat) - 1,
             "origin": position.get("origin", "trend"),
+            "date": str(df_feat.index[-1].date()) if hasattr(df_feat.index[-1], "date") else "",
+            "equity_after": round(equity, 2),
         })
         equity_curve.append({"bar": len(df_feat) - 1, "equity": round(equity, 2)})
 
@@ -1899,10 +1972,12 @@ def _calculate_stats(trades: list, equity_curve: list, capital: float) -> dict:
         if dd > max_dd:
             max_dd = dd
 
-    # Calmar: annualized return / max drawdown (B5 fix — annualize before dividing)
+    # Calmar: annualized return / max drawdown
     duration_days = n_bars * 4 / 24  # each bar = 4h
-    annual_return = ((1 + total_pnl_pct / 100) ** (365.0 / max(duration_days, 1)) - 1) * 100
-    calmar = round(annual_return / max_dd, 3) if max_dd > 0 else 0.0
+    _base = max(1 + total_pnl_pct / 100, 0.0)  # clamp: negative base → complex with fractional exp
+    annual_return = (_base ** (365.0 / max(duration_days, 1)) - 1) * 100
+    annual_return = annual_return if np.isfinite(annual_return) else 0.0
+    calmar = round(float(annual_return) / max_dd, 3) if max_dd > 0 else 0.0
 
     avg_holding_h = np.mean([t["holding_bars"] * 4 for t in trades])
 

@@ -33,6 +33,8 @@ from services.supabase_client import get_supabase
 from services.regime_detector import RegimeDetector, RegimeSignal
 
 HL_TAKER_FEE = 0.00035  # 0.035% per side
+HL_MM_RATE   = 0.005    # Maintenance margin rate BTC isolated margin
+HL_MAX_LEV   = 50       # Max leverage HL BTC-PERP
 
 log = logging.getLogger(__name__)
 
@@ -124,6 +126,7 @@ class BotConfig:
         self.adx_gate               = kw.get("adx_gate", 20.0)
         self.confluence_gate        = kw.get("confluence_gate", 60.0)
         self.max_consecutive_losses = kw.get("max_consecutive_losses", 4)
+        self.leverage               = kw.get("leverage", 1)   # 1 = no leverage (default)
         self.mode                   = kw.get("mode", "paper")
         # ── Advanced exit strategies ──────────────────────────────────────────
         # Partial TP: close partial_tp_pct% of position at partial_tp_atr_mult×ATR
@@ -436,6 +439,22 @@ class ExecutionEngine:
             max_consecutive_losses=self.config.max_consecutive_losses,
         )
         log.info("Config updated: %s", cfg.model_dump())
+
+    # ── Leverage helpers ──────────────────────────────────────────────────────
+
+    @staticmethod
+    def _calc_liq_px(side: str, entry: float, leverage: int) -> float:
+        """
+        Hyperliquid isolated margin liquidation price.
+        Long:  entry × (1 − 1/L + MM_rate)
+        Short: entry × (1 + 1/L − MM_rate)
+        Returns 0.0 for leverage ≤ 1 (no liquidation price in that regime).
+        """
+        if leverage <= 1:
+            return 0.0
+        if side == "long":
+            return entry * (1.0 - 1.0 / leverage + HL_MM_RATE)
+        return entry * (1.0 + 1.0 / leverage - HL_MM_RATE)
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -755,7 +774,20 @@ class ExecutionEngine:
                     "size_usd":                saved_state.get("size_usd") or self._position["size_usd"],
                     "size_contracts":          saved_state.get("size_contracts") or self._position["size_contracts"],
                     "original_size_usd":       saved_state.get("original_size_usd"),
+                    "leverage":                saved_state.get("leverage", getattr(self.config, "leverage", 1)),
+                    "liq_px":                  saved_state.get("liq_px", 0.0),
+                    "margin_usd":              saved_state.get("margin_usd", 0.0),
                 })
+                # Retrocompatibility: recompute liq_px if missing in saved_state
+                if not self._position.get("liq_px"):
+                    _lev_rc = self._position.get("leverage", 1)
+                    self._position["liq_px"] = self._calc_liq_px(
+                        self._position["side"], self._position["entry_price"], _lev_rc
+                    )
+                if not self._position.get("margin_usd"):
+                    _su_rc = self._position.get("size_usd", 0.0)
+                    _lv_rc = self._position.get("leverage", 1)
+                    self._position["margin_usd"] = round(_su_rc / max(_lv_rc, 1), 2)
                 log.info(
                     "Reconciliation: restored in-flight state from DB — "
                     "bars_held=%d sl=%.2f partial_done=%s trailing=%s",
@@ -857,6 +889,18 @@ class ExecutionEngine:
                         self._position["trailing_sl_dist"] = (
                             self.config.trailing_sl_activation * _atr
                         ) if self.config.trailing_sl_enabled else None
+                    # Retrocompatibility: positions saved before leverage feature
+                    if "leverage" not in self._position:
+                        self._position["leverage"] = getattr(self.config, "leverage", 1)
+                    if "liq_px" not in self._position:
+                        _lev_r = self._position["leverage"]
+                        self._position["liq_px"] = self._calc_liq_px(
+                            self._position.get("side", "long"), _e, _lev_r
+                        )
+                    if "margin_usd" not in self._position:
+                        _su = self._position.get("size_usd", 0.0)
+                        _lv = self._position.get("leverage", 1)
+                        self._position["margin_usd"] = round(_su / max(_lv, 1), 2)
 
                 # 3. Restore pending reversal state
                 saved_rev = (cfg_row.data[0].get("params") or {}).get("_reversal_pending")
@@ -923,6 +967,9 @@ class ExecutionEngine:
                     "trailing_sl_dist":        self._position.get("trailing_sl_dist"),
                     "trade_id":                self._position.get("trade_id"),
                     "current_sl_cloid":        self._position.get("current_sl_cloid"),
+                    "leverage":                self._position.get("leverage", 1),
+                    "liq_px":                  self._position.get("liq_px", 0.0),
+                    "margin_usd":              self._position.get("margin_usd", 0.0),
                 }
             db.table("bot_configs").update({"params": existing}).eq("name", "default").execute()
         except Exception as exc:
@@ -1240,6 +1287,22 @@ class ExecutionEngine:
                             remaining_usd=self._position["size_usd"],
                             new_sl=self._position["stop_loss"],
                         ))
+
+            # ── Liquidation check (paper only — massima priorità) ─────────────
+            _liq_px = self._position.get("liq_px", 0.0)
+            if _liq_px > 0.0:
+                _hit_liq = (
+                    (side == "long"  and check_low  <= _liq_px) or
+                    (side == "short" and check_high >= _liq_px)
+                )
+                if _hit_liq:
+                    log.warning(
+                        "Paper watchdog: LIQUIDATION triggered | side=%s liq_px=%.2f "
+                        "(period low=%.2f high=%.2f)",
+                        side, _liq_px, check_low, check_high,
+                    )
+                    await self._close_position(_liq_px, "liquidation")
+                    continue  # posizione chiusa — skip SL/TP check
 
             # ── SL / full TP ──────────────────────────────────────────────────
             reason     = None
@@ -2735,7 +2798,11 @@ class ExecutionEngine:
             if size_usd_override is not None and size_usd_override > 0:
                 _size_usd = size_usd_override
             else:
-                _size_usd = self._risk.position_size_pct / 100.0 * self._equity * result.size_factor
+                _eff_lev_ov = max(getattr(self.config, "leverage", 1), 1)
+                _size_usd   = self._risk.position_size_pct / 100.0 * self._equity * result.size_factor * _eff_lev_ov
+                # Safety cap: margin ≤ 95% equity
+                if _size_usd / _eff_lev_ov > self._equity * 0.95:
+                    _size_usd = self._equity * 0.95 * _eff_lev_ov
             _size_ctr  = _size_usd / price if price > 0 else 0.001
             params     = TradeParams(
                 side           = result.action,
@@ -2766,6 +2833,7 @@ class ExecutionEngine:
                 entry_price=price,
                 atr=atr,
                 equity_usd=self._equity,
+                leverage=getattr(self.config, "leverage", 1),
                 sl_atr=atr_sl,
                 c2_p10=result.forecast_p10 if _needs_quantiles else None,
                 c2_p90=result.forecast_p90 if _needs_quantiles else None,
@@ -2827,6 +2895,23 @@ class ExecutionEngine:
         # Apply regime bias size reduction for counter-trend trades
         eff_size_usd       = params.size_usd       * result.size_factor
         eff_size_contracts = params.size_contracts * result.size_factor
+
+        # ── Leverage: liquidation price + safety checks ───────────────────────
+        _lev   = getattr(self.config, "leverage", 1)
+        liq_px = self._calc_liq_px(result.action, price, _lev)
+        if liq_px > 0.0:
+            _sl_dist_pct  = abs(params.stop_loss - price) / price
+            _liq_dist_pct = abs(liq_px - price) / price
+            if _liq_dist_pct < _sl_dist_pct:
+                log.warning(
+                    "[%s] SL (%.1f%%) è OLTRE il prezzo di liquidazione (%.1f%%) "
+                    "con leva %d×. La posizione verrà liquidata prima dello stop loss.",
+                    self.mode.upper(), _sl_dist_pct * 100, _liq_dist_pct * 100, _lev,
+                )
+            log.info(
+                "[%s] Leva %d× | liq_px=%.2f | margin=%.0f USD",
+                self.mode.upper(), _lev, liq_px, eff_size_usd / _lev,
+            )
 
         # Round to 4 decimal places (HL BTC min size = 0.001)
         size = max(round(eff_size_contracts, 4), 0.001)
@@ -2917,6 +3002,10 @@ class ExecutionEngine:
                    and getattr(cfg, "exhaustion_max_hold_enabled", getattr(self.config, "exhaustion_max_hold_enabled", False))
                 else None
             ),
+            # Leverage fields
+            "leverage":   _lev,
+            "liq_px":     liq_px,
+            "margin_usd": round(eff_size_usd / max(_lev, 1), 2),
         }
 
         # Persist paper position immediately so it survives a restart
@@ -2998,6 +3087,23 @@ class ExecutionEngine:
         _is_rev      = self._position.get("is_reversal", False)
         _rev_sl_mult = self._position.get("rev_sl_atr_mult", self.config.sl_atr_mult)
         _rev_max_h   = self._position.get("rev_max_hold",   getattr(self.config, "max_hold_bars", 48))
+
+        # ── 0. Liquidation check (paper only — triggered every 4H bar) ──────────
+        if self.mode == "paper":
+            _liq_px_mp = self._position.get("liq_px", 0.0)
+            if _liq_px_mp > 0.0:
+                _hit = (
+                    (side == "long"  and current_price <= _liq_px_mp) or
+                    (side == "short" and current_price >= _liq_px_mp)
+                )
+                if _hit:
+                    log.warning(
+                        "Paper _manage_position: LIQUIDATION triggered | "
+                        "side=%s liq_px=%.2f current=%.2f",
+                        side, _liq_px_mp, current_price,
+                    )
+                    await self._close_position(current_price, "liquidation")
+                    return
 
         # ── 1. Trailing SL update (always first, before any exit) ─────────────
         if self.config.trailing_sl_enabled:
@@ -3819,6 +3925,7 @@ class ExecutionEngine:
             _orig = self._risk.calculate_trade_params(
                 side=result.action, entry_price=close, atr=_atr,
                 equity_usd=self._equity, sl_atr=atr_sl,
+                leverage=getattr(self.config, "leverage", 1),
             )
         finally:
             self._risk.sl_atr_mult       = _orig_sl_mult
@@ -4058,6 +4165,18 @@ class ExecutionEngine:
             wallet   = eth_account.Account.from_key(HL_AGENT_PRIVKEY)
             endpoint = constants.TESTNET_API_URL if HL_TESTNET else constants.MAINNET_API_URL
             exchange = Exchange(wallet, endpoint, account_address=os.getenv("HL_WALLET_ADDRESS"))
+
+            # Set isolated margin leverage before placing the order
+            _target_lev = max(getattr(self.config, "leverage", 1), 1)
+            if _target_lev > 1:
+                try:
+                    lev_result = await asyncio.to_thread(
+                        exchange.update_leverage, _target_lev, SYMBOL, False  # False = isolated
+                    )
+                    log.info("Leverage set to %d× isolated on HL: %s", _target_lev, lev_result)
+                except Exception as _lev_exc:
+                    log.error("Failed to set leverage %d×: %s — aborting order", _target_lev, _lev_exc)
+                    return None
 
             # Derive deterministic cloid from inference_id for deduplication
             # HL expects a 16-byte hex string prefixed with "0x"

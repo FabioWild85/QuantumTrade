@@ -30,6 +30,9 @@ interface Position {
   trailing_sl_dist: number | null;
   entry_atr: number | null;
   entry_reasoning?: string[];
+  leverage?: number;
+  liq_px?: number;
+  margin_usd?: number;
 }
 
 interface TrendMeterData {
@@ -1672,12 +1675,14 @@ const LiveTradeCard: React.FC<LiveTradeCardProps> = ({
       </div>
 
       {/* Key levels grid */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 divide-y sm:divide-y-0 sm:divide-x divide-slate-100 dark:divide-white/5 border-b border-slate-100 dark:border-white/5">
+      <div className={`grid grid-cols-1 divide-y border-b border-slate-100 dark:border-white/5 ${pos.liq_px ? 'sm:grid-cols-4 sm:divide-y-0 sm:divide-x' : 'sm:grid-cols-3 sm:divide-y-0 sm:divide-x'} divide-slate-100 dark:divide-white/5`}>
         {[
-          { label: 'Entry', value: `$${fmt(pos.entry_price)}`, color: 'text-slate-900 dark:text-white' },
+          { label: 'Entry', value: `$${fmt(pos.entry_price)}`, color: 'text-slate-900 dark:text-white', sub: undefined as string | undefined },
           { label: 'Stop Loss', value: `$${fmt(pos.stop_loss)}`, color: 'text-rose-600 dark:text-rose-400',
             sub: slMoved ? `orig. $${fmt(pos.sl_original)}` : undefined },
-          { label: 'Take Profit', value: `$${fmt(pos.take_profit)}`, color: 'text-emerald-600 dark:text-emerald-400' },
+          { label: 'Take Profit', value: `$${fmt(pos.take_profit)}`, color: 'text-emerald-600 dark:text-emerald-400', sub: undefined as string | undefined },
+          ...(pos.liq_px ? [{ label: 'Liquidazione', value: `$${fmt(pos.liq_px)}`, color: 'text-red-600 dark:text-red-400',
+            sub: pos.leverage && pos.leverage > 1 ? `${pos.leverage}× · margine $${pos.margin_usd?.toLocaleString(undefined, { maximumFractionDigits: 0 }) ?? '—'}` : undefined }] : []),
         ].map(({ label, value, color, sub }) => (
           <div key={label} className="px-4 py-3 sm:px-6 sm:py-4">
             <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-1">{label}</p>

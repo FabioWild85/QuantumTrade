@@ -30,6 +30,9 @@ interface BacktestTrade {
   holding_bars: number;
   bar: number;
   origin?: string;
+  date?: string;
+  equity_after?: number;
+  leverage?: number;
   _levEq?: number;
   _bankrupt?: boolean;
 }
@@ -310,13 +313,14 @@ const TradeTable: React.FC<{ trades: BacktestTrade[]; showLevEquity?: boolean; i
     end_of_period: 'bg-slate-50 dark:bg-white/5 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-white/10',
     lgbm_exit:     'bg-violet-50 dark:bg-violet-500/10 text-violet-600 dark:text-violet-400 border-violet-100 dark:border-violet-500/20',
     max_hold:      'bg-amber-50 dark:bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-100 dark:border-amber-500/20',
+    liquidation:   'bg-red-50 dark:bg-red-500/10 text-red-600 dark:text-red-400 border-red-200 dark:border-red-500/25',
   };
 
   // Newest-first
   const reversed = [...trades].reverse();
   const totalPages = Math.ceil(reversed.length / PAGE_SIZE);
   const pageSlice  = reversed.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
-  const colSpan    = showLevEquity ? 11 : 10;
+  const colSpan    = showLevEquity ? 12 : 12;  // always 12 — date + equity always shown
 
   // Reset to page 0 when trades list changes (new backtest result)
   React.useEffect(() => { setPage(0); }, [trades.length]);
@@ -324,34 +328,39 @@ const TradeTable: React.FC<{ trades: BacktestTrade[]; showLevEquity?: boolean; i
   const rows: React.ReactNode[] = [];
   pageSlice.forEach((t, i) => {
     const globalIdx = page * PAGE_SIZE + i;
+    const isLiquidation = t.reason === 'liquidation';
+    const eqVal = t.equity_after ?? (showLevEquity ? t._levEq : undefined);
     rows.push(
-      <tr key={`t-${globalIdx}`} className={`hover:bg-slate-50/50 dark:hover:bg-white/[0.02] transition-colors group ${t._bankrupt ? 'bg-rose-50/30 dark:bg-rose-500/5' : ''}`}>
-        <td className="px-4 py-2 text-slate-400 font-mono">{t.bar}</td>
-        <td className="px-4 py-2">
+      <tr key={`t-${globalIdx}`} className={`hover:bg-slate-50/50 dark:hover:bg-white/[0.02] transition-colors group ${t._bankrupt ? 'bg-rose-50/30 dark:bg-rose-500/5' : isLiquidation ? 'bg-red-50/20 dark:bg-red-500/5' : ''}`}>
+        {/* Date */}
+        <td className="px-3 py-2 text-slate-400 dark:text-slate-500 font-mono whitespace-nowrap">
+          {t.date || <span className="text-slate-300 dark:text-slate-600">—</span>}
+        </td>
+        {/* Side */}
+        <td className="px-3 py-2">
           <span className={`px-2 py-0.5 rounded text-[10px] font-bold tracking-wider ${t.side === 'long' ? 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-100 dark:border-emerald-500/20' : 'bg-rose-50 dark:bg-rose-500/10 text-rose-600 dark:text-rose-400 border border-rose-100 dark:border-rose-500/20'}`}>
             {t.side.toUpperCase()}
           </span>
         </td>
-        <td className="px-4 py-2 text-right font-mono text-slate-600 dark:text-slate-300 font-bold">${t.entry.toLocaleString(undefined, { maximumFractionDigits: 0 })}</td>
-        <td className="px-4 py-2 text-right font-mono text-slate-600 dark:text-slate-300 font-bold">${t.exit.toLocaleString(undefined, { maximumFractionDigits: 0 })}</td>
-        <td className={`px-4 py-2 text-right font-mono font-bold ${numColor(t.pnl_pct)}`}>
+        <td className="px-3 py-2 text-right font-mono text-slate-600 dark:text-slate-300 font-bold">${t.entry.toLocaleString(undefined, { maximumFractionDigits: 0 })}</td>
+        <td className="px-3 py-2 text-right font-mono text-slate-600 dark:text-slate-300 font-bold">${t.exit.toLocaleString(undefined, { maximumFractionDigits: 0 })}</td>
+        <td className={`px-3 py-2 text-right font-mono font-bold ${numColor(t.pnl_pct)}`}>
           {t.pnl_pct > 0 ? '+' : ''}{t.pnl_pct}%
         </td>
-        <td className={`px-4 py-2 text-right font-mono font-medium ${numColor(t.pnl_usd)}`}>
+        <td className={`px-3 py-2 text-right font-mono font-medium ${numColor(t.pnl_usd)}`}>
           {t.pnl_usd > 0 ? '+' : ''}${t.pnl_usd.toFixed(0)}
         </td>
-        {showLevEquity && (
-          <td className={`px-4 py-2 text-right font-mono font-bold ${eqColor(t._levEq ?? 0)}`}>
-            {t._levEq !== undefined ? `$${t._levEq.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : '—'}
-          </td>
-        )}
-        <td className="px-4 py-2 text-right font-mono text-slate-400 dark:text-slate-500">
+        {/* Equity after — always shown */}
+        <td className={`px-3 py-2 text-right font-mono font-bold ${eqColor(eqVal ?? (initialCapital ?? 0))}`}>
+          {eqVal !== undefined ? `$${eqVal.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : '—'}
+        </td>
+        <td className="px-3 py-2 text-right font-mono text-slate-400 dark:text-slate-500">
           {t.fee_entry !== undefined ? `$${t.fee_entry.toFixed(1)}` : '—'}
         </td>
-        <td className={`px-4 py-2 text-right font-mono ${t.funding_paid !== undefined && t.funding_paid < 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-400 dark:text-slate-500'}`}>
+        <td className={`px-3 py-2 text-right font-mono ${t.funding_paid !== undefined && t.funding_paid < 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-400 dark:text-slate-500'}`}>
           {t.funding_paid !== undefined ? (t.funding_paid < 0 ? `+$${Math.abs(t.funding_paid).toFixed(1)}` : `$${t.funding_paid.toFixed(1)}`) : '—'}
         </td>
-        <td className="px-4 py-2">
+        <td className="px-3 py-2">
           <div className="flex items-center gap-1 flex-wrap">
             <span className={`px-2 py-0.5 rounded-lg text-[9px] font-bold uppercase tracking-wider border ${reasonStyle[t.reason] ?? 'bg-slate-50 dark:bg-white/5 text-slate-500 border-slate-200 dark:border-white/10'}`}>
               {t.reason.replace(/_/g, ' ')}
@@ -361,9 +370,14 @@ const TradeTable: React.FC<{ trades: BacktestTrade[]; showLevEquity?: boolean; i
                 re-entry
               </span>
             )}
+            {(t.leverage ?? 1) > 1 && (
+              <span className="px-1.5 py-0.5 rounded text-[8px] font-bold tracking-wider bg-amber-50 dark:bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-200 dark:border-amber-500/25">
+                {t.leverage}×
+              </span>
+            )}
           </div>
         </td>
-        <td className="px-4 py-2 text-right text-slate-400 dark:text-slate-500 font-mono">{t.holding_bars * 4}h</td>
+        <td className="px-3 py-2 text-right text-slate-400 dark:text-slate-500 font-mono">{t.holding_bars * 4}h</td>
       </tr>
     );
     if (t._bankrupt) {
@@ -388,17 +402,17 @@ const TradeTable: React.FC<{ trades: BacktestTrade[]; showLevEquity?: boolean; i
         <table className="w-full text-[11px]">
           <thead>
             <tr className="border-b border-slate-100 dark:border-white/5 text-[10px] text-slate-400 dark:text-slate-500 font-bold uppercase tracking-widest bg-slate-50/50 dark:bg-white/[0.02]">
-              <th className="px-4 py-3 text-left">Bar</th>
-              <th className="px-4 py-3 text-left">Side</th>
-              <th className="px-4 py-3 text-right">Entry</th>
-              <th className="px-4 py-3 text-right">Exit</th>
-              <th className="px-4 py-3 text-right">PnL %</th>
-              <th className="px-4 py-3 text-right">PnL $</th>
-              {showLevEquity && <th className="px-4 py-3 text-right">Equity</th>}
-              <th className="px-4 py-3 text-right">Fee Ent.</th>
-              <th className="px-4 py-3 text-right">Funding</th>
-              <th className="px-4 py-3 text-left">Reason</th>
-              <th className="px-4 py-3 text-right">Hold</th>
+              <th className="px-3 py-3 text-left">Data</th>
+              <th className="px-3 py-3 text-left">Side</th>
+              <th className="px-3 py-3 text-right">Entry</th>
+              <th className="px-3 py-3 text-right">Exit</th>
+              <th className="px-3 py-3 text-right">PnL %</th>
+              <th className="px-3 py-3 text-right">PnL $</th>
+              <th className="px-3 py-3 text-right">Equity</th>
+              <th className="px-3 py-3 text-right">Fee Ent.</th>
+              <th className="px-3 py-3 text-right">Funding</th>
+              <th className="px-3 py-3 text-left">Reason</th>
+              <th className="px-3 py-3 text-right">Hold</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-50 dark:divide-white/5">
@@ -1970,6 +1984,7 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   const [baseline,       setBaseline]       = useState<BacktestResult | null>(null);
   const [errorMsg,       setErrorMsg]       = useState('');
   const [leverage,       setLeverage]       = useState<LeverageOption>(1);
+  const [botLeverageStr, setBotLeverageStr] = useState<string>("1");   // config leverage (backend)
   const [lastRunConfig,  setLastRunConfig]  = useState<Record<string, any> | null>(null);
   const [toast,          setToast]          = useState<{ type: 'success' | 'error'; msg: string } | null>(null);
 
@@ -1982,6 +1997,7 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     if (p.sl_atr_mult        !== undefined) setSlMult(String(p.sl_atr_mult));
     if (p.tp_atr_mult        !== undefined) setTpMult(String(p.tp_atr_mult));
     if (p.position_size_pct  !== undefined) setPosSizePct(String(p.position_size_pct));
+    if (p.leverage           !== undefined) setBotLeverageStr(String(p.leverage ?? 1));
     if (p.trailing_sl_enabled   !== undefined) setTrailingSL(!!p.trailing_sl_enabled);
     if (p.trailing_sl_activation!== undefined) setTrailAct(String(p.trailing_sl_activation));
     if (p.partial_tp_enabled    !== undefined) setPartialTP(!!p.partial_tp_enabled);
@@ -2294,6 +2310,7 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     adx_gate:                 parseFloat(advAdxGate),
     confluence_gate:          parseFloat(advConfGate),
     max_consecutive_losses:   4,
+    leverage:                 parseInt(botLeverageStr) || 1,
     mode:                     'paper',
     // Exit strategies
     trailing_sl_enabled:      withAdvanced && trailingSL,
@@ -2669,7 +2686,8 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     || sweepDirectional || absorptionFilter || !exhaustionGuard || !structuralSl
     || lateEntryFilter || pathObstruction || dualAtr || consecBarsFilter
     || fundingGate || fngGate
-    || dynamicSlTp || p10SlFloor || obTp || fvgSl || fvgTp || swingSl || swingTp;
+    || dynamicSlTp || p10SlFloor || obTp || fvgSl || fvgTp || swingSl || swingTp
+    || parseInt(botLeverageStr) > 1;
 
   return (
     <>
@@ -2828,7 +2846,8 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                 { label: 'Capitale ($)',tip: 'Capitale iniziale simulato in USD. Tutti i calcoli di P&L sono basati su questo importo.', type: 'number', val: capital,    set: setCapital,    min: undefined,    max: undefined, dimWhenDynamic: false },
                 { label: 'SL Mult',    tip: 'Stop Loss Multiplier: distanza dello stop loss in multipli di ATR. Usato come base e fallback anche in modalità Adaptive SL/TP.',    type: 'number', val: slMult,     set: setSlMult,     min: undefined,    max: undefined, dimWhenDynamic: false },
                 { label: 'TP Mult',    tip: 'Take Profit Multiplier: distanza del TP in multipli di ATR. Usato come base e fallback anche in modalità Adaptive SL/TP.',            type: 'number', val: tpMult,     set: setTpMult,     min: undefined,    max: undefined, dimWhenDynamic: false },
-                { label: 'Size (%)',   tip: 'Percentuale del capitale rischiata per ogni trade. Con $10.000 e Size 1.5%, ogni trade rischia $150.',             type: 'number', val: posSizePct, set: setPosSizePct, min: undefined,    max: undefined, dimWhenDynamic: false },
+                { label: 'Size (%)',   tip: 'Percentuale del capitale rischiata per ogni trade. Con $10.000 e Size 1.5%, ogni trade rischia $150.',             type: 'number', val: posSizePct,      set: setPosSizePct,      min: undefined, max: undefined, dimWhenDynamic: false },
+                { label: 'Leva (×)',  tip: 'Leva isolata reale applicata al backtest (1–50). Size USD × leva, margine = size/leva. Safety cap: margine ≤ 95% del capitale. Imposta a 1 per nessuna leva.',   type: 'number', val: botLeverageStr,  set: setBotLeverageStr,  min: '1',       max: '50',      dimWhenDynamic: false },
               ] as const).map(f => (
                 <div key={f.label} className={`transition-all duration-200 ${f.dimWhenDynamic && dynamicSlTp ? 'opacity-35 pointer-events-none' : ''}`}>
                   <Tooltip text={f.tip} pos="bottom" width="wide">
@@ -2845,6 +2864,22 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                 </div>
               ))}
             </div>
+
+            {/* Leverage warning banner */}
+            {parseInt(botLeverageStr) > 1 && (
+              <div className={`flex items-start gap-2 rounded-xl px-3.5 py-2.5 text-[11px] font-medium ${
+                parseInt(botLeverageStr) >= 20
+                  ? 'bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-400'
+                  : 'bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400'
+              }`}>
+                <span className="mt-0.5 shrink-0">⚠</span>
+                <span>
+                  {parseInt(botLeverageStr) >= 20
+                    ? `Leva ${botLeverageStr}× — liquidazione attiva nel backtest. Le posizioni vengono chiuse al prezzo di liquidazione se toccato prima dello SL.`
+                    : `Leva ${botLeverageStr}× attiva. Position size ×${botLeverageStr}, margine = size/${botLeverageStr}. Il simulatore post-hoc è disabilitato sui risultati.`}
+                </span>
+              </div>
+            )}
 
             {/* ── Regime / Period Quick Selector ───────────────────────────────── */}
             <div className="pt-1">
@@ -3463,12 +3498,27 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
               <>
                 {/* Config summary for current run */}
                 {lastRunConfig && <ConfigSummary config={lastRunConfig} />}
-                {/* Leverage selector */}
-                <div className="bg-slate-50/50 dark:bg-white/[0.02] rounded-2xl px-6 py-4 border border-slate-100 dark:border-white/5">
-                  <LeverageSelector value={leverage} onChange={setLeverage} worstTradePct={result.stats.worst_trade_pct} />
-                </div>
-                {/* Leverage compounding warning */}
-                {leverage > 1 && (
+                {/* Leverage selector — disabilitato se la config usa già leva reale backend */}
+                {parseInt(botLeverageStr) > 1 ? (
+                  <div className="bg-indigo-50/60 dark:bg-indigo-900/10 rounded-2xl px-6 py-4 border border-indigo-200/60 dark:border-indigo-500/20 flex items-start gap-3">
+                    <span className="text-indigo-500 dark:text-indigo-400 mt-0.5 text-base">ℹ</span>
+                    <div>
+                      <p className="text-[12px] font-semibold text-indigo-700 dark:text-indigo-300">
+                        Leva reale {parseInt(botLeverageStr)}× già applicata dal backtest
+                      </p>
+                      <p className="text-[11px] text-indigo-600/70 dark:text-indigo-400/60 mt-0.5">
+                        Il simulatore post-hoc è disabilitato per evitare doppia leva.
+                        I risultati già riflettono sizing ×{parseInt(botLeverageStr)} e liquidazione.
+                      </p>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="bg-slate-50/50 dark:bg-white/[0.02] rounded-2xl px-6 py-4 border border-slate-100 dark:border-white/5">
+                    <LeverageSelector value={leverage} onChange={setLeverage} worstTradePct={result.stats.worst_trade_pct} />
+                  </div>
+                )}
+                {/* Leverage compounding warning (solo per simulatore post-hoc) */}
+                {parseInt(botLeverageStr) <= 1 && leverage > 1 && (
                   <LeverageWarning
                     lev={leverage}
                     levPnlPct={disp.stats.total_pnl_pct}

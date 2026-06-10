@@ -157,6 +157,7 @@ class BotConfig(BaseModel):
     adx_gate: float = Field(20.0, ge=10.0, le=40.0)
     confluence_gate: float = Field(60.0, ge=0.0, le=100.0)
     max_consecutive_losses: int = Field(4, ge=1, le=10)
+    leverage: int = Field(1, ge=1, le=50)
     mode: str = Field("paper", pattern="^(paper|live)$")
     # Advanced exit strategies
     partial_tp_enabled: bool = Field(False)

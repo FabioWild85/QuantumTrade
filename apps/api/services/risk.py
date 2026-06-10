@@ -71,6 +71,7 @@ class RiskManager:
         entry_price: float,
         atr: float,
         equity_usd: float,
+        leverage: int = 1,
         sl_atr: Optional[float] = None,
         c2_p10: Optional[float] = None,
         c2_p90: Optional[float] = None,
@@ -231,10 +232,26 @@ class RiskManager:
             stop_loss   = entry_price + sl_dist
             take_profit = entry_price - tp_dist
 
-        # Risk-based sizing: position_size_pct = % of equity AT RISK per trade.
+        # Risk-based sizing: position_size_pct = % of leveraged notional AT RISK per trade.
+        # With leverage > 1, the notional controlled is equity × leverage, so risk scales
+        # proportionally: risk_usd = equity × leverage × position_size_pct / 100.
         sl_pct   = sl_dist / entry_price if entry_price > 0 else 0.02
-        risk_usd = equity_usd * (self.position_size_pct / 100) * size_mult
+        _eff_lev = max(leverage, 1)
+        risk_usd = equity_usd * (self.position_size_pct / 100) * size_mult * _eff_lev
         size_usd = risk_usd / sl_pct if sl_pct > 1e-6 else risk_usd
+
+        # Safety cap: margin deposited (size_usd / leverage) must not exceed 95% of equity.
+        # With higher leverage the cap is proportionally larger, enabling bigger positions
+        # while keeping margin within available collateral.
+        _margin = size_usd / _eff_lev
+        if _margin > equity_usd * 0.95:
+            size_usd = equity_usd * 0.95 * _eff_lev
+            risk_usd = size_usd * sl_pct
+            log.warning(
+                "Position size capped: margin (%.0f) would exceed 95%% of equity (%.0f) "
+                "at leva %d×. size_usd reduced to %.0f.",
+                _margin, equity_usd, _eff_lev, size_usd,
+            )
 
         size_contracts = size_usd / entry_price
         rr_ratio       = tp_dist / sl_dist
@@ -243,6 +260,7 @@ class RiskManager:
             f"Trade params: {side.upper()} entry={entry_price:.2f} "
             f"SL={stop_loss:.2f} TP={take_profit:.2f} "
             f"size=${size_usd:.0f} ({size_contracts:.4f} BTC) R:R={rr_ratio:.2f}"
+            + (f" [lev={_eff_lev}× margin=${size_usd/_eff_lev:.0f}]" if _eff_lev > 1 else "")
             + (f" [dual ATR: sl_atr={_sl_atr:.0f} tp_atr={atr:.0f}]"
                if sl_atr is not None and abs(_sl_atr - atr) > 0.5 else "")
             + (f" [adaptive: uncertainty={c2_uncertainty:.3f} size_mult={size_mult:.2f}]"

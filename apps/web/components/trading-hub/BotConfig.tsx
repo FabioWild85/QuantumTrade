@@ -10,6 +10,7 @@ interface Config {
   adx_gate: number;
   confluence_gate: number;
   max_consecutive_losses: number;
+  leverage: number;
   mode: 'paper' | 'live';
   dynamic_sl_tp_enabled: boolean;
   dynamic_sl_tp_blend: number;
@@ -232,6 +233,7 @@ const DEFAULTS: Config = {
   adx_gate: 20.0,
   confluence_gate: 60.0,
   max_consecutive_losses: 4,
+  leverage: 1,
   mode: 'paper',
   dynamic_sl_tp_enabled: false,
   dynamic_sl_tp_blend: 0.5,
@@ -1283,6 +1285,63 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
           <Tooltip text="Percentuale del capitale totale rischiata per ogni singolo trade." width="wide" pos="bottom">
             <NumInput label="Position Size (%)" value={config.position_size_pct} min={0.1} max={5} step={0.1} onChange={upd('position_size_pct')} />
           </Tooltip>
+          <div className="flex flex-col gap-2">
+            <Tooltip text="Leva isolata per ogni trade (Hyperliquid BTC-PERP). 1× = nessuna leva. La size in USD viene moltiplicata per la leva; il margine richiesto è size/leva. Safety cap: margine ≤ 95% del capitale." width="wide" pos="bottom">
+              <div className="flex flex-col gap-1.5">
+                <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest ml-0.5">Leverage</span>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => upd('leverage')(Math.max(1, config.leverage - 1))}
+                    className="w-8 h-8 flex items-center justify-center rounded-lg border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-white/5 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-white/10 transition-colors text-sm font-bold select-none shrink-0"
+                  >−</button>
+                  <div className="flex-1 relative">
+                    <input
+                      type="number"
+                      min={1} max={50} step={1}
+                      value={config.leverage}
+                      onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
+                        const v = Math.min(50, Math.max(1, parseInt(e.target.value) || 1));
+                        upd('leverage')(v);
+                      }}
+                      className="w-full bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 rounded-xl px-4 py-2.5 text-sm font-bold font-mono text-center text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all outline-none shadow-sm"
+                    />
+                    <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-400 dark:text-slate-500 pointer-events-none">×</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => upd('leverage')(Math.min(50, config.leverage + 1))}
+                    className="w-8 h-8 flex items-center justify-center rounded-lg border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-white/5 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-white/10 transition-colors text-sm font-bold select-none shrink-0"
+                  >+</button>
+                  <span className={`shrink-0 text-[10px] font-bold px-2 py-1 rounded-full border ${
+                    config.leverage === 1
+                      ? 'bg-slate-50 dark:bg-white/5 text-slate-400 dark:text-slate-500 border-slate-200 dark:border-white/10'
+                      : config.leverage <= 5
+                      ? 'bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400 border-amber-200 dark:border-amber-500/20'
+                      : config.leverage <= 20
+                      ? 'bg-orange-50 dark:bg-orange-900/20 text-orange-700 dark:text-orange-400 border-orange-200 dark:border-orange-500/20'
+                      : 'bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-400 border-red-200 dark:border-red-500/20'
+                  }`}>
+                    {config.leverage === 1 ? 'No leva' : config.leverage <= 5 ? 'Basso' : config.leverage <= 20 ? 'Medio' : 'Alto'}
+                  </span>
+                </div>
+              </div>
+            </Tooltip>
+            {config.leverage > 1 && (
+              <div className={`flex items-start gap-1.5 text-[11px] rounded-lg px-2.5 py-2 ${
+                config.leverage >= 20
+                  ? 'bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-400'
+                  : 'bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400'
+              }`}>
+                <span className="shrink-0 mt-px">⚠</span>
+                <span>
+                  {config.leverage >= 20
+                    ? `Leva ${config.leverage}× — liquidazione probabile prima dello SL. Usare con estrema cautela.`
+                    : `Leva ${config.leverage}× attiva — size ×${config.leverage}, margine = size/${config.leverage}.`}
+                </span>
+              </div>
+            )}
+          </div>
           <Tooltip text="Perdita massima tollerata in un singolo giorno." width="wide" pos="bottom">
             <NumInput label="Max Daily DD (%)" value={config.max_daily_dd_pct} min={0.5} max={10} step={0.5} onChange={upd('max_daily_dd_pct')} />
           </Tooltip>
