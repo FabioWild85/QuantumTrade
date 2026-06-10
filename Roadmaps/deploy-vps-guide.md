@@ -77,12 +77,67 @@ ssh -i ~/.ssh/id_ed25519 root@77.42.84.8 "systemctl restart quantum-trade"
 
 ---
 
+## Configurazione Nginx — SPA Routing (OBBLIGATORIO)
+
+Con l'introduzione di React Router (URL reali tipo `/hub/backtest`, `/analysis/btc`), Nginx deve essere configurato con il **fallback SPA** — altrimenti ogni refresh su un URL diverso da `/` restituisce 404.
+
+### Verifica config attuale
+
+```bash
+ssh -i ~/.ssh/id_ed25519 root@77.42.84.8 "cat /etc/nginx/sites-enabled/*"
+```
+
+### Config Nginx richiesta
+
+La sezione `location /` deve contenere `try_files $uri $uri/ /index.html;`:
+
+```nginx
+server {
+    listen 80;
+    server_name _;  # sostituire con il dominio quando disponibile
+
+    root /opt/quantum-trade/dist;
+    index index.html;
+
+    # SPA fallback — OBBLIGATORIO per React Router
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    # Proxy verso FastAPI
+    location /api/ {
+        proxy_pass http://localhost:8000/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+}
+```
+
+### Applicare la modifica
+
+```bash
+# 1. Editare la config
+ssh -i ~/.ssh/id_ed25519 root@77.42.84.8 "nano /etc/nginx/sites-enabled/quantum-trade"
+
+# 2. Verificare la sintassi
+ssh -i ~/.ssh/id_ed25519 root@77.42.84.8 "nginx -t"
+
+# 3. Ricaricare Nginx (senza downtime)
+ssh -i ~/.ssh/id_ed25519 root@77.42.84.8 "systemctl reload nginx"
+```
+
+> **Nota:** questa modifica va applicata **una sola volta** prima o dopo il primo deploy con React Router. Non è necessario riapplicarla nei deploy successivi.
+
+---
+
 ## Checklist pre-deploy
 
 - [ ] Build frontend completato senza errori TypeScript
 - [ ] Controllare che la cartella di output sia `dist/` nella root del progetto (non `apps/web/dist/`)
 - [ ] Usare sempre l'IP `77.42.84.8` (verificare in `apps/api/.env → VPS_HOST` in caso di dubbio)
 - [ ] Usare sempre il percorso remoto `/opt/quantum-trade/dist/` per il frontend
+- [ ] **[Solo primo deploy con React Router]** Verificare che Nginx abbia `try_files $uri $uri/ /index.html` — vedi sezione sopra
 - [ ] Dopo il deploy, forzare hard refresh nel browser (`Cmd+Shift+R`) per svuotare la cache
 
 ---
