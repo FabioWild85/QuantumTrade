@@ -262,7 +262,6 @@ const FanChartSVG: React.FC<{
 
   const areaPath = (top: number[], bot: number[]) => {
     const fwd = top.map((v, i) => `${i === 0 ? 'M' : 'L'}${xs[i].toFixed(1)},${py(v).toFixed(1)}`).join(' ');
-    const rev = [...bot].map((v, i) => `L${xs[n - i].toFixed(1)},${py(v).toFixed(1)}`).reverse().join(' ');
     return `${fwd} ${[...bot].reverse().map((v, i) => `L${xs[n - i].toFixed(1)},${py(v).toFixed(1)}`).join(' ')} Z`;
   };
 

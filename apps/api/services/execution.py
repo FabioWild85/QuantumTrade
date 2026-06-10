@@ -70,7 +70,7 @@ def _load_lcs() -> Optional[dict]:
         if _LCS_STATE_FILE.exists():
             return json.loads(_LCS_STATE_FILE.read_text())
     except Exception:
-        pass
+        log.warning("Failed to load LCS state file", exc_info=True)
     return None
 
 
@@ -819,7 +819,7 @@ class ExecutionEngine:
                 "payload":  hl_pos,
             }).execute()
         except Exception:
-            pass
+            log.warning("DB write failed: existing position event on restart", exc_info=True)
         await self._notifier.send_error(
             f"⚠️ Posizione esistente rilevata su HL al restart: "
             f"{hl_pos['side'].upper()} {hl_pos['size_contracts']} BTC @ {hl_pos['entry_price']:.2f}. "
@@ -1124,7 +1124,7 @@ class ExecutionEngine:
                         },
                     }).execute()
                 except Exception:
-                    pass
+                    log.warning("DB write failed: error event", exc_info=True)
 
                 if self._consecutive_errors >= CIRCUIT_BREAKER_THRESHOLD:
                     log.critical(
@@ -1140,7 +1140,7 @@ class ExecutionEngine:
                             "payload":  {"consecutive_errors": self._consecutive_errors},
                         }).execute()
                     except Exception:
-                        pass
+                        log.warning("DB write failed: circuit breaker event", exc_info=True)
                     await self._notifier.send_error(
                         f"🚨 Circuit breaker attivato dopo {self._consecutive_errors} errori consecutivi. "
                         "Bot fermato automaticamente. Controlla i log.",
@@ -1152,7 +1152,7 @@ class ExecutionEngine:
                         db = get_supabase()
                         db.table("bot_configs").update({"running": False}).eq("name", "default").execute()
                     except Exception:
-                        pass
+                        log.warning("DB write failed: could not persist stopped state after circuit breaker", exc_info=True)
                     break
 
                 await asyncio.sleep(60)  # brief pause before retry
@@ -2630,7 +2630,7 @@ class ExecutionEngine:
                 "payload":  {**metrics, "trigger": trigger},
             }).execute()
         except Exception:
-            pass
+            log.warning("DB write failed: lgbm_retrained event", exc_info=True)
 
     async def _retrain_background(self):
         log.info("Auto-retraining triggered (cycle %d)", self._cycle_count)
@@ -2701,7 +2701,7 @@ class ExecutionEngine:
                     "payload":  {**result, "cycle": self._cycle_count},
                 }).execute()
             except Exception:
-                pass
+                log.warning("DB write failed: drift detection event", exc_info=True)
 
             self._last_drift_retrain = now
             metrics = await self._trainer.retrain(

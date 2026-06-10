@@ -19,7 +19,6 @@ export const TradeSignals: React.FC<Props> = ({ signals }) => {
       <div className="flex flex-col gap-6">
         {signals.map((signal, idx) => {
           const isLong = signal.type === 'LONG';
-          const themeColor = isLong ? 'emerald' : 'rose';
           
           return (
             <div key={idx} className="elegant-card p-0 overflow-hidden group border border-slate-200 dark:border-white/5 hover:border-indigo-300 dark:hover:border-indigo-500/30 transition-all shadow-sm">

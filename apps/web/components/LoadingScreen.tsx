@@ -6,23 +6,20 @@ interface Props {
   isDarkMode: boolean;
 }
 
-export const LoadingScreen: React.FC<Props> = ({ asset, step, isDarkMode }) => {
+export const LoadingScreen: React.FC<Props> = ({ asset, step }) => {
   const [progress, setProgress] = useState(0);
   const [logs, setLogs] = useState<string[]>([]);
   
   // Dynamic Colors based on Asset
-  let colorClass = 'text-orange-500';
   let bgClass = 'bg-orange-500';
   let borderClass = 'border-t-orange-500';
 
   if (asset === 'ETH') {
-      colorClass = 'text-blue-600 dark:text-blue-400';
       bgClass = 'bg-blue-600';
       borderClass = 'border-t-blue-600';
   } else if (asset === 'SOL') {
       // Solana Official Gradient Colors (Purple #9945FF to Green #14F195)
       // Using the dominant Purple for text/border context
-      colorClass = 'text-[#9945FF]'; 
       bgClass = 'bg-[#9945FF]';
       borderClass = 'border-t-[#9945FF]';
   }

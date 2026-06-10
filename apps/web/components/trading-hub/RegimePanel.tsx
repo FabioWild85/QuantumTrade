@@ -63,16 +63,6 @@ const REGIME_ICON: Record<RegimeName, React.ReactNode> = {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function formatParamValue(v: unknown): string {
-  if (typeof v === 'boolean') return v ? 'ON' : 'OFF';
-  if (typeof v === 'number')  return Number.isInteger(v) ? String(v) : v.toFixed(2);
-  return String(v ?? '—');
-}
-
-function formatParamName(k: string): string {
-  return k.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
-}
-
 function barsToTime(bars: number): string {
   const h = bars * 4;
   if (h < 48)  return `${h}h`;

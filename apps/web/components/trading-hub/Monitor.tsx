@@ -2220,15 +2220,6 @@ const KpiCard: React.FC<{ label: string; value: string; sub?: string; color?: st
   </div>
 );
 
-const Stat: React.FC<{ label: string; value: string; color?: string }> = ({
-  label, value, color = 'text-slate-900 dark:text-white',
-}) => (
-  <div className="w-full">
-    <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-1">{label}</p>
-    <p className={`font-mono font-bold text-lg tracking-tight ${color}`}>{value}</p>
-  </div>
-);
-
 const StatusBadge: React.FC<{ label: string; active: boolean }> = ({ label, active }) => (
   <div className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider border transition-all ${
     active ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'

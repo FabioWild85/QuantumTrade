@@ -149,7 +149,7 @@ export const getIndicatorExplanation = (name: string, signal: Sentiment): string
   return "Questo indicatore tecnico suggerisce la direzione probabile del prezzo basandosi su volumi, volatilità e azione dei prezzi passata.";
 };
 
-export const getOnChainExplanation = (metric: string, value: any): string => {
+export const getOnChainExplanation = (metric: string, _value: any): string => {
     if (metric === 'MVRV') {
         return "Il MVRV Z-Score valuta se Bitcoin è sopra o sottovalutato rispetto al suo 'Fair Value' (Realized Price). Un valore basso (< 0) indica che l'asset è sottovalutato (Buy Zone). Un valore alto (> 4-7) indica bolla speculativa (Sell Zone).";
     }

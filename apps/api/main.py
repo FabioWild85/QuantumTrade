@@ -13,6 +13,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Literal, Optional
 
+import httpx
 import psutil
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks
@@ -742,7 +743,7 @@ async def get_forecast(symbol: str = "BTC", horizon: int = 3):
             _liq_ratio = (df_liq["liq_long"] / _liq_total.replace(0, float("nan"))).fillna(0.5)
             liq_ratio_series = _liq_ratio.reindex(df.index, method="ffill").fillna(0.5).values
     except Exception:
-        pass
+        log.warning("Failed to compute liquidation ratio covariate", exc_info=True)
 
     # Premium-z covariate (spot-perp basis), computed from df_fund's premium column
     premium_series = None
@@ -1823,6 +1824,43 @@ async def server_status():
         "top_processes": top_procs,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
+
+
+# ─── AI / Macro proxy endpoints ──────────────────────────────────────────────
+# Wrappano le chiamate esterne tenendo le API key lato server.
+# Il frontend chiama questi endpoint invece di contattare Gemini/FMP direttamente.
+
+@app.post("/ai/gemini")
+async def gemini_proxy(body: dict):
+    """Proxy trasparente verso l'API Gemini — la chiave non esce mai nel bundle JS."""
+    gemini_key = os.getenv("GEMINI_API_KEY", "")
+    if not gemini_key:
+        raise HTTPException(status_code=503, detail="GEMINI_API_KEY not configured on server")
+    model = body.pop("model", "gemini-2.5-flash")
+    async with httpx.AsyncClient(timeout=90.0) as client:
+        r = await client.post(
+            f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+            params={"key": gemini_key},
+            json=body,
+        )
+    if not r.is_success:
+        raise HTTPException(status_code=r.status_code, detail=r.text)
+    return r.json()
+
+
+@app.get("/macro/fmp")
+async def fmp_proxy():
+    """Proxy FMP: restituisce le quote di SP500, DXY, Oil, Russell 2000."""
+    fmp_key = os.getenv("FMP_API_KEY", "")
+    if not fmp_key:
+        raise HTTPException(status_code=503, detail="FMP_API_KEY not configured on server")
+    symbols = ["%5EGSPC", "DX-Y.NYB", "USOIL", "%5ERUT"]
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        responses = await asyncio.gather(*[
+            client.get(f"https://financialmodelingprep.com/api/v3/quote/{s}?apikey={fmp_key}")
+            for s in symbols
+        ])
+    return [r.json() for r in responses]
 
 
 def _log_event(kind: str, message: str, severity: str = "info", payload: dict | None = None):

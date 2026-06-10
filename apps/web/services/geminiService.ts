@@ -1,11 +1,18 @@
-import { GoogleGenAI } from "@google/genai";
 import { MarketReport, Sentiment, TechnicalAnalysis } from "../types";
 import { cacheService } from "./cacheService";
 
-// ─── SDK Init ─────────────────────────────────────────────────────────────────
-// @google/genai requires { apiKey } as an object — NOT a bare string.
-const GENAI_KEY = process.env.GEMINI_API_KEY || process.env.API_KEY || '';
-const ai = new GoogleGenAI({ apiKey: GENAI_KEY });
+// ─── Backend proxy (la GEMINI_API_KEY resta lato server, mai nel bundle JS) ──
+const API_BASE = import.meta.env.DEV ? 'http://localhost:8000' : '/api';
+
+async function callGemini(model: string, body: object): Promise<any> {
+  const res = await fetch(`${API_BASE}/ai/gemini`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model, ...body }),
+  });
+  if (!res.ok) throw new Error(`Gemini proxy error ${res.status}: ${await res.text()}`);
+  return res.json();
+}
 
 // ─── Models ───────────────────────────────────────────────────────────────────
 // gemini-3.1-flash-lite → Phase 1: ultra-fast web search (May 2026)
@@ -17,8 +24,6 @@ const MODELS = {
 };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
-
 /** A-02: Automatically compute Risk/Reward ratio from signal price strings. */
 function calculateRR(signal: any): string {
   try {
@@ -61,7 +66,7 @@ function extractSources(response: any): string[] {
 
 // ─── Fallback report (shown when AI is unreachable) ───────────────────────────
 const getFallbackReport = (
-  symbol: 'BTC' | 'ETH' | 'SOL',
+  _symbol: 'BTC' | 'ETH' | 'SOL',
   realData: Partial<TechnicalAnalysis>,
 ): MarketReport => ({
   timestamp: new Date().toISOString(),
@@ -166,12 +171,11 @@ Restituisci SOLO un JSON con questa struttura:
 `;
 
   try {
-    const response = await ai.models.generateContent({
-      model: MODELS.RESEARCHER,
-      contents: prompt,
-      config: { tools: [{ googleSearch: {} }] },
+    const response = await callGemini(MODELS.RESEARCHER, {
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      tools: [{ google_search: {} }],
     });
-    const text = response.text ?? '';
+    const text = response.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
     const sources = extractSources(response);
     const data = extractJson(text);
     console.log(`Research OK (${MODELS.RESEARCHER}) — ${sources.length} sources.`);
@@ -180,12 +184,11 @@ Restituisci SOLO un JSON con questa struttura:
     // Preview model might not be available — fall back to stable flash
     console.warn(`Research with ${MODELS.RESEARCHER} failed, trying ${MODELS.FALLBACK}:`, err.message);
     try {
-      const response = await ai.models.generateContent({
-        model: MODELS.FALLBACK,
-        contents: prompt,
-        config: { tools: [{ googleSearch: {} }] },
+      const response = await callGemini(MODELS.FALLBACK, {
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        tools: [{ google_search: {} }],
       });
-      const text = response.text ?? '';
+      const text = response.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
       const sources = extractSources(response);
       const data = extractJson(text);
       console.log(`Research OK (fallback ${MODELS.FALLBACK}) — ${sources.length} sources.`);
@@ -280,22 +283,20 @@ Genera il JSON del report con QUESTA struttura esatta:
 `;
 
   try {
-    const response = await ai.models.generateContent({
-      model: MODELS.STRATEGIST,
-      contents: prompt,
-      config: { systemInstruction },
+    const response = await callGemini(MODELS.STRATEGIST, {
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      systemInstruction: { parts: [{ text: systemInstruction }] },
     });
-    const text = response.text ?? '';
+    const text = response.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
     return { parsed: extractJson(text) };
   } catch (err: any) {
     // Preview model might not be available — fall back to stable flash
     console.warn(`Strategy with ${MODELS.STRATEGIST} failed, trying ${MODELS.FALLBACK}:`, err.message);
-    const response = await ai.models.generateContent({
-      model: MODELS.FALLBACK,
-      contents: prompt,
-      config: { systemInstruction },
+    const response = await callGemini(MODELS.FALLBACK, {
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      systemInstruction: { parts: [{ text: systemInstruction }] },
     });
-    const text = response.text ?? '';
+    const text = response.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
     return { parsed: extractJson(text) };
   }
 }

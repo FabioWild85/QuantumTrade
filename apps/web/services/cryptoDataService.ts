@@ -211,9 +211,6 @@ export const getTechnicalData = async (symbol: 'BTC' | 'ETH' | 'SOL'): Promise<P
     const avgVol = calculateSMA(h4Volumes, 20);
     const currentVol = h4Volumes[h4Volumes.length - 1];
     
-    const recentHigh = Math.max(...dailyCloses.slice(-30));
-    const recentLow = Math.min(...dailyCloses.slice(-30));
-    
     // --- 4H ANALYSIS ---
     const ema20_4h = calculateEMA(h4Closes, 20);
     const ema50_4h = calculateEMA(h4Closes, 50);
@@ -540,16 +537,11 @@ export const getTechnicalData = async (symbol: 'BTC' | 'ETH' | 'SOL'): Promise<P
     } catch (e) {
       console.warn('[P-02] Yahoo Finance macro fetch failed:', e);
 
-      // Fallback: FMP (requires paid plan for indices/forex)
-      const FMP_KEY = process.env.FMP_API_KEY;
-      if (FMP_KEY) {
-        try {
-          const [spRaw, dxRaw, clRaw, rutRaw] = await Promise.all([
-            safeFetchJson(`https://financialmodelingprep.com/api/v3/quote/%5EGSPC?apikey=${FMP_KEY}`),
-            safeFetchJson(`https://financialmodelingprep.com/api/v3/quote/DX-Y.NYB?apikey=${FMP_KEY}`),
-            safeFetchJson(`https://financialmodelingprep.com/api/v3/quote/USOIL?apikey=${FMP_KEY}`),
-            safeFetchJson(`https://financialmodelingprep.com/api/v3/quote/%5ERUT?apikey=${FMP_KEY}`),
-          ]);
+      // Fallback: FMP via backend proxy (la chiave resta lato server)
+      try {
+        const apiBase = import.meta.env.DEV ? 'http://localhost:8000' : '/api';
+        const fmpData: any[] = await safeFetchJson(`${apiBase}/macro/fmp`);
+        if (Array.isArray(fmpData) && fmpData.length === 4) {
           const fmpToMacro = (data: any, invertTrend = false): MacroAsset | undefined => {
             const q = Array.isArray(data) ? data[0] : data;
             if (!q?.price) return undefined;
@@ -560,14 +552,15 @@ export const getTechnicalData = async (symbol: 'BTC' | 'ETH' | 'SOL'): Promise<P
               change24h: up ? 'up' : 'down',
             };
           };
+          const [spRaw, dxRaw, clRaw, rutRaw] = fmpData;
           fmpSp500   = fmpToMacro(spRaw);
           fmpDxy     = fmpToMacro(dxRaw, true);
           fmpOil     = fmpToMacro(clRaw, true);
           fmpRussell = fmpToMacro(rutRaw);
           console.log('[P-02] FMP macro fallback loaded.');
-        } catch (e2) {
-          console.warn('[P-02] FMP fallback also failed:', e2);
         }
+      } catch (e2) {
+        console.warn('[P-02] FMP fallback also failed:', e2);
       }
     }
 
