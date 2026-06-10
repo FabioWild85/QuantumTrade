@@ -3,14 +3,19 @@ Supabase client singleton — shared across all services.
 Falls back gracefully if SUPABASE_URL is not configured yet (local dev).
 """
 
+import asyncio
 import os
 import logging
-from functools import lru_cache
 from typing import Optional
 
 log = logging.getLogger(__name__)
 
 _client = None
+
+
+async def run_db(fn):
+    """Offload una chiamata Supabase bloccante al thread pool, liberando l'event loop."""
+    return await asyncio.to_thread(fn)
 
 
 def get_supabase():

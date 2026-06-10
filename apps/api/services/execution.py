@@ -29,7 +29,7 @@ from services.risk import RiskManager, apply_structural_sl, apply_fvg_sl, apply_
 from services.notifications import TelegramNotifier
 from services.trainer import LGBMTrainer, load_model, load_correct_model, load_1h_model, _retrain_lock, _retrain_1h_lock
 from services.covariates import update_covariates, get_latest_covariates
-from services.supabase_client import get_supabase
+from services.supabase_client import get_supabase, run_db
 from services.regime_detector import RegimeDetector, RegimeSignal
 
 HL_TAKER_FEE = 0.00035  # 0.035% per side
@@ -611,7 +611,7 @@ class ExecutionEngine:
 
             try:
                 db = get_supabase()
-                order_res = db.table("orders").insert({
+                order_res = await run_db(lambda: db.table("orders").insert({
                     "bot_id":       "default",
                     "hl_order_id":  hl_order_id,
                     "symbol":       SYMBOL,
@@ -620,12 +620,12 @@ class ExecutionEngine:
                     "price":        round(price, 2),
                     "status":       "filled" if self.mode == "paper" else "pending",
                     "inference_id": inference_id,
-                }).execute()
+                }).execute())
                 if order_res.data:
                     self._position["trade_id"] = order_res.data[0].get("id")
                     if self.mode == "paper":
                         self._save_paper_position()
-                db.table("events").insert({
+                await run_db(lambda: db.table("events").insert({
                     "severity": "info",
                     "kind":     "trade_opened",
                     "message":  f"[MANUAL {self.mode.upper()}] {side.upper()} {size_contracts} BTC @ {price:.2f} | SL={sl_price:.2f} TP={tp_price:.2f} R:R={rr:.2f}",
@@ -634,7 +634,7 @@ class ExecutionEngine:
                         "price": round(price, 2), "sl": sl_price, "tp": tp_price,
                         "rr": rr, "size_usd": eff_size_usd, "mode": self.mode, "manual": True,
                     },
-                }).execute()
+                }).execute())
             except Exception as exc:
                 log.warning("Manual trade DB insert failed: %s", exc)
 
@@ -746,7 +746,7 @@ class ExecutionEngine:
         # Merge saved in-flight state from DB (trailing SL progress, partial TP status, etc.)
         try:
             db = get_supabase()
-            cfg_row = db.table("bot_configs").select("params").eq("name", "default").execute()
+            cfg_row = await run_db(lambda: db.table("bot_configs").select("params").eq("name", "default").execute())
             saved_state = (cfg_row.data[0].get("params") or {}).get("_live_position_state") if cfg_row.data else None
             if saved_state and saved_state.get("stop_loss", 0.0) > 0.0:
                 self._position.update({
@@ -809,7 +809,7 @@ class ExecutionEngine:
         )
         try:
             db = get_supabase()
-            db.table("events").insert({
+            await run_db(lambda: db.table("events").insert({
                 "severity": "warning",
                 "kind":     "position_reconciled",
                 "message":  (
@@ -817,7 +817,7 @@ class ExecutionEngine:
                     f"{hl_pos['side'].upper()} {hl_pos['size_contracts']} BTC @ {hl_pos['entry_price']:.2f}"
                 ),
                 "payload":  hl_pos,
-            }).execute()
+            }).execute())
         except Exception:
             log.warning("DB write failed: existing position event on restart", exc_info=True)
         await self._notifier.send_error(
@@ -837,18 +837,22 @@ class ExecutionEngine:
             db = get_supabase()
 
             # 1. Restore equity from most recent snapshot
-            snap = db.table("equity_snapshots") \
-                     .select("equity_usd") \
-                     .order("time", desc=True) \
-                     .limit(1).execute()
+            snap = await run_db(
+                lambda: db.table("equity_snapshots")
+                         .select("equity_usd")
+                         .order("time", desc=True)
+                         .limit(1).execute()
+            )
             if snap.data:
                 self._equity = float(snap.data[0]["equity_usd"])
                 log.info("Paper equity restored from DB: $%.2f", self._equity)
 
             # 2. Restore open paper position if saved in bot_configs
-            cfg_row = db.table("bot_configs") \
-                        .select("params") \
-                        .eq("name", "default").execute()
+            cfg_row = await run_db(
+                lambda: db.table("bot_configs")
+                          .select("params")
+                          .eq("name", "default").execute()
+            )
             if cfg_row.data:
                 saved_pos = (cfg_row.data[0].get("params") or {}).get("_paper_position")
                 if saved_pos:
@@ -1114,7 +1118,7 @@ class ExecutionEngine:
                 await self._notifier.send_error(str(exc), "main loop")
                 try:
                     db = get_supabase()
-                    db.table("events").insert({
+                    await run_db(lambda: db.table("events").insert({
                         "severity": "error",
                         "kind": "cycle_error",
                         "message": f"Errore nel ciclo di trading [{self._consecutive_errors}/{CIRCUIT_BREAKER_THRESHOLD}]: {type(exc).__name__}: {exc}",
@@ -1122,7 +1126,7 @@ class ExecutionEngine:
                             "error": str(exc), "type": type(exc).__name__,
                             "consecutive": self._consecutive_errors,
                         },
-                    }).execute()
+                    }).execute())
                 except Exception:
                     log.warning("DB write failed: error event", exc_info=True)
 
@@ -1133,12 +1137,12 @@ class ExecutionEngine:
                     )
                     try:
                         db = get_supabase()
-                        db.table("events").insert({
+                        await run_db(lambda: db.table("events").insert({
                             "severity": "critical",
                             "kind":     "circuit_breaker",
                             "message":  f"Circuit breaker attivato dopo {self._consecutive_errors} errori consecutivi. Bot fermato automaticamente.",
                             "payload":  {"consecutive_errors": self._consecutive_errors},
-                        }).execute()
+                        }).execute())
                     except Exception:
                         log.warning("DB write failed: circuit breaker event", exc_info=True)
                     await self._notifier.send_error(
@@ -1150,7 +1154,7 @@ class ExecutionEngine:
                     # Persist stopped state so no auto-resume until manually restarted
                     try:
                         db = get_supabase()
-                        db.table("bot_configs").update({"running": False}).eq("name", "default").execute()
+                        await run_db(lambda: db.table("bot_configs").update({"running": False}).eq("name", "default").execute())
                     except Exception:
                         log.warning("DB write failed: could not persist stopped state after circuit breaker", exc_info=True)
                     break
@@ -1813,7 +1817,7 @@ class ExecutionEngine:
                 )
                 try:
                     db = get_supabase()
-                    db.table("events").insert({
+                    await run_db(lambda: db.table("events").insert({
                         "severity": "warning",
                         "kind":     "macro_trade_blocked",
                         "message":  (
@@ -1827,7 +1831,7 @@ class ExecutionEngine:
                             "ensemble_pct": round(result.confidence * 100, 1),
                             "dir_prob":     round(result.directional_prob, 4),
                         },
-                    }).execute()
+                    }).execute())
                 except Exception as _exc:
                     log.warning("macro_trade_blocked event insert failed: %s", _exc)
                 asyncio.create_task(self._notifier.send_macro_trade_blocked(
@@ -2087,7 +2091,7 @@ class ExecutionEngine:
             )
             try:
                 db = get_supabase()
-                db.table("events").insert({
+                await run_db(lambda: db.table("events").insert({
                     "severity": "warning" if is_opposite else "info",
                     "kind":     kind,
                     "message":  (
@@ -2107,7 +2111,7 @@ class ExecutionEngine:
                         "reasoning":    result.reasoning,
                         "inference_id": inference_id,
                     },
-                }).execute()
+                }).execute())
             except Exception as exc:
                 log.warning("signal_blocked event insert failed: %s", exc)
 
@@ -2623,12 +2627,12 @@ class ExecutionEngine:
         )
         try:
             db = get_supabase()
-            db.table("events").insert({
+            await run_db(lambda: db.table("events").insert({
                 "severity": "info",
                 "kind":     "lgbm_retrained",
                 "message":  f"LightGBM retrained ({trigger}): OOS acc={metrics['oos_accuracy']:.2%}",
                 "payload":  {**metrics, "trigger": trigger},
-            }).execute()
+            }).execute())
         except Exception:
             log.warning("DB write failed: lgbm_retrained event", exc_info=True)
 
@@ -2691,7 +2695,7 @@ class ExecutionEngine:
             # Persist drift event to Supabase for UI visibility
             try:
                 db = get_supabase()
-                db.table("events").insert({
+                await run_db(lambda: db.table("events").insert({
                     "severity": "warning",
                     "kind":     "concept_drift",
                     "message":  (
@@ -2699,7 +2703,7 @@ class ExecutionEngine:
                         f"threshold={result['threshold']:.4f}. Emergency retrain triggered."
                     ),
                     "payload":  {**result, "cycle": self._cycle_count},
-                }).execute()
+                }).execute())
             except Exception:
                 log.warning("DB write failed: drift detection event", exc_info=True)
 
@@ -3014,7 +3018,7 @@ class ExecutionEngine:
 
         try:
             db = get_supabase()
-            order_res = db.table("orders").insert({
+            order_res = await run_db(lambda: db.table("orders").insert({
                 "bot_id":       "default",
                 "hl_order_id":  hl_order_id,
                 "symbol":       SYMBOL,
@@ -3023,7 +3027,7 @@ class ExecutionEngine:
                 "price":        price,
                 "status":       "filled" if self.mode == "paper" else "pending",
                 "inference_id": inference_id,
-            }).execute()
+            }).execute())
             # Capture the generated order ID and store it in the position
             # so _emit_trade_event() can link events to this trade.
             if order_res.data:
@@ -3031,7 +3035,7 @@ class ExecutionEngine:
                 # Re-persist with trade_id now populated (first persist at line above had no ID yet)
                 if self.mode == "paper":
                     self._save_paper_position()
-            db.table("events").insert({
+            await run_db(lambda: db.table("events").insert({
                 "severity": "info",
                 "kind": "trade_opened",
                 "message": f"[{self.mode.upper()}] {result.action.upper()} {size} BTC @ {price:.2f} | SL={params.stop_loss:.2f} TP={params.take_profit:.2f} R:R={params.rr_ratio:.2f}",
@@ -3041,7 +3045,7 @@ class ExecutionEngine:
                     "rr": params.rr_ratio, "size_usd": eff_size_usd, "mode": self.mode,
                     "size_factor": result.size_factor,
                 },
-            }).execute()
+            }).execute())
         except Exception as exc:
             log.warning("Order DB insert failed: %s", exc)
 
@@ -3065,12 +3069,12 @@ class ExecutionEngine:
             return
         try:
             db = get_supabase()
-            db.table("trade_events").insert({
+            await run_db(lambda: db.table("trade_events").insert({
                 "trade_id": self._position.get("trade_id"),
                 "kind":     kind,
                 "payload":  payload,
                 "time":     datetime.now(timezone.utc).isoformat(),
-            }).execute()
+            }).execute())
         except Exception as exc:
             log.debug("trade_event insert skipped: %s", exc)
 
@@ -3445,15 +3449,15 @@ class ExecutionEngine:
 
         try:
             db = get_supabase()
-            db.table("equity_snapshots").insert({
+            await run_db(lambda: db.table("equity_snapshots").insert({
                 "bot_id":         "default",
                 "equity_usd":     self._equity,
                 "unrealized_pnl": 0.0,
                 "realized_pnl":   total_pnl_usd,
                 "drawdown_pct":   min(0.0, total_pnl_pct),
-            }).execute()
+            }).execute())
             severity = "info" if total_pnl_usd >= 0 else "warning"
-            db.table("events").insert({
+            await run_db(lambda: db.table("events").insert({
                 "severity": severity,
                 "kind": "trade_closed",
                 "message": f"[{self.mode.upper()}] {side.upper()} chiuso ({reason}) | PnL {total_pnl_pct:+.2f}% (${total_pnl_usd:+.2f}) in {holding_h:.1f}h",
@@ -3464,11 +3468,11 @@ class ExecutionEngine:
                     "partial_pnl_usd": round(partial_pnl, 2),
                     "mode": self.mode,
                 },
-            }).execute()
+            }).execute())
             # Insert completed trade into trades table (feeds TradeLog UI)
             _valid_reasons = {"stop_loss", "take_profit", "manual", "kill", "lgbm_exit", "max_hold_bars", "macro_pause", "exchange_close"}
             _reason_close = reason if reason in _valid_reasons else "manual"
-            db.table("trades").insert({
+            await run_db(lambda: db.table("trades").insert({
                 "bot_id":          "default",
                 "entry_order_id":  self._position.get("trade_id"),
                 "symbol":          SYMBOL,
@@ -3485,7 +3489,7 @@ class ExecutionEngine:
                 "mode":            self.mode,
                 # FK to inference_logs — enables calibrator join on c2_dir_prob
                 "inference_id":    self._position.get("inference_id"),
-            }).execute()
+            }).execute())
         except Exception as exc:
             log.warning("Equity/trade snapshot write failed: %s", exc)
 
@@ -3514,10 +3518,10 @@ class ExecutionEngine:
             # re-apply stale state from the closed trade to a new position.
             try:
                 db = get_supabase()
-                row = db.table("bot_configs").select("params").eq("name", "default").execute()
+                row = await run_db(lambda: db.table("bot_configs").select("params").eq("name", "default").execute())
                 existing = (row.data[0].get("params") or {}) if row.data else {}
                 existing.pop("_live_position_state", None)
-                db.table("bot_configs").update({"params": existing}).eq("name", "default").execute()
+                await run_db(lambda: db.table("bot_configs").update({"params": existing}).eq("name", "default").execute())
             except Exception as exc:
                 log.warning("Could not clear live position state: %s", exc)
 
@@ -4404,7 +4408,7 @@ class ExecutionEngine:
         try:
             safe_lgbm = self._safe_float(lgbm_prob)
             db = get_supabase()
-            db.table("inference_logs").insert({
+            await run_db(lambda: db.table("inference_logs").insert({
                 "id":              inference_id,
                 "bot_id":          None,
                 "model":           "chronos2_lgbm_ensemble_v2",
@@ -4425,7 +4429,7 @@ class ExecutionEngine:
                 "decision":   result.action,
                 "reasoning":  result.reasoning,
                 "latency_ms": c2.get("latency_ms", 0),
-            }).execute()
+            }).execute())
             return inference_id
         except Exception as exc:
             log.warning("Inference log write failed: %s", exc)
@@ -4446,7 +4450,7 @@ class ExecutionEngine:
         """Persist regime snapshot to regime_log table (best-effort; table may not exist)."""
         try:
             db = get_supabase()
-            db.table("regime_log").insert({
+            await run_db(lambda: db.table("regime_log").insert({
                 "regime":          signal.regime,
                 "confidence":      signal.confidence,
                 "adx":             signal.adx,
@@ -4455,7 +4459,7 @@ class ExecutionEngine:
                 "bars_in_regime":  signal.bars_in_regime,
                 "transition_risk": signal.transition_risk,
                 "profile_applied": None,
-            }).execute()
+            }).execute())
         except Exception as exc:
             log.debug("regime_log write skipped (table may not exist yet): %s", exc)
 

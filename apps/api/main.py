@@ -21,7 +21,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from services.execution import ExecutionEngine
-from services.supabase_client import get_supabase
+from services.supabase_client import get_supabase, run_db
 from services.notifications import TelegramNotifier
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s — %(message)s")
@@ -437,15 +437,15 @@ async def bot_update_config(cfg: BotConfig):
     db = get_supabase()
     # Preserve internal keys (e.g. _paper_position) that live in params
     # but are not part of BotConfig — a full overwrite would wipe them.
-    existing = db.table("bot_configs").select("params").eq("name", "default").execute()
+    existing = await run_db(lambda: db.table("bot_configs").select("params").eq("name", "default").execute())
     existing_params = (existing.data[0].get("params") or {}) if existing.data else {}
     merged_params = {**existing_params, **cfg.model_dump()}
-    db.table("bot_configs").upsert({
+    await run_db(lambda: db.table("bot_configs").upsert({
         "name": "default",
         "params": merged_params,
         "mode": cfg.mode,
         "status": "updated",
-    }, on_conflict="name").execute()
+    }, on_conflict="name").execute())
     return {"status": "updated", "config": cfg.model_dump()}
 
 
@@ -453,7 +453,7 @@ async def bot_update_config(cfg: BotConfig):
 async def bot_get_backtest_config():
     """Returns the saved backtest-specific config, falling back to BotConfig defaults."""
     db = get_supabase()
-    result = db.table("bot_configs").select("params").eq("name", "backtest").execute()
+    result = await run_db(lambda: db.table("bot_configs").select("params").eq("name", "backtest").execute())
     if result.data:
         params = result.data[0].get("params", {})
         defaults = BotConfig().model_dump()
@@ -466,12 +466,12 @@ async def bot_get_backtest_config():
 async def bot_update_backtest_config(cfg: BotConfig):
     """Persist backtest-specific config independently from live config."""
     db = get_supabase()
-    db.table("bot_configs").upsert({
+    await run_db(lambda: db.table("bot_configs").upsert({
         "name": "backtest",
         "params": cfg.model_dump(),
         "mode": "backtest",
         "status": "updated",
-    }, on_conflict="name").execute()
+    }, on_conflict="name").execute())
     return {"status": "updated", "config": cfg.model_dump()}
 
 
@@ -881,7 +881,7 @@ async def live_account():
 @app.get("/trades")
 async def get_trades(limit: int = 100):
     db = get_supabase()
-    result = db.table("trades").select("*, orders!entry_order_id(*)").order("opened_at", desc=True).limit(limit).execute()
+    result = await run_db(lambda: db.table("trades").select("*, orders!entry_order_id(*)").order("opened_at", desc=True).limit(limit).execute())
     return result.data
 
 
@@ -935,8 +935,8 @@ async def reconcile_equity():
 async def delete_trade(trade_id: str):
     """Delete a single trade, its events, then fully reconcile equity_snapshots."""
     db = get_supabase()
-    db.table("trade_events").delete().eq("trade_id", trade_id).execute()
-    db.table("trades").delete().eq("id", trade_id).execute()
+    await run_db(lambda: db.table("trade_events").delete().eq("trade_id", trade_id).execute())
+    await run_db(lambda: db.table("trades").delete().eq("id", trade_id).execute())
     new_equity = _rebuild_equity_from_trades(db)
     return {"status": "deleted", "equity": round(new_equity, 2)}
 
@@ -953,7 +953,7 @@ async def clear_trades():
         ("inference_logs",   "time"),
     ]:
         try:
-            res = db.table(table).delete().gt(col, "2000-01-01").execute()
+            res = await run_db(lambda: db.table(table).delete().gt(col, "2000-01-01").execute())
             counts[table] = len(res.data) if res.data else 0
         except Exception as exc:
             log.warning("clear_trades: failed on %s — %s", table, exc)
@@ -967,7 +967,7 @@ async def clear_trades():
 @app.get("/inference-logs")
 async def get_inference_logs(limit: int = 50):
     db = get_supabase()
-    result = db.table("inference_logs").select("*").order("time", desc=True).limit(limit).execute()
+    result = await run_db(lambda: db.table("inference_logs").select("*").order("time", desc=True).limit(limit).execute())
     return result.data
 
 
@@ -1367,14 +1367,14 @@ async def backtest_status(job_id: str):
 @app.get("/backtest-history")
 async def backtest_history(limit: int = 50):
     db = get_supabase()
-    result = db.table("backtest_results").select("id,created_at,name,symbol,from_date,to_date,initial_capital,duration_days,summary").order("created_at", desc=True).limit(limit).execute()
+    result = await run_db(lambda: db.table("backtest_results").select("id,created_at,name,symbol,from_date,to_date,initial_capital,duration_days,summary").order("created_at", desc=True).limit(limit).execute())
     return result.data
 
 
 @app.get("/backtest-history/{record_id}")
 async def backtest_history_get(record_id: str):
     db = get_supabase()
-    result = db.table("backtest_results").select("*").eq("id", record_id).execute()
+    result = await run_db(lambda: db.table("backtest_results").select("*").eq("id", record_id).execute())
     if not result.data:
         raise HTTPException(404, "Backtest not found")
     return result.data[0]
@@ -1383,21 +1383,21 @@ async def backtest_history_get(record_id: str):
 @app.patch("/backtest-history/{record_id}")
 async def backtest_history_rename(record_id: str, body: dict):
     db = get_supabase()
-    db.table("backtest_results").update({"name": body.get("name", "")}).eq("id", record_id).execute()
+    await run_db(lambda: db.table("backtest_results").update({"name": body.get("name", "")}).eq("id", record_id).execute())
     return {"status": "ok"}
 
 
 @app.delete("/backtest-history")
 async def backtest_history_delete_all():
     db = get_supabase()
-    db.table("backtest_results").delete().gt("created_at", "2000-01-01").execute()
+    await run_db(lambda: db.table("backtest_results").delete().gt("created_at", "2000-01-01").execute())
     return {"status": "cleared"}
 
 
 @app.delete("/backtest-history/{record_id}")
 async def backtest_history_delete(record_id: str):
     db = get_supabase()
-    db.table("backtest_results").delete().eq("id", record_id).execute()
+    await run_db(lambda: db.table("backtest_results").delete().eq("id", record_id).execute())
     return {"status": "deleted"}
 
 
@@ -1410,7 +1410,7 @@ async def get_events(limit: int = 100, since: Optional[str] = None):
     q = db.table("events").select("*").order("time", desc=True).limit(limit)
     if since:
         q = q.gt("time", since)
-    result = q.execute()
+    result = await run_db(q.execute)
     return result.data
 
 
