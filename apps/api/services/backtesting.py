@@ -1034,9 +1034,90 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
             bars_held      = i - position["bar_idx"]
             already_closed = False
 
-            # ── Liquidation check (massima priorità — prima di lgbm/max_hold/SL) ─
-            _bt_liq = position.get("liq_px", 0.0)
-            if _bt_liq > 0.0 and not already_closed:
+            # ── SL/TP check using intrabar high/low (FIRST — highest priority) ─
+            # The SL/TP price is always closer to entry than the liquidation price,
+            # so in any realistic move the SL order fires before the exchange can
+            # liquidate. Checking SL/TP first prevents a large single bar from
+            # being wrongly tagged as "liquidation" when the SL was actually hit
+            # earlier within that bar.
+            #
+            # Exit at the actual SL/TP price, not at close. When both SL and TP
+            # are touched in the same candle (SL wick and TP wick), apply SL
+            # (conservative worst-case — we cannot resolve intrabar order without
+            # tick data).
+            #
+            # sl_before_update is used here (not position["sl"]) so that trailing /
+            # break-even ratcheting applied earlier in this same bar cannot cause a
+            # false stop: we assume the low (for longs) can precede the high, which
+            # is the conservative intrabar ordering consistent with live behaviour.
+            if not already_closed:
+                hit_sl = (side == "long"  and curr_low  <= sl_before_update) or \
+                         (side == "short" and curr_high >= sl_before_update)
+                hit_tp = (side == "long"  and curr_high >= position["tp"]) or \
+                         (side == "short" and curr_low  <= position["tp"])
+                if hit_sl and hit_tp:
+                    hit_tp = False  # conservative: SL wins when ambiguous
+                # Liq-override: if the SL was widened past the liquidation price
+                # (e.g. structural SL placed a very distant OB below the liq level),
+                # the exchange liquidates before the SL order fires. Suppress the SL
+                # here; the liquidation check below will handle exit.
+                _bt_liq_pre = position.get("liq_px", 0.0)
+                if hit_sl and _bt_liq_pre > 0.0:
+                    _sl_beyond_liq = (
+                        (side == "long"  and sl_before_update <= _bt_liq_pre) or
+                        (side == "short" and sl_before_update >= _bt_liq_pre)
+                    )
+                    if _sl_beyond_liq:
+                        hit_sl = False  # SL is at/beyond liq level → exchange liquidates first
+            else:
+                hit_sl = hit_tp = False
+
+            if hit_sl or hit_tp:
+                if hit_sl: param_stats["exit_stop_loss"]   += 1
+                else:       param_stats["exit_take_profit"] += 1
+                reason     = "stop_loss" if hit_sl else "take_profit"
+                exit_price = sl_before_update if hit_sl else position["tp"]
+                pnl_pct    = (exit_price - entry) / entry * 100 if side == "long" \
+                             else (entry - exit_price) / entry * 100
+                pnl_usd    = position["size_usd"] * pnl_pct / 100
+                fee_exit   = position["size_usd"] * HL_TAKER_FEE
+                entry_fee_used = position.get("fee_entry", 0.0)
+                funding_used   = position.get("funding_paid", 0.0)
+
+                equity += pnl_usd - fee_exit
+                trades.append({
+                    "side": side, "entry": entry, "exit": exit_price,
+                    "pnl_pct":    round(pnl_pct, 4),
+                    "pnl_usd":    round(pnl_usd - fee_exit - entry_fee_used - funding_used, 2),
+                    "fee_entry":  round(entry_fee_used, 2),
+                    "funding_paid": round(funding_used, 2),
+                    "reason":     reason,
+                    "holding_bars": i - position["bar_idx"],
+                    "bar":        i,
+                    "origin":     position.get("origin", "trend"),
+                    "date": str(row.name.date()) if hasattr(row.name, "date") else "",
+                    "equity_after": round(equity, 2),
+                })
+                equity_curve.append({"bar": i, "equity": round(equity, 2)})
+                # Tag TP exit so the new-signal block can apply re-entry logic
+                _tp_just_hit      = not hit_sl  # hit_tp is True here
+                _tp_closed_side   = side
+                _tp_atr_at_signal = position.get("entry_atr", atr)
+                position       = None
+                already_closed = True
+            else:
+                _tp_just_hit = False
+
+            # ── Liquidation check (fallback after SL/TP) ──────────────────────
+            # Fires when price reaches the exchange liquidation level without the
+            # SL having caught it first. This covers two real scenarios:
+            #   1. The SL was widened past the liq price (structural SL edge case)
+            #      → liq-override above suppressed hit_sl, liq fires here.
+            #   2. An extreme intrabar gap skips past both SL and liq in one bar
+            #      (extremely rare on 4H resolution) — already_closed guard and
+            #      position-is-None guard both prevent double-counting.
+            _bt_liq = position.get("liq_px", 0.0) if (position is not None and not already_closed) else 0.0
+            if _bt_liq > 0.0 and not already_closed and position is not None:
                 _bar_low  = float(row.get("low",  row["close"]))
                 _bar_high = float(row.get("high", row["close"]))
                 _hit_liq = (
@@ -1155,60 +1236,6 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                 equity_curve.append({"bar": i, "equity": round(equity, 2)})
                 position       = None
                 already_closed = True
-
-            # ── Full SL/TP check using intrabar high/low ──────────────────────
-            # Exit at the actual SL/TP price, not at close. When both SL and TP
-            # are touched in the same candle (SL wick and TP wick), apply SL
-            # (conservative worst-case — we cannot resolve order without tick data).
-            #
-            # sl_before_update is used here (not position["sl"]) so that trailing /
-            # break-even ratcheting applied earlier in this same bar cannot cause a
-            # false stop: we assume the low (for longs) can precede the high, which
-            # is the conservative intrabar ordering consistent with live behaviour.
-            if not already_closed:
-                hit_sl = (side == "long"  and curr_low  <= sl_before_update) or \
-                         (side == "short" and curr_high >= sl_before_update)
-                hit_tp = (side == "long"  and curr_high >= position["tp"]) or \
-                         (side == "short" and curr_low  <= position["tp"])
-                if hit_sl and hit_tp:
-                    hit_tp = False  # conservative: SL wins when ambiguous
-            else:
-                hit_sl = hit_tp = False
-
-            if hit_sl or hit_tp:
-                if hit_sl: param_stats["exit_stop_loss"]   += 1
-                else:       param_stats["exit_take_profit"] += 1
-                reason     = "stop_loss" if hit_sl else "take_profit"
-                exit_price = sl_before_update if hit_sl else position["tp"]
-                pnl_pct    = (exit_price - entry) / entry * 100 if side == "long" \
-                             else (entry - exit_price) / entry * 100
-                pnl_usd    = position["size_usd"] * pnl_pct / 100
-                fee_exit   = position["size_usd"] * HL_TAKER_FEE
-                entry_fee_used = position.get("fee_entry", 0.0)
-                funding_used   = position.get("funding_paid", 0.0)
-
-                equity += pnl_usd - fee_exit
-                trades.append({
-                    "side": side, "entry": entry, "exit": exit_price,
-                    "pnl_pct":    round(pnl_pct, 4),
-                    "pnl_usd":    round(pnl_usd - fee_exit - entry_fee_used - funding_used, 2),
-                    "fee_entry":  round(entry_fee_used, 2),
-                    "funding_paid": round(funding_used, 2),
-                    "reason":     reason,
-                    "holding_bars": i - position["bar_idx"],
-                    "bar":        i,
-                    "origin":     position.get("origin", "trend"),
-                    "date": str(row.name.date()) if hasattr(row.name, "date") else "",
-                    "equity_after": round(equity, 2),
-                })
-                equity_curve.append({"bar": i, "equity": round(equity, 2)})
-                # Tag TP exit so the new-signal block can apply re-entry logic
-                _tp_just_hit      = not hit_sl  # hit_tp is True here
-                _tp_closed_side   = side
-                _tp_atr_at_signal = position.get("entry_atr", atr)
-                position = None
-            else:
-                _tp_just_hit = False
 
         # ── New signal decision ───────────────────────────────────────────────
         if position is None and i >= 64:  # skip warm-up rows

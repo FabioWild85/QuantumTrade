@@ -343,7 +343,7 @@ export const RegimePanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
 
       {/* Regime history */}
       {history.length > 0 && (
-        <div className="rounded-xl border border-slate-200 dark:border-white/8 bg-slate-50 dark:bg-white/3 p-5 space-y-3">
+        <div className="rounded-xl border border-slate-200 dark:border-slate-700/50 bg-slate-50 dark:bg-[#151E32] p-5 space-y-3">
           <div className="flex items-center justify-between">
             <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-200">Recent Regime History</h3>
             <span className="text-xs text-slate-500">{history.length} snapshots</span>
@@ -363,10 +363,10 @@ export const RegimePanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
           </div>
 
           {/* Recent table */}
-          <div className="rounded-lg border border-slate-200 dark:border-white/8 overflow-x-auto">
+          <div className="rounded-lg border border-slate-200 dark:border-slate-700/50 overflow-x-auto">
             <table className="w-full text-xs">
               <thead>
-                <tr className="border-b border-slate-200 dark:border-white/8 bg-slate-100/50 dark:bg-white/3">
+                <tr className="border-b border-slate-200 dark:border-slate-700/50 bg-slate-100/60 dark:bg-[#1E293B]">
                   <th className="text-left px-3 py-2 text-slate-500 font-medium">Time</th>
                   <th className="text-left px-3 py-2 text-slate-500 font-medium">Regime</th>
                   <th className="text-right px-3 py-2 text-slate-500 font-medium">Conf</th>
@@ -379,7 +379,7 @@ export const RegimePanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                 {history.slice(0, 10).map((e, i) => {
                   const s = REGIME_STYLE[e.regime as RegimeName] ?? REGIME_STYLE.sideways;
                   return (
-                    <tr key={e.id ?? i} className="border-b border-slate-100 dark:border-white/5 hover:bg-slate-50 dark:hover:bg-white/2 transition-colors">
+                    <tr key={e.id ?? i} className="border-b border-slate-100 dark:border-slate-700/30 hover:bg-slate-100/60 dark:hover:bg-slate-700/20 transition-colors">
                       <td className="px-3 py-1.5 text-slate-500">
                         {new Date(e.detected_at).toLocaleString('it-IT', {
                           month: 'short', day: '2-digit',

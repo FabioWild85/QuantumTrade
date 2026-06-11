@@ -17,9 +17,16 @@ Also implements all transition signals from the regime-backtesting-guide.md
 Regime hierarchy:
   flat       → ADX < 15  (compression)
   sideways   → ADX 15–22 (range-bound)
-  uptrend    → ADX ≥ 22 AND slope > +0.5%/candle
-  downtrend  → ADX ≥ 22 AND slope < -0.5%/candle
+  uptrend    → ADX ≥ 22 AND slope > +0.30%/candle  [or +0.15% hysteresis if slow slope confirms]
+  downtrend  → ADX ≥ 22 AND slope < -0.30%/candle  [or -0.15% hysteresis if slow slope confirms]
   transition → ADX era >35 e scende veloce (fine regime in corso)
+
+Slope thresholds (_SLOPE_ENTRY / _SLOPE_HYST):
+  0.30% per 4H candle ≈ 1.8%/day — primary entry for uptrend/downtrend.
+  0.15% per 4H candle ≈ 0.9%/day — hysteresis stay-in lower bound: when the
+    fast slope (slope_window bars) is in [0.15%, 0.30%) AND the slow slope
+    (2× slope_window bars) confirms the direction, the regime stays classified
+    as trend to avoid oscillation on gradual BTC moves (~1–2%/day).
 """
 
 from __future__ import annotations
@@ -36,6 +43,10 @@ import ta
 log = logging.getLogger(__name__)
 
 Regime = Literal["uptrend", "downtrend", "sideways", "flat", "transition"]
+
+# Slope thresholds (EMA20 % change per 4H candle)
+_SLOPE_ENTRY = 0.30   # primary entry/exit boundary for uptrend / downtrend
+_SLOPE_HYST  = 0.15   # hysteresis lower bound: stay-in zone when slow slope confirms
 
 
 # ── Utility ───────────────────────────────────────────────────────────────────
@@ -80,9 +91,9 @@ class RegimeDetector:
     reused verbatim. Otherwise they are computed on the fly from OHLCV columns.
     """
 
-    def __init__(self, atr_window: int = 90, slope_window: int = 3):
-        self.atr_window   = atr_window    # bars for ATR / BB percentile baseline
-        self.slope_window = slope_window  # candles over which EMA slope is measured
+    def __init__(self, atr_window: int = 180, slope_window: int = 5):
+        self.atr_window   = atr_window    # bars for ATR / BB percentile baseline (180 = 30 days)
+        self.slope_window = slope_window  # candles for fast EMA slope (5 × 4H = 20H)
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -111,8 +122,15 @@ class RegimeDetector:
         ema20_back    = _safe(d["ema20"].iloc[-(1 + self.slope_window)], ema20_now)
         ema20_back    = ema20_back if ema20_back > 0 else ema20_now
 
-        # EMA20 slope: % change per candle over slope_window bars
+        # EMA20 fast slope: % change per candle over slope_window bars (5 × 4H = 20H)
         trend_slope = (ema20_now - ema20_back) / ema20_back / self.slope_window * 100
+
+        # Slow slope over 2× slope_window (10 × 4H = 40H) — used for hysteresis confirmation.
+        # When fast slope falls in the soft zone [_SLOPE_HYST, _SLOPE_ENTRY), slow slope acts
+        # as a low-pass filter: if the broader direction agrees, the trend stays classified.
+        _slow_back    = _safe(d["ema20"].iloc[-(1 + self.slope_window * 2)], ema20_now)
+        _slow_back    = _slow_back if _slow_back > 0 else ema20_now
+        slow_slope    = (ema20_now - _slow_back) / _slow_back / (self.slope_window * 2) * 100
 
         # ATR percentile vs last atr_window bars (excludes current bar)
         atr_hist = d["atr_14"].iloc[-(self.atr_window + 1):-1].dropna()
@@ -128,8 +146,11 @@ class RegimeDetector:
         adx_slope  = (adx - adx_prev3) / 3.0  # mean change per bar over last 3 bars
 
         # ── RSI divergence (guide §1 — topping/capitulation signal) ──────
-        price_window    = d["close"].iloc[-21:-1]
-        rsi_window      = d["rsi_14"].iloc[-21:-1].dropna()
+        # 40-bar lookback (6.7 days on 4H) catches divergences that develop over
+        # multiple days; the prior 20-bar window (3.3 days) was too narrow and
+        # fired on micro-divergences with little predictive value.
+        price_window    = d["close"].iloc[-41:-1]
+        rsi_window      = d["rsi_14"].iloc[-41:-1].dropna()
         close_last      = _safe(d["close"].iloc[-1], 0.0)
         price_new_high  = (close_last > float(price_window.max())) if len(price_window) > 0 else False
         price_new_low   = (close_last < float(price_window.min())) if len(price_window) > 0 else False
@@ -145,7 +166,7 @@ class RegimeDetector:
 
         reasoning: list[str] = [
             f"ADX={adx:.1f} slope={adx_slope:+.2f}/bar | "
-            f"EMA_slope={trend_slope:+.3f}%/bar | "
+            f"EMA_slope={trend_slope:+.3f}%/bar (slow={slow_slope:+.3f}) | "
             f"ATR_pct={atr_pct:.0f} | "
             f"BB_width={bb_width_curr:.4f} (P25={bb_p25:.4f}) | "
             f"RSI={rsi:.1f} | vol_ratio={vol_ratio:.2f}"
@@ -160,33 +181,62 @@ class RegimeDetector:
             confidence = 0.50 + min(0.40, (15.0 - adx) / 15.0 * 0.80)
             reasoning.append(f"FLAT: ADX {adx:.1f} < 15 — low-volatility compression")
 
-        elif adx >= 22 and trend_slope > 0.5:
+        elif adx >= 22 and trend_slope > _SLOPE_ENTRY:
+            # Clear uptrend: fast slope above primary threshold.
             regime     = "uptrend"
-            slope_c    = min(0.30, (trend_slope - 0.5) / 2.0 * 0.30)
+            slope_c    = min(0.30, (trend_slope - _SLOPE_ENTRY) / 2.0 * 0.30)
             adx_c      = min(0.25, (adx - 22.0) / 20.0 * 0.25)
             confidence = 0.55 + slope_c + adx_c
             reasoning.append(
-                f"UPTREND: ADX {adx:.1f} ≥ 22, slope +{trend_slope:.3f}%/bar ≥ +0.5"
+                f"UPTREND: ADX {adx:.1f} ≥ 22, slope +{trend_slope:.3f}%/bar ≥ +{_SLOPE_ENTRY}"
             )
 
-        elif adx >= 22 and trend_slope < -0.5:
+        elif adx >= 22 and trend_slope < -_SLOPE_ENTRY:
+            # Clear downtrend: fast slope below primary threshold.
             regime     = "downtrend"
-            slope_c    = min(0.30, (abs(trend_slope) - 0.5) / 2.0 * 0.30)
+            slope_c    = min(0.30, (abs(trend_slope) - _SLOPE_ENTRY) / 2.0 * 0.30)
             adx_c      = min(0.25, (adx - 22.0) / 20.0 * 0.25)
             confidence = 0.55 + slope_c + adx_c
             reasoning.append(
-                f"DOWNTREND: ADX {adx:.1f} ≥ 22, slope {trend_slope:.3f}%/bar ≤ −0.5"
+                f"DOWNTREND: ADX {adx:.1f} ≥ 22, slope {trend_slope:.3f}%/bar ≤ −{_SLOPE_ENTRY}"
+            )
+
+        elif adx >= 22 and _SLOPE_HYST <= trend_slope < _SLOPE_ENTRY and slow_slope > _SLOPE_HYST:
+            # Hysteresis uptrend: fast slope in soft zone [0.15%, 0.30%) but slow slope
+            # (2× window) confirms the upward direction. Catches gradual BTC uptrends
+            # (~1–2%/day) that previously oscillated into "sideways (coiling)".
+            # Confidence interpolates linearly from 0.50 (at _SLOPE_HYST) to 0.54
+            # (just below full-entry base 0.55) — always distinguishable from a clean entry.
+            regime     = "uptrend"
+            frac       = (trend_slope - _SLOPE_HYST) / (_SLOPE_ENTRY - _SLOPE_HYST)
+            confidence = min(0.54, 0.50 + frac * 0.04)
+            reasoning.append(
+                f"UPTREND (hysteresis): ADX {adx:.1f} ≥ 22, "
+                f"fast={trend_slope:+.3f}%/bar ∈ [{_SLOPE_HYST},{_SLOPE_ENTRY}), "
+                f"slow={slow_slope:+.3f}%/bar confirms"
+            )
+
+        elif adx >= 22 and -_SLOPE_ENTRY < trend_slope <= -_SLOPE_HYST and slow_slope < -_SLOPE_HYST:
+            # Hysteresis downtrend: symmetric.
+            regime     = "downtrend"
+            frac       = (abs(trend_slope) - _SLOPE_HYST) / (_SLOPE_ENTRY - _SLOPE_HYST)
+            confidence = min(0.54, 0.50 + frac * 0.04)
+            reasoning.append(
+                f"DOWNTREND (hysteresis): ADX {adx:.1f} ≥ 22, "
+                f"fast={trend_slope:.3f}%/bar ∈ (-{_SLOPE_ENTRY},-{_SLOPE_HYST}], "
+                f"slow={slow_slope:.3f}%/bar confirms"
             )
 
         elif adx >= 22:
-            # Strong ADX but near-flat slope — coiling or breakout imminent.
+            # Strong ADX but near-flat or unconfirmed slope — coiling or breakout imminent.
             # High-energy coiling (ADX > 40) is more uncertain than mild coiling:
             # confidence decreases as ADX rises above 40 (max −0.13 at ADX=90).
             regime     = "sideways"
             confidence = 0.48 - max(0.0, (adx - 40.0) * 0.003) if adx > 40 else 0.48
             confidence = max(0.35, confidence)
             reasoning.append(
-                f"SIDEWAYS (coiling): ADX {adx:.1f} ≥ 22, slope near-zero ({trend_slope:+.3f}%/bar)"
+                f"SIDEWAYS (coiling): ADX {adx:.1f} ≥ 22, slope near-zero or unconfirmed "
+                f"({trend_slope:+.3f}%/bar fast, {slow_slope:+.3f}%/bar slow)"
             )
 
         elif 15 <= adx < 22 and bb_width_curr < bb_p25:
@@ -308,9 +358,9 @@ class RegimeDetector:
 
             if a < 15:
                 bar_regime = "flat"
-            elif a >= 22 and s > 0.5:
+            elif a >= 22 and s > _SLOPE_ENTRY:
                 bar_regime = "uptrend"
-            elif a >= 22 and s < -0.5:
+            elif a >= 22 and s < -_SLOPE_ENTRY:
                 bar_regime = "downtrend"
             else:
                 bar_regime = "sideways"
