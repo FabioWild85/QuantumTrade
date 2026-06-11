@@ -96,6 +96,11 @@ async def get_funding_binance(
     Available from ~Sept 2019 for BTCUSDT. No API key required.
     Returns DataFrame with DatetimeTZDtype index (UTC) and columns [funding, premium].
     Funding interval on Binance: every 8h (00:00, 08:00, 16:00 UTC).
+
+    NOTE: Binance publishes a per-8h rate; we divide by 8 here so the returned
+    `funding` column is always in per-hour units — the same canonical unit used
+    by HyperLiquid.  All downstream code (FundingBias gate, accrual engine,
+    reversal detector) assumes per-hour rates and must not re-normalise.
     """
     from datetime import timedelta as _td
     bn_symbol = _SYMBOL_MAP.get(symbol, symbol + "USDT")
@@ -124,7 +129,7 @@ async def get_funding_binance(
             for d in data:
                 all_rows.append({
                     "time":    pd.Timestamp(int(d["fundingTime"]), unit="ms", tz="UTC"),
-                    "funding": float(d["fundingRate"]),
+                    "funding": float(d["fundingRate"]) / 8,  # per-8h → per-hour (canonical unit)
                     "premium": 0.0,  # Binance doesn't expose premium separately
                 })
 

@@ -2,7 +2,7 @@
 Backtesting engine — Settimana 3.
 Runs the full 64-feature pipeline + LightGBM decision loop on historical data.
 Chronos-2 is skipped for speed (uses neutral 0.5 prior); the ensemble still applies.
-Fees: HL taker 0.035% per side, funding accrued every 2 candles (8h cycle).
+Fees: HL taker 0.035% per side, funding accrued every 4h bar (rate × 4h per bar).
 """
 
 import logging
@@ -23,7 +23,8 @@ from services.trainer import load_correct_model
 log = logging.getLogger(__name__)
 
 HL_TAKER_FEE = 0.00035   # 0.035% per trade side
-FUNDING_INTERVAL_BARS = 2  # funding paid every 2×4h bars (8h cycle)
+# Funding rates are stored in per-hour units (canonical).
+# Accrual is applied every 4h bar: impact = size × rate_per_hour × 4.
 
 
 def _safe_px(v) -> Optional[float]:
@@ -927,13 +928,14 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
         atr_sl   = (float(atr_21_raw) if (dual_atr_enabled and atr_21_raw is not None and pd.notna(atr_21_raw) and float(atr_21_raw) > 0) else None)
 
         # ── Funding accrual while in position ────────────────────────────────
-        if position and i % FUNDING_INTERVAL_BARS == 0 and funding_col:
+        # rate is per-hour (canonical unit for both HL and Binance sources).
+        # Each 4h bar covers 4 hours, so the accrual fraction is rate × 4.
+        # Positive funding → longs pay shorts; negative → shorts pay longs.
+        if position and funding_col:
             fund_val = df_feat.iloc[i].get("funding")
             if fund_val is not None and pd.notna(fund_val):
-                # Positive funding rate → longs pay shorts; negative → shorts pay longs.
-                # funding_impact > 0 means this position pays; < 0 means it receives.
-                rate  = float(fund_val)
-                sign  = 1.0 if position["side"] == "long" else -1.0
+                rate   = float(fund_val) * 4  # per-hour × 4h per bar
+                sign   = 1.0 if position["side"] == "long" else -1.0
                 funding_impact = position["size_usd"] * rate * sign
                 if funding_impact > 0:
                     equity -= funding_impact
@@ -950,6 +952,11 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
             side        = position["side"]
             entry       = position["entry"]
             entry_atr   = position["entry_atr"]
+            # Snapshot the SL before any intrabar ratcheting (trailing / BE).
+            # The SL check below uses this value so that trail/BE updates applied
+            # during the same bar cannot trigger a stop that was only valid AFTER
+            # the favourable intrabar move — an optimistic ordering impossible live.
+            sl_before_update = position["sl"]
 
             # ── Trailing SL: dynamic trail once activated (high water mark) ──
             # Reversal trades use rev_sl_atr_mult as trail distance (mirrors live engine).
@@ -1153,9 +1160,14 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
             # Exit at the actual SL/TP price, not at close. When both SL and TP
             # are touched in the same candle (SL wick and TP wick), apply SL
             # (conservative worst-case — we cannot resolve order without tick data).
+            #
+            # sl_before_update is used here (not position["sl"]) so that trailing /
+            # break-even ratcheting applied earlier in this same bar cannot cause a
+            # false stop: we assume the low (for longs) can precede the high, which
+            # is the conservative intrabar ordering consistent with live behaviour.
             if not already_closed:
-                hit_sl = (side == "long"  and curr_low  <= position["sl"]) or \
-                         (side == "short" and curr_high >= position["sl"])
+                hit_sl = (side == "long"  and curr_low  <= sl_before_update) or \
+                         (side == "short" and curr_high >= sl_before_update)
                 hit_tp = (side == "long"  and curr_high >= position["tp"]) or \
                          (side == "short" and curr_low  <= position["tp"])
                 if hit_sl and hit_tp:
@@ -1167,7 +1179,7 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                 if hit_sl: param_stats["exit_stop_loss"]   += 1
                 else:       param_stats["exit_take_profit"] += 1
                 reason     = "stop_loss" if hit_sl else "take_profit"
-                exit_price = position["sl"] if hit_sl else position["tp"]
+                exit_price = sl_before_update if hit_sl else position["tp"]
                 pnl_pct    = (exit_price - entry) / entry * 100 if side == "long" \
                              else (entry - exit_price) / entry * 100
                 pnl_usd    = position["size_usd"] * pnl_pct / 100

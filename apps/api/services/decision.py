@@ -744,9 +744,13 @@ class DecisionEngine:
             # Gate Level 2d — Liquidation Spike
             if self.liq_spike_gate_enabled:
                 _liq_z_col  = "liq_short_z" if action == "short" else "liq_long_z"
-                _liq_z_cur  = float(features.get(_liq_z_col, 0.0) or 0.0)
-                _liq_z_lag  = float(features.get(f"{_liq_z_col}_lag1", 0.0) or 0.0)
-                _liq_z_peak = max(_liq_z_cur, _liq_z_lag)
+                _liq_z_vals = [
+                    float(features.get(_liq_z_col, 0.0) or 0.0)
+                    if i == 0 else
+                    float(features.get(f"{_liq_z_col}_lag{i}", 0.0) or 0.0)
+                    for i in range(max(1, self.liq_spike_lookback))
+                ]
+                _liq_z_peak = max(_liq_z_vals)
                 if _liq_z_peak > self.liq_spike_thr:
                     _liq_msg = (f"LIQ_SPIKE: {_liq_z_col}={_liq_z_peak:.2f}σ > {self.liq_spike_thr:.1f}σ "
                                 f"— liquidazioni {'short' if action == 'short' else 'long'} anomale, squeeze risk")
@@ -756,6 +760,15 @@ class DecisionEngine:
                     scale_msgs.append(f"LIQ_SPIKE_SCALE ×{self.liq_spike_scale_factor:.2f}: {_liq_msg}")
 
             return False, block_msg, size_mult, scale_msgs
+
+        # ── Threshold floor ───────────────────────────────────────────────────
+        # Accumulated biases (funding extreme + FNG + sweep + MTF) can in theory
+        # push a threshold below 0.50, allowing entries when the model is neutral
+        # or slightly against the trade direction.  A floor at 0.52 ensures the
+        # model always holds at least a 2% edge in the trade's direction,
+        # regardless of how many bias adjustments stacked.
+        threshold_long  = max(threshold_long,  0.52)
+        threshold_short = max(threshold_short, 0.52)
 
         # ── Long signal ───────────────────────────────────────────────────────
         if ensemble_prob > threshold_long:

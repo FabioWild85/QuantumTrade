@@ -435,8 +435,9 @@ def build_all_features(
     d = build_mtf_features(d)
 
     # ── Funding ───────────────────────────────────────────────────────────────
-    # Funding history is 8h-sampled; reindex onto 4h candle timestamps with ffill
-    # so every candle inherits the most recent funding rate (no lookahead bias).
+    # Rates are in per-hour units (HL: hourly records, Binance: per-8h / 8).
+    # Reindex onto 4h candle timestamps with ffill so every candle inherits
+    # the most recent funding rate without lookahead bias.
     if not df_funding.empty:
         df_funding_aligned = df_funding.reindex(d.index, method="ffill")
         d = d.join(df_funding_aligned, how="left")
@@ -457,8 +458,8 @@ def build_all_features(
     d["oi_delta"]    = d.get("oi_raw", pd.Series(dtype=float)).diff(1)
     d["oi_delta_z"]  = d["oi_delta"] / (d.get("oi_raw", pd.Series(dtype=float)).rolling(24).std() + 1e-9)
     d["oi_ma24"]     = d.get("oi_raw", pd.Series(dtype=float)).rolling(24).mean()
-    # Lag features per OI Spike Gate lookback (max 3 barre)
-    for _lag in [1, 2, 3]:
+    # Lag features per OI Spike Gate lookback (covers full config range 1–6)
+    for _lag in range(1, 7):
         d[f"oi_delta_z_lag{_lag}"] = d["oi_delta_z"].shift(_lag)
 
     # ── Long/Short Ratio ──────────────────────────────────────────────────────
@@ -486,9 +487,10 @@ def build_all_features(
         d["liq_ratio"]   = d["liq_long"] / (d["liq_total"].replace(0, np.nan))
         d["liq_long_z"]  = (d["liq_long"]  - d["liq_long"].rolling(24).mean())  / (d["liq_long"].rolling(24).std()  + 1e-9)
         d["liq_short_z"] = (d["liq_short"] - d["liq_short"].rolling(24).mean()) / (d["liq_short"].rolling(24).std() + 1e-9)
-        # Lag features per Liquidation Spike Gate
-        d["liq_short_z_lag1"] = d["liq_short_z"].shift(1)
-        d["liq_long_z_lag1"]  = d["liq_long_z"].shift(1)
+        # Lag features per Liquidation Spike Gate (covers full config range 1–6)
+        for _lag in range(1, 7):
+            d[f"liq_short_z_lag{_lag}"] = d["liq_short_z"].shift(_lag)
+            d[f"liq_long_z_lag{_lag}"]  = d["liq_long_z"].shift(_lag)
 
     # ── Consecutive directional closes ──────────────────────────────────────
     # Positive = consecutive bullish closes, negative = consecutive bearish.
@@ -616,12 +618,13 @@ FEATURE_GROUPS = {
     ],
     "smc": ["fvg_bull", "fvg_bear", "sweep"],
     "funding": ["funding", "funding_ma24", "funding_z", "funding_std12", "funding_cum48", "premium_z"],
-    "oi":  ["oi_raw", "oi_ma_ratio", "oi_delta", "oi_delta_z", "oi_ma24",
-            "oi_delta_z_lag1", "oi_delta_z_lag2", "oi_delta_z_lag3"],
+    "oi":  ["oi_raw", "oi_ma_ratio", "oi_delta", "oi_delta_z", "oi_ma24"] +
+           [f"oi_delta_z_lag{i}" for i in range(1, 7)],
     "ls":  ["long_pct", "short_pct", "ls_ratio", "long_pct_ma6", "short_pct_ma6"],
     "liq": ["liq_total", "liq_sum_24h", "liq_z", "liq_ratio",
-            "liq_long_z", "liq_short_z",
-            "liq_short_z_lag1", "liq_long_z_lag1"],
+            "liq_long_z", "liq_short_z"] +
+           [f"liq_short_z_lag{i}" for i in range(1, 7)] +
+           [f"liq_long_z_lag{i}"  for i in range(1, 7)],
     "c2":  ["c2_dir_prob", "c2_vol_prob", "c2_p10", "c2_p50", "c2_p90",
              "c2_uncertainty", "c2_cont_prob", "c2_p50_vs_atr"],
     # Options IV features (Phase 1). Only populated when options_bias_enabled OR reversal_mode_enabled.
