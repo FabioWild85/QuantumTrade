@@ -9,13 +9,14 @@ Aggiornato ogni volta che si scopre un errore o una nuova configurazione.
 
 | Parametro | Valore |
 |-----------|--------|
+| Dominio | `quantumtrade.me` (HTTPS, Let's Encrypt) |
 | IP VPS | `77.42.84.8` (Hetzner) |
 | IPv6 | `2a01:4f9:c013:62be::/64` |
 | Utente SSH | `root` |
 | Chiave SSH | `~/.ssh/id_ed25519` |
 | Porta SSH | `22` |
 
-> **Nota:** L'IP `45.76.131.253` era errato — non usarlo. L'IP corretto è sempre nel file `apps/api/.env` alla voce `VPS_HOST`.
+> **Nota:** L'IP `45.76.131.253` era errato — non usarlo. La voce `VPS_HOST` in `apps/api/.env` ora contiene il dominio `quantumtrade.me` (che risolve su `77.42.84.8`). Per SSH si può usare indifferentemente il dominio o l'IP.
 
 ---
 
@@ -77,53 +78,94 @@ ssh -i ~/.ssh/id_ed25519 root@77.42.84.8 "systemctl restart quantum-trade"
 
 ---
 
-## Configurazione Nginx — SPA Routing (OBBLIGATORIO)
+## Configurazione Nginx — SPA Routing, SSL e Dominio
 
-Con l'introduzione di React Router (URL reali tipo `/hub/backtest`, `/analysis/btc`), Nginx deve essere configurato con il **fallback SPA** — altrimenti ogni refresh su un URL diverso da `/` restituisce 404.
+Con il dominio `quantumtrade.me` attivo, Nginx gestisce la build statica del frontend (con fallback SPA per React Router), il proxy verso il backend FastAPI, il certificato SSL Let's Encrypt e gli header di sicurezza HTTP.
 
-### Verifica config attuale
+La guida passo-passo completa per la configurazione del dominio, Certbot e CORS è disponibile in [guida_dominio_quantumtrade.md](file:///Users/fabiowild/.gemini/antigravity-ide/brain/5d4580f1-18bb-411d-8162-d3926db2a7e6/guida_dominio_quantumtrade.md).
 
-```bash
-ssh -i ~/.ssh/id_ed25519 root@77.42.84.8 "cat /etc/nginx/sites-enabled/*"
-```
-
-### Config Nginx richiesta
-
-La sezione `location /` deve contenere `try_files $uri $uri/ /index.html;`:
+### Configurazione Nginx Attiva (/etc/nginx/sites-available/quantum-trade)
 
 ```nginx
 server {
-    listen 80;
-    server_name _;  # sostituire con il dominio quando disponibile
+    server_name quantumtrade.me www.quantumtrade.me;
 
-    root /opt/quantum-trade/dist;
-    index index.html;
+    # ── Security Headers ──
+    add_header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload" always;
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
 
-    # SPA fallback — OBBLIGATORIO per React Router
-    location / {
-        try_files $uri $uri/ /index.html;
-    }
-
-    # Proxy verso FastAPI
     location /api/ {
-        proxy_pass http://localhost:8000/;
+        proxy_pass http://127.0.0.1:8000/;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_read_timeout 1800s;
+        proxy_send_timeout 1800s;
     }
+
+    location / {
+        root /opt/quantum-trade/dist;
+        try_files $uri $uri/ /index.html;
+
+        # HTML: always revalidate — prevents stale index.html with old JS hashes
+        location ~* \.html$ {
+            add_header Cache-Control "no-cache, must-revalidate";
+            add_header Pragma "no-cache";
+            expires 0;
+
+            # Security Headers (explicitly duplicated due to Nginx add_header inheritance rules)
+            add_header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload" always;
+            add_header X-Frame-Options "SAMEORIGIN" always;
+            add_header X-Content-Type-Options "nosniff" always;
+            add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+        }
+
+        # JS/CSS assets: Vite fingerprints filenames → safe to cache indefinitely
+        location ~* \.(js|css)$ {
+            add_header Cache-Control "public, max-age=31536000, immutable";
+            expires 1y;
+
+            # Security Headers (explicitly duplicated due to Nginx add_header inheritance rules)
+            add_header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload" always;
+            add_header X-Frame-Options "SAMEORIGIN" always;
+            add_header X-Content-Type-Options "nosniff" always;
+            add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+        }
+    }
+
+    listen 443 ssl; # managed by Certbot
+    ssl_certificate /etc/letsencrypt/live/quantumtrade.me/fullchain.pem; # managed by Certbot
+    ssl_certificate_key /etc/letsencrypt/live/quantumtrade.me/privkey.pem; # managed by Certbot
+    include /etc/letsencrypt/options-ssl-nginx.conf; # managed by Certbot
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem; # managed by Certbot
+}
+
+server {
+    if ($host = www.quantumtrade.me) {
+        return 301 https://$host$request_uri;
+    } # managed by Certbot
+
+    if ($host = quantumtrade.me) {
+        return 301 https://$host$request_uri;
+    } # managed by Certbot
+
+    listen 80;
+    server_name quantumtrade.me www.quantumtrade.me;
+    return 404; # managed by Certbot
 }
 ```
 
-### Applicare la modifica
+### Comandi Utili per Nginx
 
 ```bash
-# 1. Editare la config
-ssh -i ~/.ssh/id_ed25519 root@77.42.84.8 "nano /etc/nginx/sites-enabled/quantum-trade"
-
-# 2. Verificare la sintassi
+# Verificare la sintassi della configurazione
 ssh -i ~/.ssh/id_ed25519 root@77.42.84.8 "nginx -t"
 
-# 3. Ricaricare Nginx (senza downtime)
+# Ricaricare la configurazione senza downtime
 ssh -i ~/.ssh/id_ed25519 root@77.42.84.8 "systemctl reload nginx"
 ```
 

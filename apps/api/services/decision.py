@@ -130,6 +130,10 @@ class DecisionEngine:
         # Exhaustion Max Hold
         exhaustion_max_hold_enabled: bool = False,
         exhaustion_max_hold_bars:    int  = 2,
+        # Transition Guard
+        transition_guard_enabled: bool  = False,
+        transition_boost_max:     float = 0.05,
+        transition_risk_min:      float = 0.55,
     ):
         self.directional_threshold       = directional_threshold
         self.adx_gate                    = adx_gate
@@ -221,6 +225,10 @@ class DecisionEngine:
         # Exhaustion Max Hold
         self.exhaustion_max_hold_enabled = exhaustion_max_hold_enabled
         self.exhaustion_max_hold_bars    = exhaustion_max_hold_bars
+        # Transition Guard
+        self.transition_guard_enabled = transition_guard_enabled
+        self.transition_boost_max     = transition_boost_max
+        self.transition_risk_min      = transition_risk_min
 
     def decide(
         self,
@@ -546,8 +554,11 @@ class DecisionEngine:
                 )
 
         # ── Exhaustion Guard: RSI extreme + extended ret_48 ──────────────────
+        # NB: ret_48 = pct_change su 48 barre 4H = 192h (~8 giorni), non 48 ore.
         _exh_short_conds: list[str] = []
         _exh_long_conds:  list[str] = []
+        _exh_short_boost = 0.0
+        _exh_long_boost  = 0.0
         _ret48_thr = self.exhaustion_ret48_pct / 100.0
         if self.exhaustion_guard_enabled:
 
@@ -563,24 +574,32 @@ class DecisionEngine:
             _exh_boost = self.exhaustion_boost
 
             # ── Feature A: proportional boost scaled by severity of ret_48 ────
-            # extra_boost = max(0, abs(ret48)/threshold - 1.0) * scale, capped at 0.15.
+            # extra_boost = max(0, |ret48|/threshold - 1.0) * scale, capped at 0.15.
             # E.g. ret48=12% with threshold=6%: extra = (2.0-1.0)*0.06 = 0.06.
-            _exh_extra = 0.0
+            # Direzionale: solo un ret_48 negativo estremo scala il boost short,
+            # solo uno positivo scala il boost long — un trigger RSI-only non deve
+            # ricevere extra da un ret_48 estremo nella direzione opposta.
+            _exh_extra_short = 0.0
+            _exh_extra_long  = 0.0
             if self.exhaustion_prop_enabled and _ret48_thr > 0:
                 _ret48_ratio = abs(ret_48) / _ret48_thr
                 _exh_extra   = min(0.15, max(0.0, (_ret48_ratio - 1.0) * self.exhaustion_prop_scale))
+                if ret_48 < 0:
+                    _exh_extra_short = _exh_extra
+                else:
+                    _exh_extra_long = _exh_extra
 
-            _exh_short_boost = (_exh_boost + _exh_extra) if _exh_short_conds else 0.0
-            _exh_long_boost  = (_exh_boost + _exh_extra) if _exh_long_conds  else 0.0
+            _exh_short_boost = (_exh_boost + _exh_extra_short) if _exh_short_conds else 0.0
+            _exh_long_boost  = (_exh_boost + _exh_extra_long)  if _exh_long_conds  else 0.0
 
             if _exh_short_conds:
-                _prop_note = f" +{_exh_extra:.3f} proporzionale" if _exh_extra > 0 else ""
+                _prop_note = f" +{_exh_extra_short:.3f} proporzionale" if _exh_extra_short > 0 else ""
                 reasoning.append(
                     f"ExhaustionGuard [{' & '.join(_exh_short_conds)}] → "
                     f"short threshold +{_exh_short_boost:.3f} (base +{_exh_boost:.2f}{_prop_note}, bounce/pullback risk)"
                 )
             if _exh_long_conds:
-                _prop_note = f" +{_exh_extra:.3f} proporzionale" if _exh_extra > 0 else ""
+                _prop_note = f" +{_exh_extra_long:.3f} proporzionale" if _exh_extra_long > 0 else ""
                 reasoning.append(
                     f"ExhaustionGuard [{' & '.join(_exh_long_conds)}] → "
                     f"long threshold +{_exh_long_boost:.3f} (base +{_exh_boost:.2f}{_prop_note}, pullback risk)"
@@ -588,6 +607,23 @@ class DecisionEngine:
 
             threshold_short += _exh_short_boost
             threshold_long  += _exh_long_boost
+
+        # ── Transition Guard: boost soglie quando il regime sta finendo ───────
+        # Complementare all'ExhaustionGuard: quello difende dal movimento esteso
+        # (ret_48), questo difende dal regime che finisce (transition_risk dal
+        # RegimeDetector). Scatta solo quando transition_risk ≥ soglia; il boost
+        # è proporzionale al rischio, quindi è zero con regime solido e massimo
+        # quando il detector ha alta certezza che il trend stia finendo.
+        if self.transition_guard_enabled:
+            _tr_risk = float(features.get("transition_risk", 0.0))
+            if _tr_risk >= self.transition_risk_min:
+                _tr_boost = self.transition_boost_max * _tr_risk
+                threshold_long  += _tr_boost
+                threshold_short += _tr_boost
+                reasoning.append(
+                    f"TransitionGuard: transition_risk={_tr_risk:.2f} ≥ {self.transition_risk_min:.2f} "
+                    f"→ entrambe le soglie +{_tr_boost:.3f}"
+                )
 
         # ── Absorption Filter ─────────────────────────────────────────────────
         # High volume + low price movement → institutions absorbing order flow.
@@ -929,6 +965,20 @@ class DecisionEngine:
             )
 
         # ── No signal ─────────────────────────────────────────────────────────
+        # Counterfactual ExhaustionGuard: il segnale avrebbe superato la soglia
+        # SENZA il boost del guard? Solo in quel caso il blocco è attribuibile al
+        # guard (e non semplicemente a un segnale debole). Permette di leggere nel
+        # backtest quante volte il guard è stato davvero decisivo.
+        if _exh_long_boost > 0 and ensemble_prob > (threshold_long - _exh_long_boost):
+            reasoning.append(
+                f"ExhaustionGuard DECISIVE: long bloccato — P(up)={ensemble_prob:.3f} > "
+                f"{threshold_long - _exh_long_boost:.3f} (soglia senza guard) ma ≤ {threshold_long:.3f}"
+            )
+        if _exh_short_boost > 0 and short_prob > (threshold_short - _exh_short_boost):
+            reasoning.append(
+                f"ExhaustionGuard DECISIVE: short bloccato — P(down)={short_prob:.3f} > "
+                f"{threshold_short - _exh_short_boost:.3f} (soglia senza guard) ma ≤ {threshold_short:.3f}"
+            )
         reasoning.append(
             f"NO-TRADE: P(up)={ensemble_prob:.3f} | "
             f"long>{threshold_long:.2f}, short>{threshold_short:.2f}"

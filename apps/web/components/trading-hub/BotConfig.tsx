@@ -137,6 +137,10 @@ interface Config {
   // Feature E: Exhaustion Max Hold
   exhaustion_max_hold_enabled: boolean;
   exhaustion_max_hold_bars: number;
+  // Transition Guard
+  transition_guard_enabled: boolean;
+  transition_boost_max: number;
+  transition_risk_min: number;
   // Pullback Entry
   pullback_entry_enabled: boolean;
   pullback_impulse_atr_mult: number;
@@ -223,6 +227,13 @@ interface Config {
   reentry_size_factor: number;
   reentry_sl_atr_mult: number;
   reentry_tp_atr_mult: number;
+  // Adverse Evidence Monitor
+  adverse_monitor_enabled: boolean;
+  adverse_action: 'shadow' | 'tighten_sl' | 'partial_close' | 'close';
+  adverse_score_threshold: number;
+  adverse_confirm_cycles: number;
+  adverse_min_hold_bars: number;
+  adverse_partial_pct: number;
 }
 
 const DEFAULTS: Config = {
@@ -360,6 +371,10 @@ const DEFAULTS: Config = {
   // Feature E: Exhaustion Max Hold
   exhaustion_max_hold_enabled: false,
   exhaustion_max_hold_bars: 2,
+  // Transition Guard
+  transition_guard_enabled: false,
+  transition_boost_max: 0.05,
+  transition_risk_min: 0.55,
   // Pullback Entry
   pullback_entry_enabled: false,
   pullback_impulse_atr_mult: 1.2,
@@ -443,6 +458,13 @@ const DEFAULTS: Config = {
   reentry_size_factor: 0.65,
   reentry_sl_atr_mult: 1.5,
   reentry_tp_atr_mult: 3.5,
+  // Adverse Evidence Monitor
+  adverse_monitor_enabled: false,
+  adverse_action: 'shadow' as const,
+  adverse_score_threshold: 0.40,
+  adverse_confirm_cycles: 2,
+  adverse_min_hold_bars: 3,
+  adverse_partial_pct: 0.50,
 };
 
 interface PruningMetrics {
@@ -4368,6 +4390,96 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
           )}
         </div>
 
+        {/* Adverse Evidence Monitor */}
+        <div className={`flex flex-col gap-3 mt-6 pb-6 border-b transition-colors duration-200 ${config.adverse_monitor_enabled ? 'border-rose-200 dark:border-rose-500/25' : 'border-slate-100 dark:border-white/5'}`}>
+          <label className="flex items-center gap-3 cursor-pointer group">
+            <div className="relative">
+              <input type="checkbox" className="sr-only"
+                checked={config.adverse_monitor_enabled}
+                onChange={e => setConfig(c => ({ ...c, adverse_monitor_enabled: e.target.checked }))}
+                disabled={!config.reversal_mode_enabled}
+              />
+              <div className={`w-10 h-5 rounded-full transition-all duration-300 ${config.adverse_monitor_enabled ? 'bg-rose-500' : 'bg-slate-200 dark:bg-white/10'}`} />
+              <div className={`absolute top-1 left-1 w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.adverse_monitor_enabled ? 'translate-x-5' : ''}`} />
+            </div>
+            <div>
+              <p className={`text-sm font-bold transition-colors ${config.adverse_monitor_enabled ? 'text-rose-600 dark:text-rose-400' : 'text-slate-800 dark:text-slate-200 group-hover:text-rose-600 dark:group-hover:text-rose-400'}`}>
+                Adverse Evidence Monitor
+                {config.adverse_monitor_enabled && <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-rose-100 dark:bg-rose-500/20 text-rose-600 dark:text-rose-400 uppercase tracking-wider">Attivo</span>}
+              </p>
+              <p className="text-[11px] font-medium text-slate-400 dark:text-slate-500 leading-tight">
+                Monitora il Reversal Detector contro la posizione aperta. Agisce dopo N cicli consecutivi di evidenza avversa. Richiede Reversal Mode attivo.
+              </p>
+            </div>
+          </label>
+          {!config.reversal_mode_enabled && (
+            <p className="text-[10px] text-amber-500 dark:text-amber-400 pl-12">
+              ⚠ Richiede Reversal Zone Detector attivo per funzionare
+            </p>
+          )}
+          {config.adverse_monitor_enabled && (
+            <div className="pl-12 space-y-4">
+              <div className="p-3 rounded-xl bg-rose-50 dark:bg-rose-500/10 border border-rose-200 dark:border-rose-500/20 text-[10px] text-rose-700 dark:text-rose-400 leading-relaxed">
+                Default <strong>shadow</strong> — solo log, nessuna azione. Osservare per 2-4 settimane prima di attivare tighten_sl o partial_close.
+              </div>
+              {/* Azione */}
+              <div>
+                <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-2">Azione</p>
+                <select
+                  value={config.adverse_action}
+                  onChange={e => setConfig(c => ({ ...c, adverse_action: e.target.value as Config['adverse_action'] }))}
+                  className="w-full text-xs bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-slate-700 dark:text-slate-300 focus:outline-none focus:ring-1 focus:ring-rose-400"
+                >
+                  <option value="shadow">Shadow — solo log, nessuna azione</option>
+                  <option value="tighten_sl">Tighten SL — porta SL a breakeven +0.3×ATR</option>
+                  <option value="partial_close">Partial Close — chiudi % della posizione</option>
+                  <option value="close">Close — chiudi tutto</option>
+                </select>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-x-8 gap-y-4">
+                <div>
+                  <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-2">Score Min</p>
+                  <div className="flex items-center gap-3">
+                    <input type="range" min="0.25" max="0.65" step="0.01" value={config.adverse_score_threshold}
+                      onChange={e => setConfig(c => ({ ...c, adverse_score_threshold: parseFloat(e.target.value) }))}
+                      className="flex-1 h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/15 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3.5 [&::-webkit-slider-thumb]:h-3.5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-rose-500 [&::-webkit-slider-thumb]:cursor-pointer [&::-moz-range-thumb]:w-3.5 [&::-moz-range-thumb]:h-3.5 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-rose-500 [&::-moz-range-thumb]:border-0" />
+                    <span className="text-[11px] font-bold font-mono text-rose-600 dark:text-rose-400 w-10 text-right">{config.adverse_score_threshold.toFixed(2)}</span>
+                  </div>
+                </div>
+                <div>
+                  <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-2">Cicli Consecutivi</p>
+                  <div className="flex items-center gap-3">
+                    <input type="range" min="1" max="4" step="1" value={config.adverse_confirm_cycles}
+                      onChange={e => setConfig(c => ({ ...c, adverse_confirm_cycles: parseInt(e.target.value) }))}
+                      className="flex-1 h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/15 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3.5 [&::-webkit-slider-thumb]:h-3.5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-rose-500 [&::-webkit-slider-thumb]:cursor-pointer [&::-moz-range-thumb]:w-3.5 [&::-moz-range-thumb]:h-3.5 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-rose-500 [&::-moz-range-thumb]:border-0" />
+                    <span className="text-[11px] font-bold font-mono text-rose-600 dark:text-rose-400 w-10 text-right">{config.adverse_confirm_cycles}</span>
+                  </div>
+                </div>
+                <div>
+                  <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-2">Hold Min (barre)</p>
+                  <div className="flex items-center gap-3">
+                    <input type="range" min="1" max="8" step="1" value={config.adverse_min_hold_bars}
+                      onChange={e => setConfig(c => ({ ...c, adverse_min_hold_bars: parseInt(e.target.value) }))}
+                      className="flex-1 h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/15 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3.5 [&::-webkit-slider-thumb]:h-3.5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-rose-500 [&::-webkit-slider-thumb]:cursor-pointer [&::-moz-range-thumb]:w-3.5 [&::-moz-range-thumb]:h-3.5 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-rose-500 [&::-moz-range-thumb]:border-0" />
+                    <span className="text-[11px] font-bold font-mono text-rose-600 dark:text-rose-400 w-10 text-right">{config.adverse_min_hold_bars}</span>
+                  </div>
+                </div>
+              </div>
+              {config.adverse_action === 'partial_close' && (
+                <div>
+                  <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-2">% da Chiudere</p>
+                  <div className="flex items-center gap-3">
+                    <input type="range" min="0.25" max="0.75" step="0.05" value={config.adverse_partial_pct}
+                      onChange={e => setConfig(c => ({ ...c, adverse_partial_pct: parseFloat(e.target.value) }))}
+                      className="flex-1 h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/15 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3.5 [&::-webkit-slider-thumb]:h-3.5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-rose-500 [&::-webkit-slider-thumb]:cursor-pointer [&::-moz-range-thumb]:w-3.5 [&::-moz-range-thumb]:h-3.5 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-rose-500 [&::-moz-range-thumb]:border-0" />
+                    <span className="text-[11px] font-bold font-mono text-rose-600 dark:text-rose-400 w-10 text-right">{Math.round(config.adverse_partial_pct * 100)}%</span>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
         {/* Trend Meter Auto-Close */}
         <div className={`flex flex-col gap-3 mt-6 pb-6 border-b transition-colors duration-200 ${config.trend_exit_enabled ? 'border-orange-200 dark:border-orange-500/25' : 'border-slate-100 dark:border-white/5'}`}>
           <label className="flex items-center gap-3 cursor-pointer group">
@@ -4527,13 +4639,13 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
               {/* ret_48 */}
               <div className="flex flex-col gap-1">
                 <div className="flex justify-between items-center">
-                  <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">Soglia Rendimento 48 bar (%)</span>
+                  <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">Soglia Rendimento 48 bar 4H ≈ 8 giorni (%)</span>
                   <span className="text-[10px] font-bold text-rose-600 dark:text-rose-400">±{config.exhaustion_ret48_pct}%</span>
                 </div>
                 <input type="range" min={2} max={20} step={0.5} value={config.exhaustion_ret48_pct}
                   onChange={e => setConfig(c => ({ ...c, exhaustion_ret48_pct: parseFloat(e.target.value) }))}
                   className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-rose-500" />
-                <p className="text-[9px] text-slate-400 dark:text-slate-500">Se il rendimento sulle ultime 48 candele supera ±N%, il mercato è overextended. Usato insieme all'RSI. Default: 6%</p>
+                <p className="text-[9px] text-slate-400 dark:text-slate-500">Se il rendimento sulle ultime 48 candele 4H (192h ≈ 8 giorni) supera ±N%, il mercato è overextended. Usato insieme all'RSI. Default: 6%</p>
               </div>
               {/* boost */}
               <div className="flex flex-col gap-1">
@@ -4737,6 +4849,56 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
               </div>
             </div>
           )}
+
+          {/* Transition Guard */}
+          <div className="mt-1 pt-4 border-t border-slate-100 dark:border-white/5">
+            <label className={`flex items-start gap-3 cursor-pointer group p-4 rounded-xl border transition-all duration-200 ${config.transition_guard_enabled ? 'border-cyan-200 dark:border-cyan-500/30 bg-cyan-50/40 dark:bg-cyan-500/5' : 'border-slate-100 dark:border-white/5 hover:bg-slate-50 dark:hover:bg-white/[0.03]'}`}>
+              <div className="relative mt-0.5 flex-shrink-0">
+                <input type="checkbox" className="sr-only" checked={config.transition_guard_enabled}
+                  onChange={e => setConfig(c => ({ ...c, transition_guard_enabled: e.target.checked }))} />
+                <div className={`w-9 h-[18px] rounded-full transition-all duration-300 ${config.transition_guard_enabled ? 'bg-cyan-500' : 'bg-slate-200 dark:bg-white/10'}`} />
+                <div className={`absolute top-[3px] left-[3px] w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.transition_guard_enabled ? 'translate-x-[18px]' : ''}`} />
+              </div>
+              <div className="min-w-0">
+                <p className={`text-xs font-bold leading-tight transition-colors ${config.transition_guard_enabled ? 'text-cyan-600 dark:text-cyan-400' : 'text-slate-700 dark:text-slate-300'}`}>
+                  Transition Guard
+                  {config.transition_guard_enabled && (
+                    <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-cyan-100 dark:bg-cyan-500/20 text-cyan-600 dark:text-cyan-400 uppercase tracking-wider">
+                      Attivo — boost max +{(config.transition_boost_max * 100).toFixed(0)}%
+                    </span>
+                  )}
+                </p>
+                <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5">
+                  Complementare all'Exhaustion Guard: alza entrambe le soglie in proporzione a <code className="text-[9px]">transition_risk</code> quando il RegimeDetector segnala che il trend sta finendo. Default OFF — validare in backtest.
+                </p>
+              </div>
+            </label>
+
+            {config.transition_guard_enabled && (
+              <div className="mt-3 px-4 space-y-3">
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">Boost Massimo</span>
+                    <span className="text-[10px] font-bold text-cyan-600 dark:text-cyan-400">+{(config.transition_boost_max * 100).toFixed(0)}%</span>
+                  </div>
+                  <input type="range" min={0.02} max={0.10} step={0.01} value={config.transition_boost_max}
+                    onChange={e => setConfig(c => ({ ...c, transition_boost_max: parseFloat(e.target.value) }))}
+                    className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-cyan-500" />
+                  <p className="text-[9px] text-slate-400 dark:text-slate-500 mt-1">Boost alla soglia quando transition_risk = 1.0. Es. +5% → soglia 0.65 con base 0.60.</p>
+                </div>
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">Rischio Min Attivazione</span>
+                    <span className="text-[10px] font-bold text-cyan-600 dark:text-cyan-400">{config.transition_risk_min.toFixed(2)}</span>
+                  </div>
+                  <input type="range" min={0.40} max={0.80} step={0.05} value={config.transition_risk_min}
+                    onChange={e => setConfig(c => ({ ...c, transition_risk_min: parseFloat(e.target.value) }))}
+                    className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-cyan-500" />
+                  <p className="text-[9px] text-slate-400 dark:text-slate-500 mt-1">Il guard si attiva solo se transition_risk ≥ questo valore. Default 0.55.</p>
+                </div>
+              </div>
+            )}
+          </div>
 
           {/* ATR% Volatility Gate */}
           <Tooltip

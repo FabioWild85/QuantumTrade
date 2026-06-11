@@ -593,6 +593,11 @@ def build_all_features(
             (d["stoch_rsi_k"] > 0.65)
         ).astype(float)
 
+        # ADX lagged 3 bars — needed by ReversalZoneDetector._exhaustion() to detect
+        # declining ADX (adx < adx_l3 = trend exhaustion, stronger signal than flat ADX).
+        # shift(3) = 3 bars in the past, no lookahead.
+        d["adx_14_lag3"] = d["adx_14"].shift(3)
+
     log.debug("Feature matrix: %d columns, %d rows", d.shape[1], len(d))
     return d
 
@@ -639,6 +644,7 @@ FEATURE_GROUPS = {
         "wick_reject_bear", "wick_reject_bull",
         "stoch_rsi_k", "stoch_rsi_d",
         "stoch_cross_bull", "stoch_cross_bear",
+        "adx_14_lag3",
     ],
 }
 

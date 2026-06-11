@@ -74,6 +74,13 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
     lgbm_exit_min_hold_bars  = getattr(cfg, "lgbm_exit_min_hold_bars",  6)
     lgbm_exit_confirm_bars   = getattr(cfg, "lgbm_exit_confirm_bars",   2)
     enhanced_exit_enabled    = getattr(cfg, "enhanced_exit_enabled",    False)
+    # Adverse Evidence Monitor
+    adverse_monitor_enabled  = getattr(cfg, "adverse_monitor_enabled",  False)
+    adverse_action           = getattr(cfg, "adverse_action",           "shadow")
+    adverse_score_threshold  = getattr(cfg, "adverse_score_threshold",  0.40)
+    adverse_confirm_cycles   = getattr(cfg, "adverse_confirm_cycles",   2)
+    adverse_min_hold_bars    = getattr(cfg, "adverse_min_hold_bars",    3)
+    adverse_partial_pct      = getattr(cfg, "adverse_partial_pct",      0.50)
     use_binance              = getattr(req,  "use_binance",              True)
     use_chronos              = getattr(req,  "use_chronos",              False)
     # Advanced signal controls
@@ -192,6 +199,10 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
     # Feature E: Exhaustion Max Hold
     exhaustion_max_hold_enabled = getattr(cfg, "exhaustion_max_hold_enabled", False)
     exhaustion_max_hold_bars    = getattr(cfg, "exhaustion_max_hold_bars",    2)
+    # Transition Guard
+    transition_guard_enabled = getattr(cfg, "transition_guard_enabled", False)
+    transition_boost_max     = getattr(cfg, "transition_boost_max",     0.05)
+    transition_risk_min      = getattr(cfg, "transition_risk_min",      0.55)
     # Pullback Entry
     pullback_entry_enabled    = getattr(cfg, "pullback_entry_enabled",    False)
     pullback_impulse_atr_mult = getattr(cfg, "pullback_impulse_atr_mult", 1.5)
@@ -527,6 +538,10 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
         # Feature E: used via _exhaustion_triggered flag on DecisionResult
         exhaustion_max_hold_enabled=exhaustion_max_hold_enabled,
         exhaustion_max_hold_bars=exhaustion_max_hold_bars,
+        # Transition Guard
+        transition_guard_enabled=transition_guard_enabled,
+        transition_boost_max=transition_boost_max,
+        transition_risk_min=transition_risk_min,
     )
     risk = RiskManager(
         sl_atr_mult=sl_atr_mult,
@@ -556,6 +571,10 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
     _bt_rev_detector = None
     if reversal_mode_enabled:
         from services.reversal_detector import ReversalZoneDetector, build_pending_reversal
+        _bt_rev_detector = ReversalZoneDetector()
+    elif adverse_monitor_enabled:
+        # AEM needs the detector even when reversal entry is disabled
+        from services.reversal_detector import ReversalZoneDetector
         _bt_rev_detector = ReversalZoneDetector()
 
     # ── Parameter activity counters ───────────────────────────────────────────
@@ -598,12 +617,22 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
         "mod_iv_size_reduction":    0,
         "mod_exhaustion_guard":     0,
         "mod_absorption_filter":    0,
+        "mod_transition_guard":     0,
         "mod_atr_pct_scale":        0,
         "mod_sweep_conf_bonus":     0,
         "mod_exhaustion_prop":      0,
         "mod_c2_inversion":         0,
         "mod_1h_reduce":            0,
         "pm_exhaust_max_hold":      0,
+        # Exhaustion Guard breakdown
+        "exh_trigger_rsi_only":     0,   # guard fired on RSI condition only
+        "exh_trigger_ret48_only":   0,   # guard fired on ret_48 condition only
+        "exh_trigger_both":         0,   # guard fired on both RSI + ret_48
+        "exh_guard_passed":         0,   # guard active on the trade's own side → trade still opened
+        "exh_guard_blocked":        0,   # guard active → no trade this bar
+        "exh_guard_decisive":       0,   # signal passed base threshold but failed guard-boosted one
+        "exh_passed_wins":          0,   # trades opened during guard → profit
+        "exh_passed_losses":        0,   # trades opened during guard → loss
         # Entry — structural SL/TP overrides
         "sl_structural_ob":         0,
         "sl_fvg":                   0,
@@ -614,6 +643,7 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
         "pm_be_sl":                 0,
         "pm_partial_tp":            0,
         "pm_lgbm_exit":             0,
+        "pm_adverse_monitor":       0,
         "pm_max_hold":              0,
         # Trade exit reasons
         "exit_stop_loss":           0,
@@ -1098,6 +1128,9 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                     "date": str(row.name.date()) if hasattr(row.name, "date") else "",
                     "equity_after": round(equity, 2),
                 })
+                if position.get("exh_guard_at_entry"):
+                    if pnl_pct > 0: param_stats["exh_passed_wins"]   += 1
+                    else:           param_stats["exh_passed_losses"]  += 1
                 equity_curve.append({"bar": i, "equity": round(equity, 2)})
                 # Tag TP exit so the new-signal block can apply re-entry logic
                 _tp_just_hit      = not hit_sl  # hit_tp is True here
@@ -1147,6 +1180,9 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                         "date": str(row.name.date()) if hasattr(row.name, "date") else "",
                         "equity_after": round(equity, 2),
                     })
+                    if position.get("exh_guard_at_entry"):
+                        if pnl_pct_liq > 0: param_stats["exh_passed_wins"]   += 1
+                        else:               param_stats["exh_passed_losses"]  += 1
                     equity_curve.append({"bar": i, "equity": round(equity, 2)})
                     position       = None
                     already_closed = True
@@ -1190,9 +1226,112 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                         "date": str(row.name.date()) if hasattr(row.name, "date") else "",
                         "equity_after": round(equity, 2),
                     })
+                    if position.get("exh_guard_at_entry"):
+                        if pnl_pct_e > 0: param_stats["exh_passed_wins"]   += 1
+                        else:             param_stats["exh_passed_losses"]  += 1
                     equity_curve.append({"bar": i, "equity": round(equity, 2)})
                     position       = None
                     already_closed = True
+
+            # ── Adverse Evidence Monitor ──────────────────────────────────────
+            # Detects structural reversal evidence in the direction opposite to the open position.
+            # shadow mode: only increments pm_adverse_monitor (no equity change) so we can see
+            # how often it would have fired without altering the backtest equity curve.
+            if (
+                adverse_monitor_enabled
+                and not already_closed
+                and position is not None
+                and _bt_rev_detector is not None
+                and bars_held >= adverse_min_hold_bars
+            ):
+                _adv_side_bt = position["side"]
+                _adv_dir_bt  = "long" if _adv_side_bt == "short" else "short"
+                _comp_min_bt = getattr(cfg, "reversal_component_min_score", 0.40)
+                _weights_bt  = _bt_rev_detector.WEIGHTS
+
+                # Compute raw score in the adverse direction.
+                # Must match exact calling convention: _exhaustion(direction=) and
+                # _regime(regime_signal) differ from the standard _bear/_bull pattern.
+                _row_dict_bt = row.to_dict()
+                if _adv_dir_bt == "long":
+                    _raw_bt = {
+                        "structural": _bt_rev_detector._structural_bull(_row_dict_bt, cfg),
+                        "momentum":   _bt_rev_detector._momentum_bull(_row_dict_bt),
+                        "exhaustion": _bt_rev_detector._exhaustion(_row_dict_bt, cfg, direction="bull"),
+                        "volume":     _bt_rev_detector._volume_bull(_row_dict_bt, cfg),
+                        "regime":     _bt_rev_detector._regime(_row_dict_bt, _bt_regime_sig, cfg),
+                        "funding":    _bt_rev_detector._funding_bull(_row_dict_bt, cfg),
+                        "candle":     _bt_rev_detector._candle_bull(_row_dict_bt, cfg),
+                    }
+                else:
+                    _raw_bt = {
+                        "structural": _bt_rev_detector._structural_bear(_row_dict_bt, cfg),
+                        "momentum":   _bt_rev_detector._momentum_bear(_row_dict_bt),
+                        "exhaustion": _bt_rev_detector._exhaustion(_row_dict_bt, cfg, direction="bear"),
+                        "volume":     _bt_rev_detector._volume_bear(_row_dict_bt, cfg),
+                        "regime":     _bt_rev_detector._regime(_row_dict_bt, _bt_regime_sig, cfg),
+                        "funding":    _bt_rev_detector._funding_bear(_row_dict_bt, cfg),
+                        "candle":     _bt_rev_detector._candle_bear(_row_dict_bt, cfg),
+                    }
+                _adv_score_bt = sum(_weights_bt[c] * _raw_bt[c] for c in _weights_bt)
+                _adv_count_bt = sum(1 for v in _raw_bt.values() if v > _comp_min_bt)
+
+                if _adv_score_bt >= adverse_score_threshold and _adv_count_bt >= 2:
+                    position["adverse_strikes"] = position.get("adverse_strikes", 0) + 1
+                else:
+                    position["adverse_strikes"] = 0
+
+                if position.get("adverse_strikes", 0) >= adverse_confirm_cycles:
+                    position["adverse_strikes"] = 0
+                    param_stats["pm_adverse_monitor"] += 1
+
+                    if adverse_action == "tighten_sl":
+                        _atr_bt = float(row.get("atr_14", close_price * 0.01))
+                        _new_sl_bt = (
+                            close_price + _atr_bt * 0.3 if _adv_side_bt == "short"
+                            else close_price - _atr_bt * 0.3
+                        )
+                        if _adv_side_bt == "short" and _new_sl_bt < position["sl"]:
+                            position["sl"] = _new_sl_bt
+                        elif _adv_side_bt == "long" and _new_sl_bt > position["sl"]:
+                            position["sl"] = _new_sl_bt
+
+                    elif adverse_action in ("partial_close", "close"):
+                        _pct_bt  = adverse_partial_pct if adverse_action == "partial_close" else 1.0
+                        _pnl_pct_bt = (
+                            (close_price - entry) / entry * 100 if _adv_side_bt == "long"
+                            else (entry - close_price) / entry * 100
+                        )
+                        _sz_bt   = position["size_usd"] * _pct_bt
+                        _pnl_bt  = _sz_bt * _pnl_pct_bt / 100
+                        _fee_bt  = _sz_bt * HL_TAKER_FEE
+                        equity  += _pnl_bt - _fee_bt
+                        entry_fee_used = position.get("fee_entry", 0.0) * _pct_bt
+                        funding_used   = position.get("funding_paid", 0.0) * _pct_bt
+                        trades.append({
+                            "side":         _adv_side_bt,
+                            "entry":        entry,
+                            "exit":         close_price,
+                            "pnl_pct":      round(_pnl_pct_bt * _pct_bt, 4),
+                            "pnl_usd":      round(_pnl_bt - _fee_bt - entry_fee_used - funding_used, 2),
+                            "fee_entry":    round(entry_fee_used, 2),
+                            "funding_paid": round(funding_used, 2),
+                            "reason":       f"adverse_monitor_{adverse_action}",
+                            "holding_bars": bars_held,
+                            "bar":          i,
+                            "origin":       position.get("origin", "trend"),
+                            "date":         str(row.name.date()) if hasattr(row.name, "date") else "",
+                            "equity_after": round(equity, 2),
+                        })
+                        if adverse_action == "close":
+                            if position.get("exh_guard_at_entry"):
+                                if _pnl_pct_bt > 0: param_stats["exh_passed_wins"]   += 1
+                                else:               param_stats["exh_passed_losses"]  += 1
+                            equity_curve.append({"bar": i, "equity": round(equity, 2)})
+                            position       = None
+                            already_closed = True
+                        else:
+                            position["size_usd"] *= (1.0 - _pct_bt)
 
             # ── Max hold bars: time-based force exit ──────────────────────────
             # Priority: exhaust_max_hold (Feature E) > rev_max_hold (reversals) > max_hold_bars (trend).
@@ -1233,6 +1372,9 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                     "date": str(row.name.date()) if hasattr(row.name, "date") else "",
                     "equity_after": round(equity, 2),
                 })
+                if position.get("exh_guard_at_entry"):
+                    if pnl_pct_m > 0: param_stats["exh_passed_wins"]   += 1
+                    else:             param_stats["exh_passed_losses"]  += 1
                 equity_curve.append({"bar": i, "equity": round(equity, 2)})
                 position       = None
                 already_closed = True
@@ -1452,6 +1594,13 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                     param_stats["mod_fng_bias"]         += 1; _mods_seen.add("mod_fng")
                 if "ExhaustionGuard"  in _line and "mod_exhaust" not in _mods_seen:
                     param_stats["mod_exhaustion_guard"] += 1; _mods_seen.add("mod_exhaust")
+                    _exh_rsi   = "RSI" in _line
+                    _exh_ret48 = "ret_48" in _line
+                    if _exh_rsi and _exh_ret48:  param_stats["exh_trigger_both"]       += 1
+                    elif _exh_rsi:               param_stats["exh_trigger_rsi_only"]   += 1
+                    elif _exh_ret48:             param_stats["exh_trigger_ret48_only"] += 1
+                if "ExhaustionGuard DECISIVE" in _line and "mod_exh_dec" not in _mods_seen:
+                    param_stats["exh_guard_decisive"] += 1; _mods_seen.add("mod_exh_dec")
                 if "AbsorptionFilter:" in _line and "mod_abs" not in _mods_seen:
                     param_stats["mod_absorption_filter"]+= 1; _mods_seen.add("mod_abs")
                 if "ATR_PCT_SCALE:"    in _line and "mod_atr" not in _mods_seen:
@@ -1460,6 +1609,8 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                     param_stats["mod_sweep_conf_bonus"] += 1; _mods_seen.add("mod_sweep")
                 if "proporzionale"    in _line and "mod_exh_prop" not in _mods_seen:
                     param_stats["mod_exhaustion_prop"]  += 1; _mods_seen.add("mod_exh_prop")
+                if "TransitionGuard:"  in _line and "mod_tg" not in _mods_seen:
+                    param_stats["mod_transition_guard"] += 1; _mods_seen.add("mod_tg")
                 if "C2 InversionGate" in _line and "mod_c2_inv" not in _mods_seen:
                     param_stats["mod_c2_inversion"]     += 1; _mods_seen.add("mod_c2_inv")
                 if "1H gate REDUCE"   in _line and "mod_1h" not in _mods_seen:
@@ -1473,11 +1624,16 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
             if result.action == "long":
                 param_stats["signals_long"]  += 1
                 if result.size_factor < 0.99: param_stats["mod_counter_trend_size"] += 1
+                # _exhaustion_triggered = guard attivo sulla direzione del trade; un long
+                # con solo lo short-guard attivo non è "passato nonostante il guard".
+                if getattr(result, "_exhaustion_triggered", False): param_stats["exh_guard_passed"] += 1
             elif result.action == "short":
                 param_stats["signals_short"] += 1
                 if result.size_factor < 0.99: param_stats["mod_counter_trend_size"] += 1
+                if getattr(result, "_exhaustion_triggered", False): param_stats["exh_guard_passed"] += 1
             else:
                 param_stats["no_trade"] += 1
+                if "mod_exhaust" in _mods_seen: param_stats["exh_guard_blocked"] += 1
 
             # ── Re-entry on TP: eligibility check when TP fired this bar ────────
             # Runs before the trade-open block so it can veto or tag the signal.
@@ -1759,8 +1915,9 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                         if _exhaust_triggered and exhaustion_max_hold_enabled
                         else None
                     ),
-                    "is_exhaust_hold":   _exhaust_triggered and exhaustion_max_hold_enabled,
-                    "leverage":          lev,
+                    "is_exhaust_hold":    _exhaust_triggered and exhaustion_max_hold_enabled,
+                    "exh_guard_at_entry": _exhaust_triggered,
+                    "leverage":           lev,
                     "liq_px":            _liq_price(result.action, close_price, lev),
                 }
 
@@ -1778,6 +1935,9 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
         gross_pnl      = position["size_usd"] * pnl_pct / 100
         pnl_usd        = gross_pnl - fee_last
         equity        += pnl_usd
+        if position.get("exh_guard_at_entry"):
+            if pnl_pct > 0: param_stats["exh_passed_wins"]   += 1
+            else:           param_stats["exh_passed_losses"]  += 1
         param_stats["exit_end_of_period"] += 1
         trades.append({
             "side": side, "entry": position["entry"], "exit": last_price,
@@ -1837,6 +1997,7 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
         "pm_be_sl":               be_sl_enabled,
         "pm_partial_tp":          partial_tp_enabled,
         "pm_lgbm_exit":           lgbm_exit_enabled,
+        "pm_adverse_monitor":     adverse_monitor_enabled,
         "pm_max_hold":            max_hold_bars_enabled,
         # Pullback entry
         "pb_activated":           pullback_entry_enabled,
@@ -1864,6 +2025,7 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
         "gate_vol_climax":        vol_climax_gate_enabled,
         "mod_c2_inversion":       c2_inversion_gate_enabled,
         "pm_exhaust_max_hold":    exhaustion_max_hold_enabled,
+        "mod_transition_guard":   transition_guard_enabled,
         # Squeeze Protection Gates
         "gate_oi_spike":          oi_spike_gate_enabled and oi_spike_mode == "block",
         "gate_ls_ratio":          ls_gate_enabled and ls_gate_mode == "block",

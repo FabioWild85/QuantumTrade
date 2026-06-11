@@ -422,6 +422,10 @@ class BotConfig(BaseModel):
     # Exhaustion Max Hold — forza uscita anticipata se ExhaustionGuard era attivo all'entry (Feature E)
     exhaustion_max_hold_enabled: bool = Field(False)
     exhaustion_max_hold_bars:    int  = Field(2, ge=1, le=12)
+    # Transition Guard — alza entrambe le soglie in proporzione a transition_risk
+    transition_guard_enabled: bool  = Field(False)
+    transition_boost_max:     float = Field(0.05, ge=0.02, le=0.10)
+    transition_risk_min:      float = Field(0.55, ge=0.40, le=0.80)
     # Pullback Entry — delayed entry on strong impulse candles
     pullback_entry_enabled:    bool  = Field(False)
     pullback_impulse_atr_mult: float = Field(1.2, ge=0.5, le=3.0)
@@ -494,6 +498,16 @@ class BotConfig(BaseModel):
                                                "original trade (structural SL is skipped — too far from new entry).")
     reentry_tp_atr_mult:        float = Field(3.5,  ge=1.00, le=8.00,
                                                description="ATR multiplier for re-entry TP.")
+    # ── Adverse Evidence Monitor ──────────────────────────────────────────────
+    # Monitors the reversal detector score against the open position direction.
+    # Acts defensively after N consecutive cycles of adverse structural evidence.
+    # Requires reversal_mode_enabled=True. Start with shadow to calibrate.
+    adverse_monitor_enabled: bool  = Field(False)
+    adverse_action:          str   = Field("shadow", pattern="^(shadow|tighten_sl|partial_close|close)$")
+    adverse_score_threshold: float = Field(0.40, ge=0.25, le=0.65)
+    adverse_confirm_cycles:  int   = Field(2,    ge=1,    le=4)
+    adverse_min_hold_bars:   int   = Field(3,    ge=1,    le=8)
+    adverse_partial_pct:     float = Field(0.50, ge=0.25, le=0.75)
 
 
 class StartBotRequest(BaseModel):

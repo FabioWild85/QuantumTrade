@@ -85,6 +85,16 @@ interface ParamStats {
   mod_c2_inversion?: number;
   mod_1h_reduce?: number;
   pm_exhaust_max_hold?: number;
+  mod_transition_guard?: number;
+  // exhaustion guard breakdown
+  exh_trigger_rsi_only?: number;
+  exh_trigger_ret48_only?: number;
+  exh_trigger_both?: number;
+  exh_guard_passed?: number;
+  exh_guard_blocked?: number;
+  exh_guard_decisive?: number;
+  exh_passed_wins?: number;
+  exh_passed_losses?: number;
   // structural SL/TP overrides
   sl_structural_ob: number;
   sl_fvg: number;
@@ -95,6 +105,7 @@ interface ParamStats {
   pm_be_sl: number;
   pm_partial_tp: number;
   pm_lgbm_exit: number;
+  pm_adverse_monitor?: number;
   pm_max_hold: number;
   // trade exits
   exit_stop_loss: number;
@@ -312,9 +323,11 @@ const TradeTable: React.FC<{ trades: BacktestTrade[]; showLevEquity?: boolean; i
     partial_tp:    'bg-teal-50 dark:bg-teal-500/10 text-teal-600 dark:text-teal-400 border-teal-100 dark:border-teal-500/20',
     stop_loss:     'bg-rose-50 dark:bg-rose-500/10 text-rose-600 dark:text-rose-400 border-rose-100 dark:border-rose-500/20',
     end_of_period: 'bg-slate-50 dark:bg-white/5 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-white/10',
-    lgbm_exit:     'bg-violet-50 dark:bg-violet-500/10 text-violet-600 dark:text-violet-400 border-violet-100 dark:border-violet-500/20',
-    max_hold:      'bg-amber-50 dark:bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-100 dark:border-amber-500/20',
-    liquidation:   'bg-red-50 dark:bg-red-500/10 text-red-600 dark:text-red-400 border-red-200 dark:border-red-500/25',
+    lgbm_exit:                    'bg-violet-50 dark:bg-violet-500/10 text-violet-600 dark:text-violet-400 border-violet-100 dark:border-violet-500/20',
+    max_hold:                     'bg-amber-50 dark:bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-100 dark:border-amber-500/20',
+    liquidation:                  'bg-red-50 dark:bg-red-500/10 text-red-600 dark:text-red-400 border-red-200 dark:border-red-500/25',
+    adverse_monitor_close:        'bg-rose-50 dark:bg-rose-500/10 text-rose-600 dark:text-rose-400 border-rose-100 dark:border-rose-500/20',
+    adverse_monitor_partial_close:'bg-orange-50 dark:bg-orange-500/10 text-orange-600 dark:text-orange-400 border-orange-100 dark:border-orange-500/20',
   };
 
   // Newest-first
@@ -774,6 +787,8 @@ const ConfigSummary: React.FC<{ config: Record<string, any> }> = ({ config: c })
   if (c.ls_gate_enabled)        activeBadges.push(badge(`L/S Gate ≥${c.ls_long_block_pct ?? 67}% ${c.ls_gate_mode === 'block' ? 'BLOCK' : `×${c.ls_gate_scale_factor ?? 0.5}`}`, sqColor));
   if (c.liq_spike_gate_enabled) activeBadges.push(badge(`Liq Spike ${c.liq_spike_thr ?? 2.5}σ ${c.liq_spike_mode === 'block' ? 'BLOCK' : 'scale'}`, sqColor));
   if (c.weekend_gate_block_saturday || c.weekend_gate_block_sunday) activeBadges.push(badge(`Weekend BLOCK ${[c.weekend_gate_block_saturday && 'Sab', c.weekend_gate_block_sunday && 'Dom'].filter(Boolean).join('+')}`, 'bg-amber-50 dark:bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-100 dark:border-amber-500/20'));
+  if (c.transition_guard_enabled) activeBadges.push(badge(`Transition Guard ≥${c.transition_risk_min ?? 0.55}`, 'bg-sky-50 dark:bg-sky-500/10 text-sky-600 dark:text-sky-400 border-sky-100 dark:border-sky-500/20'));
+  if (c.adverse_monitor_enabled)  activeBadges.push(badge(`Adverse Monitor ${c.adverse_action ?? 'shadow'} ≥${c.adverse_score_threshold ?? 0.40}`, 'bg-rose-50 dark:bg-rose-500/10 text-rose-600 dark:text-rose-400 border-rose-100 dark:border-rose-500/20'));
 
   const disabledFilters: string[] = [];
   if (c.adx_gate_enabled      === false) disabledFilters.push('ADX OFF');
@@ -815,6 +830,15 @@ const ParamActivity: React.FC<{ ps: ParamStats; cfg?: Record<string, boolean>; t
   const reentryWins     = reentryClosings.filter(t => t.pnl_pct > 0).length;
   const reentryLosses   = reentryClosings.filter(t => t.pnl_pct < 0).length;
   const reentryWinRate  = reentryClosings.length > 0 ? Math.round(reentryWins / reentryClosings.length * 100) : null;
+
+  // Exhaustion Guard: wins/losses from backend counters
+  const exhPassed       = (ps.exh_guard_passed  ?? 0);
+  const exhBlocked      = (ps.exh_guard_blocked  ?? 0);
+  const exhTotal        = (ps.mod_exhaustion_guard ?? 0);
+  const exhPassedWins   = (ps.exh_passed_wins    ?? 0);
+  const exhPassedLosses = (ps.exh_passed_losses  ?? 0);
+  const exhPassedClosed = exhPassedWins + exhPassedLosses;
+  const exhWinRate      = exhPassedClosed > 0 ? Math.round(exhPassedWins / exhPassedClosed * 100) : null;
 
   // isOn: true = enabled in backtest settings, false = disabled (hidden from report)
   // When param_config is not available (old backtest result), show all rows.
@@ -879,11 +903,10 @@ const ParamActivity: React.FC<{ ps: ParamStats; cfg?: Record<string, boolean>; t
         { key: 'mod_counter_trend_size', label: 'Size ridotta (trade contro-trend, regime bias)', count: ps.mod_counter_trend_size, pct: trades > 0 ? pct(ps.mod_counter_trend_size, trades) : 0, note: trades > 0 ? `${pct(ps.mod_counter_trend_size, trades)}% dei trade` : undefined },
         { key: 'mod_funding_bias',       label: 'Funding Rate Bias (soglia adattata al funding)',  count: ps.mod_funding_bias,       pct: pct(ps.mod_funding_bias) },
         { key: 'mod_fng_bias',           label: 'Fear & Greed Bias (soglia contrarian)',            count: ps.mod_fng_bias,           pct: pct(ps.mod_fng_bias) },
-        { key: 'mod_exhaustion_guard',   label: 'Exhaustion Guard (RSI estremo o ret_48 overextended)',     count: ps.mod_exhaustion_guard,   pct: pct(ps.mod_exhaustion_guard) },
+        { key: 'mod_transition_guard',   label: 'Transition Guard (regime in transizione, soglia alzata)',   count: ps.mod_transition_guard ?? 0, pct: pct(ps.mod_transition_guard ?? 0) },
         { key: 'mod_absorption_filter',  label: 'Absorption Filter (volume anomalo, soglia +0.03)', count: ps.mod_absorption_filter,  pct: pct(ps.mod_absorption_filter) },
         { key: 'mod_atr_pct_scale',      label: 'ATR% Scale (size ridotta per bassa volatilità)',   count: ps.mod_atr_pct_scale ?? 0, pct: pct(ps.mod_atr_pct_scale ?? 0), note: (ps.mod_atr_pct_scale ?? 0) > 0 ? `${pct(ps.mod_atr_pct_scale ?? 0)}% delle candele` : undefined },
         { key: 'mod_sweep_conf_bonus',   label: 'Sweep Confluenza direzionale (bonus -0.03)',       count: ps.mod_sweep_conf_bonus,   pct: pct(ps.mod_sweep_conf_bonus) },
-        { key: 'mod_exhaustion_prop',    label: 'ExhaustionGuard Proporzionale (boost extra per ret_48 estremo)', count: ps.mod_exhaustion_prop ?? 0, pct: pct(ps.mod_exhaustion_prop ?? 0) },
         { key: 'mod_c2_inversion',       label: 'C2 Inversion Gate (C2 forecast opposto al segnale → +0.10 threshold)', count: ps.mod_c2_inversion ?? 0, pct: pct(ps.mod_c2_inversion ?? 0) },
         { key: 'mod_1h_reduce',          label: '1H Gate REDUCE ×0.70 (modello 1H incerto, size ridotta)',             count: ps.mod_1h_reduce ?? 0, pct: pct(ps.mod_1h_reduce ?? 0) },
         { key: 'mod_oi_spike_scale',     label: 'OI Spike Scale (size ridotta per crowding direzionale)',              count: ps.mod_oi_spike_scale ?? 0, pct: pct(ps.mod_oi_spike_scale ?? 0) },
@@ -910,9 +933,9 @@ const ParamActivity: React.FC<{ ps: ParamStats; cfg?: Record<string, boolean>; t
         { key: 'pm_trailing_sl', label: 'Trailing SL attivato (high-water mark)',            count: ps.pm_trailing_sl, pct: trades > 0 ? pct(ps.pm_trailing_sl, trades) : 0, note: trades > 0 ? `${pct(ps.pm_trailing_sl, trades)}% dei trade` : undefined },
         { key: 'pm_be_sl',       label: 'Break-even SL applicato (SL a breakeven)',          count: ps.pm_be_sl,       pct: trades > 0 ? pct(ps.pm_be_sl, trades)       : 0, note: trades > 0 ? `${pct(ps.pm_be_sl, trades)}% dei trade`       : undefined },
         { key: 'pm_partial_tp',  label: 'Partial TP eseguito (50% della posizione chiusa)', count: ps.pm_partial_tp,  pct: trades > 0 ? pct(ps.pm_partial_tp, trades)  : 0, note: trades > 0 ? `${pct(ps.pm_partial_tp, trades)}% dei trade`  : undefined },
-        { key: 'pm_lgbm_exit',   label: 'LGBM Exit (uscita AI per segnale invertito)',      count: ps.pm_lgbm_exit,   pct: trades > 0 ? pct(ps.pm_lgbm_exit, trades)   : 0, note: trades > 0 ? `${pct(ps.pm_lgbm_exit, trades)}% dei trade`   : undefined },
+        { key: 'pm_lgbm_exit',        label: 'LGBM Exit (uscita AI per segnale invertito)',                  count: ps.pm_lgbm_exit,              pct: trades > 0 ? pct(ps.pm_lgbm_exit, trades)              : 0, note: trades > 0 ? `${pct(ps.pm_lgbm_exit, trades)}% dei trade`              : undefined },
+        { key: 'pm_adverse_monitor',  label: 'Adverse Monitor (evidenza strutturale contro la posizione)', count: ps.pm_adverse_monitor ?? 0,   pct: trades > 0 ? pct(ps.pm_adverse_monitor ?? 0, trades)   : 0, note: trades > 0 ? `${pct(ps.pm_adverse_monitor ?? 0, trades)}% dei trade`   : undefined },
         { key: 'pm_max_hold',         label: 'Max Hold (uscita temporale forzata)',                    count: ps.pm_max_hold,           pct: trades > 0 ? pct(ps.pm_max_hold, trades)          : 0, note: trades > 0 ? `${pct(ps.pm_max_hold, trades)}% dei trade`          : undefined },
-        { key: 'pm_exhaust_max_hold', label: 'Exhaust Max Hold (uscita anticipata per entry in esaurimento)', count: ps.pm_exhaust_max_hold ?? 0, pct: trades > 0 ? pct(ps.pm_exhaust_max_hold ?? 0, trades) : 0, note: trades > 0 ? `${pct(ps.pm_exhaust_max_hold ?? 0, trades)}% dei trade` : undefined },
       ],
     },
     {
@@ -977,6 +1000,92 @@ const ParamActivity: React.FC<{ ps: ParamStats; cfg?: Record<string, boolean>; t
         { key: 'reentry_losses',       alwaysShow: true, label: 'Chiusi in perdita',                                   count: reentryLosses, pct: reentryClosings.length > 0 ? pct(reentryLosses, reentryClosings.length) : 0, note: reentryClosings.length > 0 ? `${pct(reentryLosses, reentryClosings.length)}% dei re-entry` : undefined },
         { key: 'reentry_blocked_lgbm', alwaysShow: true, label: 'Bloccati — LGBM 4H sotto soglia (trend indebolito)',  count: ps.reentry_blocked_lgbm ?? 0, pct: (ps.reentry_triggered ?? 0) + (ps.reentry_blocked_lgbm ?? 0) + (ps.reentry_blocked_1h ?? 0) > 0 ? pct(ps.reentry_blocked_lgbm ?? 0, (ps.reentry_triggered ?? 0) + (ps.reentry_blocked_lgbm ?? 0) + (ps.reentry_blocked_1h ?? 0)) : 0, note: undefined },
         { key: 'reentry_blocked_1h',   alwaysShow: true, label: 'Bloccati — Gate 1H sotto soglia (momentum 1H debole)', count: ps.reentry_blocked_1h ?? 0,   pct: (ps.reentry_triggered ?? 0) + (ps.reentry_blocked_lgbm ?? 0) + (ps.reentry_blocked_1h ?? 0) > 0 ? pct(ps.reentry_blocked_1h ?? 0, (ps.reentry_triggered ?? 0) + (ps.reentry_blocked_lgbm ?? 0) + (ps.reentry_blocked_1h ?? 0)) : 0, note: undefined },
+      ],
+    }] : []),
+    // Exhaustion Guard: dedicated section shown when guard is enabled OR when it fired at least once
+    ...((isOn('mod_exhaustion_guard') || exhTotal > 0) ? [{
+      title: 'Exhaustion Guard',
+      color: 'border-orange-200 dark:border-orange-500/20',
+      dot: 'bg-orange-500',
+      alwaysShow: true,
+      rows: [
+        {
+          key: 'exh_total', alwaysShow: true,
+          label: `Attivazioni totali — condizioni RSI/ret_48 rilevate (su ${ps.bars_evaluated.toLocaleString()} candele)`,
+          count: exhTotal,
+          pct: pct(exhTotal),
+          note: exhTotal > 0 ? `${pct(exhTotal)}% delle candele` : undefined,
+        },
+        {
+          key: 'exh_trigger_rsi_only', alwaysShow: true,
+          label: 'Motivo: solo RSI (RSI fuori soglia, ret_48 neutro)',
+          count: ps.exh_trigger_rsi_only ?? 0,
+          pct: exhTotal > 0 ? pct(ps.exh_trigger_rsi_only ?? 0, exhTotal) : 0,
+          note: exhTotal > 0 ? `${pct(ps.exh_trigger_rsi_only ?? 0, exhTotal)}% delle attivazioni` : undefined,
+        },
+        {
+          key: 'exh_trigger_ret48_only', alwaysShow: true,
+          label: 'Motivo: solo ret_48 (return 48 barre 4H ≈ 8 giorni fuori range, RSI neutro)',
+          count: ps.exh_trigger_ret48_only ?? 0,
+          pct: exhTotal > 0 ? pct(ps.exh_trigger_ret48_only ?? 0, exhTotal) : 0,
+          note: exhTotal > 0 ? `${pct(ps.exh_trigger_ret48_only ?? 0, exhTotal)}% delle attivazioni` : undefined,
+        },
+        {
+          key: 'exh_trigger_both', alwaysShow: true,
+          label: 'Motivo: RSI + ret_48 (doppia condizione — massima cautela)',
+          count: ps.exh_trigger_both ?? 0,
+          pct: exhTotal > 0 ? pct(ps.exh_trigger_both ?? 0, exhTotal) : 0,
+          note: exhTotal > 0 ? `${pct(ps.exh_trigger_both ?? 0, exhTotal)}% delle attivazioni` : undefined,
+        },
+        {
+          key: 'exh_guard_passed', alwaysShow: true,
+          label: `Trade aperti nonostante il guard sulla loro direzione (threshold superato comunque)${exhTotal > 0 ? ` — ${pct(exhPassed, exhTotal)}% delle attivazioni passate` : ''}`,
+          count: exhPassed,
+          pct: exhTotal > 0 ? pct(exhPassed, exhTotal) : 0,
+          note: exhPassed > 0 && trades > 0 ? `${pct(exhPassed, trades)}% dei trade totali` : undefined,
+        },
+        {
+          key: 'exh_guard_blocked', alwaysShow: true,
+          label: 'Barre con guard attivo ma nessun trade aperto (threshold non superato o altro gate)',
+          count: exhBlocked,
+          pct: exhTotal > 0 ? pct(exhBlocked, exhTotal) : 0,
+          note: exhTotal > 0 ? `${pct(exhBlocked, exhTotal)}% delle attivazioni` : undefined,
+        },
+        {
+          key: 'exh_guard_decisive', alwaysShow: true,
+          label: 'Bloccati DAL guard — il segnale superava la soglia base, solo il boost lo ha fermato (counterfactual)',
+          count: ps.exh_guard_decisive ?? 0,
+          pct: exhTotal > 0 ? pct(ps.exh_guard_decisive ?? 0, exhTotal) : 0,
+          note: exhTotal > 0 ? `${pct(ps.exh_guard_decisive ?? 0, exhTotal)}% delle attivazioni` : undefined,
+        },
+        {
+          key: 'exh_passed_wins', alwaysShow: true,
+          label: `Vincenti (trade aperti durante guard${exhWinRate !== null ? ` — win rate ${exhWinRate}%` : ''})`,
+          count: exhPassedWins,
+          pct: exhPassedClosed > 0 ? pct(exhPassedWins, exhPassedClosed) : 0,
+          note: exhPassedClosed > 0 ? `${pct(exhPassedWins, exhPassedClosed)}% dei trade passati` : undefined,
+        },
+        {
+          key: 'exh_passed_losses', alwaysShow: true,
+          label: 'Perdenti (trade aperti durante guard)',
+          count: exhPassedLosses,
+          pct: exhPassedClosed > 0 ? pct(exhPassedLosses, exhPassedClosed) : 0,
+          note: exhPassedClosed > 0 ? `${pct(exhPassedLosses, exhPassedClosed)}% dei trade passati` : undefined,
+        },
+        ...((isOn('mod_exhaustion_prop') || (ps.mod_exhaustion_prop ?? 0) > 0) ? [{
+          key: 'exh_prop', alwaysShow: true,
+          label: 'Boost proporzionale applicato (ret_48 estremo → bonus boost su threshold)',
+          count: ps.mod_exhaustion_prop ?? 0,
+          pct: exhTotal > 0 ? pct(ps.mod_exhaustion_prop ?? 0, exhTotal) : 0,
+          note: exhTotal > 0 ? `${pct(ps.mod_exhaustion_prop ?? 0, exhTotal)}% delle attivazioni` : undefined,
+        }] : []),
+        ...((isOn('pm_exhaust_max_hold') || (ps.pm_exhaust_max_hold ?? 0) > 0) ? [{
+          key: 'pm_exhaust_max_hold', alwaysShow: true,
+          label: 'Chiusi anticipatamente — Exhaust Max Hold (entry in esaurimento → uscita forzata)',
+          count: ps.pm_exhaust_max_hold ?? 0,
+          pct: exhPassed > 0 ? pct(ps.pm_exhaust_max_hold ?? 0, exhPassed) : 0,
+          note: exhPassed > 0 ? `${pct(ps.pm_exhaust_max_hold ?? 0, exhPassed)}% dei trade passati` : undefined,
+        }] : []),
       ],
     }] : []),
   ];
@@ -1838,6 +1947,9 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   // Feature E: Exhaustion Max Hold
   const [exhaustionMaxHold,    setExhaustionMaxHold]    = useState(false);
   const [exhaustionMaxHoldBars,setExhaustionMaxHoldBars]= useState('2');
+  const [transitionGuard,      setTransitionGuard]      = useState(false);
+  const [transitionBoostMax,   setTransitionBoostMax]   = useState('0.05');
+  const [transitionRiskMin,    setTransitionRiskMin]    = useState('0.55');
   const [structuralSl,         setStructuralSl]         = useState(false);
   const [obBufferPct,        setObBufferPct]        = useState('0.3');
   const [obBufferMinAtr,     setObBufferMinAtr]     = useState('0.0');
@@ -1909,6 +2021,13 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   const [reentrySize,            setReentrySize]            = useState('65');   // shown as %
   const [reentrySlAtr,           setReentrySlAtr]           = useState('1.5');
   const [reentryTpAtr,           setReentryTpAtr]           = useState('3.5');
+  // Adverse Evidence Monitor
+  const [adverseMonitor,         setAdverseMonitor]         = useState(false);
+  const [adverseAction,          setAdverseAction]          = useState<'shadow' | 'tighten_sl' | 'partial_close' | 'close'>('shadow');
+  const [adverseScoreThresh,     setAdverseScoreThresh]     = useState('0.40');
+  const [adverseConfirmCycles,   setAdverseConfirmCycles]   = useState('2');
+  const [adverseMinHold,         setAdverseMinHold]         = useState('3');
+  const [adversePartialPct,      setAdversePartialPct]      = useState('50');  // shown as %
   const [reversalRet48Extreme,  setReversalRet48Extreme]  = useState('6');   // shown as % in UI
   const [reversalBarsInRegime,  setReversalBarsInRegime]  = useState('20');
   // ATR% Volatility Gate
@@ -2055,6 +2174,9 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     if (p.c2_inversion_pct              !== undefined) setC2InversionPct(String(p.c2_inversion_pct));
     if (p.exhaustion_max_hold_enabled   !== undefined) setExhaustionMaxHold(!!p.exhaustion_max_hold_enabled);
     if (p.exhaustion_max_hold_bars      !== undefined) setExhaustionMaxHoldBars(String(p.exhaustion_max_hold_bars));
+    if (p.transition_guard_enabled      !== undefined) setTransitionGuard(!!p.transition_guard_enabled);
+    if (p.transition_boost_max          !== undefined) setTransitionBoostMax(String(p.transition_boost_max));
+    if (p.transition_risk_min           !== undefined) setTransitionRiskMin(String(p.transition_risk_min));
     if (p.structural_sl_enabled         !== undefined) setStructuralSl(!!p.structural_sl_enabled);
     if (p.ob_buffer_pct              !== undefined) setObBufferPct(String(p.ob_buffer_pct));
     if (p.ob_buffer_min_atr          !== undefined) setObBufferMinAtr(String(p.ob_buffer_min_atr));
@@ -2130,6 +2252,12 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     if (p.reentry_size_factor          !== undefined) setReentrySize(String(Math.round(p.reentry_size_factor * 100)));
     if (p.reentry_sl_atr_mult          !== undefined) setReentrySlAtr(String(p.reentry_sl_atr_mult));
     if (p.reentry_tp_atr_mult          !== undefined) setReentryTpAtr(String(p.reentry_tp_atr_mult));
+    if (p.adverse_monitor_enabled      !== undefined) setAdverseMonitor(!!p.adverse_monitor_enabled);
+    if (p.adverse_action               !== undefined) setAdverseAction(p.adverse_action as 'shadow' | 'tighten_sl' | 'partial_close' | 'close');
+    if (p.adverse_score_threshold      !== undefined) setAdverseScoreThresh(String(p.adverse_score_threshold));
+    if (p.adverse_confirm_cycles       !== undefined) setAdverseConfirmCycles(String(p.adverse_confirm_cycles));
+    if (p.adverse_min_hold_bars        !== undefined) setAdverseMinHold(String(p.adverse_min_hold_bars));
+    if (p.adverse_partial_pct          !== undefined) setAdversePartialPct(String(Math.round(p.adverse_partial_pct * 100)));
     if (p.reversal_ret48_extreme       !== undefined) setReversalRet48Extreme(String(Math.round(p.reversal_ret48_extreme * 100)));
     if (p.reversal_bars_in_regime_min  !== undefined) setReversalBarsInRegime(String(p.reversal_bars_in_regime_min));
     if (p.atr_pct_gate_enabled         !== undefined) setAtrPctGateEnabled(!!p.atr_pct_gate_enabled);
@@ -2386,6 +2514,9 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     c2_inversion_pct:              parseFloat(c2InversionPct),
     exhaustion_max_hold_enabled:   exhaustionMaxHold,
     exhaustion_max_hold_bars:      parseInt(exhaustionMaxHoldBars),
+    transition_guard_enabled:      transitionGuard,
+    transition_boost_max:          parseFloat(transitionBoostMax),
+    transition_risk_min:           parseFloat(transitionRiskMin),
     structural_sl_enabled:         structuralSl,
     ob_buffer_pct:                 parseFloat(obBufferPct),
     ob_buffer_min_atr:             parseFloat(obBufferMinAtr),
@@ -2453,6 +2584,12 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     reentry_size_factor:           parseFloat(reentrySize) / 100,
     reentry_sl_atr_mult:           parseFloat(reentrySlAtr),
     reentry_tp_atr_mult:           parseFloat(reentryTpAtr),
+    adverse_monitor_enabled:       adverseMonitor,
+    adverse_action:                adverseAction,
+    adverse_score_threshold:       parseFloat(adverseScoreThresh),
+    adverse_confirm_cycles:        parseInt(adverseConfirmCycles),
+    adverse_min_hold_bars:         parseInt(adverseMinHold),
+    adverse_partial_pct:           parseFloat(adversePartialPct) / 100,
     atr_pct_gate_enabled:          atrPctGateEnabled,
     use_1h_lgbm_gate:              use1hGate,
     lgbm_1h_min_agreement:         parseFloat(lgbm1hMinAgreement) / 100,
@@ -2582,6 +2719,12 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
         `  SL / TP:              ${reentrySlAtr}×ATR / ${reentryTpAtr}×ATR`,
         `  Structural SL:        DISABILITATO (nessuna nuova candela 4H al re-entry)`,
       ] : []),
+      '',
+      '━━━ TRANSITION GUARD ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
+      `Transition Guard:       ${transitionGuard ? `ATTIVO — risk_min ${transitionRiskMin} · boost max ×${transitionBoostMax}` : 'DISATTIVATO'}`,
+      '',
+      '━━━ ADVERSE EVIDENCE MONITOR ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
+      `Adverse Monitor:        ${adverseMonitor ? `ATTIVO — azione ${adverseAction} · soglia score ${adverseScoreThresh} · confirm ${adverseConfirmCycles} cicli · min hold ${adverseMinHold} barre${adverseAction === 'partial_close' ? ` · chiude ${adversePartialPct}%` : ''}` : 'DISATTIVATO'}`,
     ];
     // ── NOTA MANUTENZIONE ─────────────────────────────────────────────────────
     // Il blocco "CONFIG JSON COMPLETO" in fondo include SEMPRE il 100% dei campi
@@ -3787,7 +3930,7 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                           <NumInput label="RSI Ipercomprato (long guard)" value={exhaustionRsiHigh} onChange={setExhaustionRsiHigh} step="1" min="55" max="85" unit="" />
                         </Tooltip>
                         <Tooltip text="Se il rendimento delle ultime 48 candele 4H supera ±N%, il mercato è overextended — la guard si attiva anche senza RSI estremo. Default: 6%" pos="top" width="wide">
-                          <NumInput label="Soglia Rendimento 48 bar" value={exhaustionRet48} onChange={setExhaustionRet48} step="0.5" min="2" max="20" unit="%" />
+                          <NumInput label="Soglia Rendimento 48 bar (≈8gg)" value={exhaustionRet48} onChange={setExhaustionRet48} step="0.5" min="2" max="20" unit="%" />
                         </Tooltip>
                         <Tooltip text="Quanto viene alzata la soglia direzionale quando la guard scatta. Es. 0.06 con threshold 0.62 → richiede 0.68 per entrare. Default: 0.06" pos="top" width="wide">
                           <NumInput label="Boost Soglia (Δ threshold)" value={exhaustionBoost} onChange={setExhaustionBoost} step="0.01" min="0.01" max="0.20" unit="" />
@@ -3866,6 +4009,22 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                       <div className="pl-1">
                         <Tooltip text="Limite massimo di permanenza per trade aperti durante esaurimento. Default: 2 bar (8h)" pos="top" width="wide">
                           <NumInput label="Barre massime (4H)" value={exhaustionMaxHoldBars} onChange={setExhaustionMaxHoldBars} step="1" min="1" max="12" unit="bar" />
+                        </Tooltip>
+                      </div>
+                    )}
+                    <Toggle
+                      label="Transition Guard"
+                      desc="Complementare all'Exhaustion Guard: alza entrambe le soglie in proporzione a transition_risk quando il RegimeDetector segnala che il trend sta finendo. Default OFF."
+                      checked={transitionGuard}
+                      onChange={setTransitionGuard}
+                    />
+                    {transitionGuard && (
+                      <div className="pl-1 space-y-2">
+                        <Tooltip text="Boost massimo alla soglia quando transition_risk = 1.0. Es. 0.05 → soglia 0.65 con base 0.60." pos="top" width="wide">
+                          <NumInput label="Boost Massimo" value={transitionBoostMax} onChange={setTransitionBoostMax} step="0.01" min="0.02" max="0.10" unit="" />
+                        </Tooltip>
+                        <Tooltip text="Il guard si attiva solo se transition_risk ≥ questo valore. Default 0.55." pos="top" width="wide">
+                          <NumInput label="Rischio Min Attivazione" value={transitionRiskMin} onChange={setTransitionRiskMin} step="0.05" min="0.40" max="0.80" unit="" />
                         </Tooltip>
                       </div>
                     )}
@@ -4473,6 +4632,82 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                       </div>
                       <p className="text-[9px] text-emerald-700 dark:text-emerald-300/70 bg-emerald-50 dark:bg-emerald-500/5 border border-emerald-100 dark:border-emerald-500/15 rounded-lg p-2">
                         SL strutturale, FVG-SL e pullback disabilitati per il re-entry (nessuna nuova candela 4H). Statistica nei param_stats: reentry_triggered / reentry_blocked_lgbm / reentry_blocked_1h.
+                      </p>
+                    </div>
+                  )}
+                </div>
+              </section>
+
+              {/* ── Adverse Evidence Monitor ────────────────────────────────────── */}
+              <section className="space-y-5">
+                <h4 className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest flex items-center gap-2">
+                  <span className="w-1.5 h-1.5 rounded-full bg-rose-500" />
+                  Adverse Evidence Monitor
+                </h4>
+                <div className="space-y-4 bg-slate-50 dark:bg-white/[0.02] p-4 rounded-2xl border border-slate-100 dark:border-white/5">
+                  <Toggle
+                    label="Adverse Evidence Monitor"
+                    desc="Monitora il Reversal Detector contro la posizione aperta per N cicli consecutivi. Shadow = solo log. Richiede Reversal Mode nel backtest."
+                    checked={adverseMonitor}
+                    onChange={setAdverseMonitor}
+                  />
+                  {adverseMonitor && (
+                    <div className="space-y-4 pt-1">
+                      <div>
+                        <p className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest mb-2">Azione</p>
+                        <select
+                          value={adverseAction}
+                          onChange={e => setAdverseAction(e.target.value as 'shadow' | 'tighten_sl' | 'partial_close' | 'close')}
+                          className="w-full text-xs bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-slate-700 dark:text-slate-300 focus:outline-none focus:ring-1 focus:ring-rose-400"
+                        >
+                          <option value="shadow">Shadow — solo log (nessun impatto equity)</option>
+                          <option value="tighten_sl">Tighten SL — porta SL a breakeven +0.3×ATR</option>
+                          <option value="partial_close">Partial Close — chiudi % della posizione</option>
+                          <option value="close">Close — chiudi tutto</option>
+                        </select>
+                      </div>
+                      <div>
+                        <p className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest mb-2">
+                          Score Min — <span className="text-rose-500">{adverseScoreThresh}</span>
+                        </p>
+                        <input type="range" min={25} max={65} step={1} value={Math.round(parseFloat(adverseScoreThresh) * 100)}
+                          onChange={e => setAdverseScoreThresh(String(parseInt(e.target.value) / 100))}
+                          className="w-full accent-rose-500" />
+                        <div className="flex justify-between text-[9px] text-slate-400 mt-1"><span>0.25</span><span>0.65</span></div>
+                      </div>
+                      <div className="grid grid-cols-2 gap-4">
+                        <div>
+                          <p className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest mb-2">
+                            Cicli Consecutivi — <span className="text-rose-500">{adverseConfirmCycles}</span>
+                          </p>
+                          <input type="range" min={1} max={4} step={1} value={adverseConfirmCycles}
+                            onChange={e => setAdverseConfirmCycles(e.target.value)}
+                            className="w-full accent-rose-500" />
+                          <div className="flex justify-between text-[9px] text-slate-400 mt-1"><span>1</span><span>4</span></div>
+                        </div>
+                        <div>
+                          <p className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest mb-2">
+                            Hold Min (barre) — <span className="text-rose-500">{adverseMinHold}</span>
+                          </p>
+                          <input type="range" min={1} max={8} step={1} value={adverseMinHold}
+                            onChange={e => setAdverseMinHold(e.target.value)}
+                            className="w-full accent-rose-500" />
+                          <div className="flex justify-between text-[9px] text-slate-400 mt-1"><span>1</span><span>8</span></div>
+                        </div>
+                      </div>
+                      {adverseAction === 'partial_close' && (
+                        <div>
+                          <p className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest mb-2">
+                            % da Chiudere — <span className="text-rose-500">{adversePartialPct}%</span>
+                          </p>
+                          <input type="range" min={25} max={75} step={5} value={adversePartialPct}
+                            onChange={e => setAdversePartialPct(e.target.value)}
+                            className="w-full accent-rose-500" />
+                          <div className="flex justify-between text-[9px] text-slate-400 mt-1"><span>25%</span><span>75%</span></div>
+                        </div>
+                      )}
+                      <p className="text-[9px] text-rose-700 dark:text-rose-300/70 bg-rose-50 dark:bg-rose-500/5 border border-rose-100 dark:border-rose-500/15 rounded-lg p-2">
+                        Shadow mode non altera l&apos;equity — serve solo a costruire la statistica pm_adverse_monitor per calibrare prima di portare in live.
                       </p>
                     </div>
                   )}

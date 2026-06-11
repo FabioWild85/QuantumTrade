@@ -331,7 +331,7 @@ class ReversalZoneDetector:
         bear_total = sum(self.WEIGHTS[c] * bear[c] for c in self.WEIGHTS)
         bull_total = sum(self.WEIGHTS[c] * bull[c] for c in self.WEIGHTS)
 
-        score_thr = getattr(cfg, "reversal_score_threshold", 0.72)
+        score_thr = getattr(cfg, "reversal_score_threshold", 0.34)
         if bear_total >= bull_total and bear_total >= score_thr:
             direction  = "short"
             score_val  = bear_total

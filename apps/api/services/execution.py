@@ -297,6 +297,10 @@ class BotConfig:
         # Exhaustion Max Hold (Feature E)
         self.exhaustion_max_hold_enabled = kw.get("exhaustion_max_hold_enabled", False)
         self.exhaustion_max_hold_bars    = kw.get("exhaustion_max_hold_bars",    2)
+        # Transition Guard
+        self.transition_guard_enabled = kw.get("transition_guard_enabled", False)
+        self.transition_boost_max     = kw.get("transition_boost_max",     0.05)
+        self.transition_risk_min      = kw.get("transition_risk_min",      0.55)
         # Pullback Entry — delayed entry on strong impulse candles
         self.pullback_entry_enabled    = kw.get("pullback_entry_enabled",    False)
         self.pullback_impulse_atr_mult = kw.get("pullback_impulse_atr_mult", 1.2)
@@ -368,6 +372,15 @@ class BotConfig:
         self.reentry_size_factor        = kw.get("reentry_size_factor",          0.65)  # position size relative to normal (less confidence → less risk)
         self.reentry_sl_atr_mult        = kw.get("reentry_sl_atr_mult",          1.5)   # ATR mult for SL (tighter than original 2.0)
         self.reentry_tp_atr_mult        = kw.get("reentry_tp_atr_mult",          3.5)   # ATR mult for TP
+        # ── Adverse Evidence Monitor ──────────────────────────────────────────
+        # Runs per-cycle against open position using self._last_reversal_result.
+        # Requires reversal_mode_enabled=True. Start with shadow to calibrate.
+        self.adverse_monitor_enabled  = kw.get("adverse_monitor_enabled",  False)
+        self.adverse_action           = kw.get("adverse_action",           "shadow")
+        self.adverse_score_threshold  = kw.get("adverse_score_threshold",  0.40)
+        self.adverse_confirm_cycles   = kw.get("adverse_confirm_cycles",   2)
+        self.adverse_min_hold_bars    = kw.get("adverse_min_hold_bars",    3)
+        self.adverse_partial_pct      = kw.get("adverse_partial_pct",      0.50)
 
     def model_dump(self) -> dict:
         return self.__dict__
@@ -592,6 +605,8 @@ class ExecutionEngine:
                 "bars_held":                    0,
                 "lgbm_strikes":                 0,
                 "trend_strikes":                0,
+                "adverse_strikes":              0,
+                "adverse_score":                0.0,
                 "be_sl_applied":                False,
                 "sl_trailing_active":           False,
                 "high_water":                   price,
@@ -738,6 +753,8 @@ class ExecutionEngine:
             "bars_held":              0,
             "lgbm_strikes":           0,
             "trend_strikes":          0,
+            "adverse_strikes":        0,
+            "adverse_score":          0.0,
             "be_sl_applied":          False,
             "sl_trailing_active":     False,
             "high_water":             hl_pos["entry_price"],
@@ -758,6 +775,8 @@ class ExecutionEngine:
                     "bars_held":               saved_state.get("bars_held", 0),
                     "lgbm_strikes":            saved_state.get("lgbm_strikes", 0),
                     "trend_strikes":           saved_state.get("trend_strikes", 0),
+                    "adverse_strikes":         saved_state.get("adverse_strikes", 0),
+                    "adverse_score":           saved_state.get("adverse_score", 0.0),
                     "be_sl_applied":           saved_state.get("be_sl_applied", False),
                     "sl_trailing_active":      saved_state.get("sl_trailing_active", False),
                     "high_water":              saved_state.get("high_water") or hl_pos["entry_price"],
@@ -954,6 +973,8 @@ class ExecutionEngine:
                     "bars_held":               self._position.get("bars_held", 0),
                     "lgbm_strikes":            self._position.get("lgbm_strikes", 0),
                     "trend_strikes":           self._position.get("trend_strikes", 0),
+                    "adverse_strikes":         self._position.get("adverse_strikes", 0),
+                    "adverse_score":           self._position.get("adverse_score", 0.0),
                     "be_sl_applied":           self._position.get("be_sl_applied", False),
                     "sl_trailing_active":      self._position.get("sl_trailing_active", False),
                     "high_water":              self._position.get("high_water"),
@@ -1731,6 +1752,10 @@ class ExecutionEngine:
             # Feature E: Exhaustion Max Hold (DecisionResult flag only — consumed by open_position)
             exhaustion_max_hold_enabled = getattr(cfg, "exhaustion_max_hold_enabled", False),
             exhaustion_max_hold_bars    = getattr(cfg, "exhaustion_max_hold_bars",    2),
+            # Transition Guard
+            transition_guard_enabled    = getattr(cfg, "transition_guard_enabled", False),
+            transition_boost_max        = getattr(cfg, "transition_boost_max",     0.05),
+            transition_risk_min         = getattr(cfg, "transition_risk_min",      0.55),
         )
         result = decision_engine.decide(
             features=latest,
@@ -2262,23 +2287,24 @@ class ExecutionEngine:
         c2_dir    = c2_out.get("c2_dir_prob", 0.5)
         ensemble  = lgbm_w * lgbm_p + chronos_w * c2_dir
 
-        if is_long:
-            dir_score = max(0.0, (ensemble - 0.5) / 0.5) * 100.0
-        else:
-            dir_score = max(0.0, (0.5 - ensemble) / 0.5) * 100.0
+        p_in_dir  = ensemble if is_long else (1.0 - ensemble)
+        dir_score = p_in_dir * 100.0  # 0%→0, 50%→50 (neutro), 100%→100
 
         adx       = float(features.get("adx_14") or 0.0)
-        adx_score = min(100.0, max(0.0, (adx - 15.0) / 25.0 * 100.0))
+        adx_score = min(100.0, max(0.0, (adx - 15.0) / 20.0 * 100.0))  # ADX 25→50, 35→100
 
         d_regime    = int(features.get("d_regime") or 0)
         mtf_aligned = float(features.get("mtf_aligned") or 0.0)
         dir_sign    = 1 if is_long else -1
-        if d_regime * dir_sign > 0 and mtf_aligned * dir_sign > 0:
-            mtf_score = 100.0
-        elif d_regime * dir_sign > 0 or mtf_aligned * dir_sign > 0:
-            mtf_score = 50.0
-        else:
-            mtf_score = 0.0
+        d_agree  = d_regime    * dir_sign > 0
+        d_oppose = d_regime    * dir_sign < 0
+        m_agree  = mtf_aligned * dir_sign > 0
+        m_oppose = mtf_aligned * dir_sign < 0
+        if d_agree and m_agree:       mtf_score = 100.0  # entrambi allineati
+        elif d_agree or m_agree:      mtf_score = 70.0   # uno allineato, l'altro neutro
+        elif d_oppose and m_oppose:   mtf_score = 0.0    # entrambi contro
+        elif d_oppose or m_oppose:    mtf_score = 25.0   # uno contro, l'altro neutro
+        else:                         mtf_score = 45.0   # entrambi neutri
 
         if chronos_enabled:
             c2_cont = c2_out.get("c2_cont_prob", 0.0) * 100.0
@@ -2380,16 +2406,19 @@ class ExecutionEngine:
                 result["ml_pending"] = False
             else:
                 # No reliable ML data — structural only (ADX + MTF, equal weights)
-                adx_s = min(100.0, max(0.0, (adx_14 - 15.0) / 25.0 * 100.0))
+                adx_s = min(100.0, max(0.0, (adx_14 - 15.0) / 20.0 * 100.0))  # ADX 25→50, 35→100
                 dir_sign = 1 if side == "long" else -1
                 d_regime_v  = int(features_approx.get("d_regime") or 0)
                 mtf_v       = float(features_approx.get("mtf_aligned") or 0.0)
-                if d_regime_v * dir_sign > 0 and mtf_v * dir_sign > 0:
-                    mtf_s = 100.0
-                elif d_regime_v * dir_sign > 0 or mtf_v * dir_sign > 0:
-                    mtf_s = 50.0
-                else:
-                    mtf_s = 0.0
+                d_ag = d_regime_v * dir_sign > 0
+                d_op = d_regime_v * dir_sign < 0
+                m_ag = mtf_v      * dir_sign > 0
+                m_op = mtf_v      * dir_sign < 0
+                if d_ag and m_ag:      mtf_s = 100.0
+                elif d_ag or m_ag:     mtf_s = 70.0
+                elif d_op and m_op:    mtf_s = 0.0
+                elif d_op or m_op:     mtf_s = 25.0
+                else:                  mtf_s = 45.0
                 struct_score = round(0.50 * adx_s + 0.50 * mtf_s, 1)
                 result = {
                     "score":      struct_score,
@@ -2423,9 +2452,9 @@ class ExecutionEngine:
            separate component is double-counting.
 
         Score formula:
-          gate_score = max(0, (p_dir − 0.5) / 0.5) × 100
+          gate_score = p_dir × 100
           where p_dir = P(trade direction correct on 1H) from LGBM gate model.
-          Neutral (50%) → 0,  strong (100%) → 100, below neutral → 0 (capped).
+          Neutral (50%) → 50,  strong (100%) → 100,  weak (0%) → 0.
         """
         is_long = (side == "long")
         now_iso = datetime.now(timezone.utc).isoformat()
@@ -2439,7 +2468,7 @@ class ExecutionEngine:
 
             lgbm_1h_prob = self._get_lgbm_1h_prob(df_1h_feat)
             p_dir        = lgbm_1h_prob if is_long else (1.0 - lgbm_1h_prob)
-            gate_score   = max(0.0, (p_dir - 0.5) / 0.5) * 100.0
+            gate_score   = p_dir * 100.0  # 50%→50 (neutro), 100%→100
             score        = round(min(100.0, max(0.0, gate_score)), 1)
 
             return {
@@ -2486,15 +2515,17 @@ class ExecutionEngine:
                 dir_raw = 1.0 - dir_raw
             dir_score = dir_raw * 100.0
 
-            closes  = df_15m["close"].values
-            ema_len = min(8, len(closes))
-            ema8    = float(closes[-ema_len:].mean())
+            closes   = df_15m["close"].values
+            alpha    = 2.0 / (8 + 1)          # EMA-8 esponenziale
+            ema8_val = float(closes[0])
+            for _c in closes[1:]:
+                ema8_val = alpha * float(_c) + (1.0 - alpha) * ema8_val
             mark    = self._ws.latest_mark or float(closes[-1])
-            ema_pct = (mark - ema8) / (ema8 + 1e-9)
+            ema_pct = (mark - ema8_val) / (ema8_val + 1e-9)
             if not is_long:
                 ema_pct = -ema_pct
-            # ±2% → 0-100, clipped. 500× multiplier: 0.02 × 500 = 10 → 50+10=60 top.
-            ema_score = min(100.0, max(0.0, 50.0 + ema_pct * 500.0))
+            # ±1% deviazione dall'EMA → ±30 pt (range 20-80 per mosse tipiche BTC)
+            ema_score = min(100.0, max(0.0, 50.0 + ema_pct * 3000.0))
 
             score = round(min(100.0, max(0.0, 0.55 * dir_score + 0.45 * ema_score)), 1)
 
@@ -2585,10 +2616,10 @@ class ExecutionEngine:
                 display_score = round(min(100.0, max(0.0, display_score)), 1)
                 predictive    = round(predictive, 1)
 
-                if display_score >= 65:
+                if display_score >= 70:
                     label = "Forte"
-                elif display_score >= 40:
-                    label = "In indebolimento"
+                elif display_score >= 50:
+                    label = "Moderato"
                 else:
                     label = "Debole"
 
@@ -2986,6 +3017,8 @@ class ExecutionEngine:
             "bars_held":              0,
             "lgbm_strikes":           0,
             "trend_strikes":          0,
+            "adverse_strikes":        0,
+            "adverse_score":          0.0,
             "be_sl_applied":          False,
             "sl_trailing_active":     False,
             "high_water":             price,
@@ -3356,6 +3389,129 @@ class ExecutionEngine:
                         self._position["bars_held"], self._position["trend_strikes"],
                     )
                     await self._close_position(current_price, "trend_exit")
+                    return
+
+        # ── 4c. Adverse Evidence Monitor ─────────────────────────────────────
+        # Uses _last_reversal_result (already computed each cycle when reversal_mode_enabled)
+        # to detect structural evidence against the open position over N consecutive bars.
+        # Acts only after adverse_min_hold_bars; does not close if position is already gone.
+        if (
+            getattr(self.config, "adverse_monitor_enabled", False)
+            and getattr(self.config, "reversal_mode_enabled", False)
+            and self._last_reversal_result is not None
+        ):
+            _adv_side      = self._position["side"]
+            _bars_held_adv = self._position.get("bars_held", 0)
+            _min_hold_adv  = getattr(self.config, "adverse_min_hold_bars", 3)
+            _score_thr_adv = getattr(self.config, "adverse_score_threshold", 0.40)
+            _confirm_adv   = getattr(self.config, "adverse_confirm_cycles",  2)
+            _action_adv    = getattr(self.config, "adverse_action", "shadow")
+
+            # Adverse direction is opposite to open position
+            _adv_dir = "long" if _adv_side == "short" else "short"
+            _rev     = self._last_reversal_result
+
+            # Use the cached result when it agrees with the adverse direction;
+            # otherwise compute the raw adverse score from per-component sub-scores.
+            if _rev.direction == _adv_dir:
+                _adv_score = _rev.score
+                _adv_count = _rev.component_count
+            else:
+                # Winning direction differs from adverse direction: recompute adverse components.
+                # Must match the exact calling convention of each sub-scorer:
+                # _exhaustion(f, cfg, direction=) and _regime(f, regime_signal, cfg) are special.
+                from services.reversal_detector import ReversalZoneDetector as _RZD_adv
+                _rz_adv  = _RZD_adv()
+                _f_adv   = df_feat.iloc[-1].to_dict()
+                _rs_adv  = self._regime_signal  # may be None if regime detector is off
+                if _adv_dir == "long":
+                    _adv_comps = {
+                        "structural": _rz_adv._structural_bull(_f_adv, self.config),
+                        "momentum":   _rz_adv._momentum_bull(_f_adv),
+                        "exhaustion": _rz_adv._exhaustion(_f_adv, self.config, direction="bull"),
+                        "volume":     _rz_adv._volume_bull(_f_adv, self.config),
+                        "regime":     _rz_adv._regime(_f_adv, _rs_adv, self.config),
+                        "funding":    _rz_adv._funding_bull(_f_adv, self.config),
+                        "candle":     _rz_adv._candle_bull(_f_adv, self.config),
+                    }
+                else:
+                    _adv_comps = {
+                        "structural": _rz_adv._structural_bear(_f_adv, self.config),
+                        "momentum":   _rz_adv._momentum_bear(_f_adv),
+                        "exhaustion": _rz_adv._exhaustion(_f_adv, self.config, direction="bear"),
+                        "volume":     _rz_adv._volume_bear(_f_adv, self.config),
+                        "regime":     _rz_adv._regime(_f_adv, _rs_adv, self.config),
+                        "funding":    _rz_adv._funding_bear(_f_adv, self.config),
+                        "candle":     _rz_adv._candle_bear(_f_adv, self.config),
+                    }
+                _comp_min_adv = getattr(self.config, "reversal_component_min_score", 0.40)
+                _adv_score = sum(_rz_adv.WEIGHTS[c] * _adv_comps[c] for c in _rz_adv.WEIGHTS)
+                _adv_count = sum(1 for v in _adv_comps.values() if v > _comp_min_adv)
+
+            self._position["adverse_score"] = round(_adv_score, 3)
+            if _bars_held_adv >= _min_hold_adv and _adv_score >= _score_thr_adv and _adv_count >= 2:
+                self._position["adverse_strikes"] = self._position.get("adverse_strikes", 0) + 1
+                log.info(
+                    "AdverseMonitor [%s]: score=%.3f components=%d strikes=%d/%d",
+                    _adv_dir.upper(), _adv_score, _adv_count,
+                    self._position["adverse_strikes"], _confirm_adv,
+                )
+            else:
+                if self._position.get("adverse_strikes", 0) > 0:
+                    log.debug("AdverseMonitor: strikes reset (score=%.3f)", _adv_score)
+                self._position["adverse_strikes"] = 0
+
+            if self._position.get("adverse_strikes", 0) >= _confirm_adv:
+                self._position["adverse_strikes"] = 0
+                log.warning(
+                    "AdverseMonitor TRIGGERED: action=%s pos=%s score=%.3f bars_held=%d",
+                    _action_adv, _adv_side, _adv_score, _bars_held_adv,
+                )
+                if _action_adv == "shadow":
+                    pass  # observation only — log is sufficient
+                elif _action_adv == "tighten_sl":
+                    _new_sl_adv = (
+                        current_price + atr_val * 0.3 if _adv_side == "short"
+                        else current_price - atr_val * 0.3
+                    )
+                    _old_sl_adv = self._position.get("stop_loss", _new_sl_adv)
+                    _should_tighten = (
+                        (_adv_side == "short" and _new_sl_adv < _old_sl_adv) or
+                        (_adv_side == "long"  and _new_sl_adv > _old_sl_adv)
+                    )
+                    if _should_tighten:
+                        self._position["stop_loss"] = _new_sl_adv
+                        log.info("AdverseMonitor: SL tightened %.2f → %.2f", _old_sl_adv, _new_sl_adv)
+                        asyncio.create_task(self._emit_trade_event("adverse_tighten_sl", {
+                            "sl_old": _old_sl_adv, "sl_new": _new_sl_adv,
+                            "adverse_score": round(_adv_score, 3),
+                        }))
+                elif _action_adv == "partial_close":
+                    _pct_adv = getattr(self.config, "adverse_partial_pct", 0.50)
+                    _frac_adv = _pct_adv
+                    _sz_adv   = self._position["size_usd"] * _frac_adv
+                    _ct_adv   = round(self._position["size_contracts"] * _frac_adv, 4)
+                    _pnl_pct_adv = (
+                        (current_price - entry) / entry * 100 if side == "long"
+                        else (entry - current_price) / entry * 100
+                    )
+                    _fee_adv  = _sz_adv * HL_TAKER_FEE
+                    _pnl_adv  = _sz_adv * _pnl_pct_adv / 100 - _fee_adv
+                    self._equity                       += _pnl_adv
+                    self._position["size_usd"]         *= (1.0 - _frac_adv)
+                    self._position["size_contracts"]    = round(self._position["size_contracts"] * (1.0 - _frac_adv), 4)
+                    log.info(
+                        "AdverseMonitor: partial close %.0f%% @ %.2f | pnl=%.2f%% ($%.2f)",
+                        _pct_adv * 100, current_price, _pnl_pct_adv * _frac_adv, _pnl_adv,
+                    )
+                    asyncio.create_task(self._emit_trade_event("adverse_partial_close", {
+                        "pct_closed": _pct_adv, "price": current_price,
+                        "pnl_usd": round(_pnl_adv, 2), "adverse_score": round(_adv_score, 3),
+                    }))
+                    if self.mode == "live":
+                        await self._submit_partial_close(_ct_adv, current_price, side)
+                elif _action_adv == "close":
+                    await self._close_position(current_price, "adverse_monitor")
                     return
 
         # ── 5. Max hold bars: time-based exit ─────────────────────────────────
