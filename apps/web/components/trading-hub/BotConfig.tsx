@@ -93,6 +93,7 @@ interface Config {
   // Exhaustion Guard thresholds
   exhaustion_rsi_low: number;
   exhaustion_rsi_high: number;
+  exhaustion_ret_bars: number;
   exhaustion_ret48_pct: number;
   exhaustion_boost: number;
   // ATR% Volatility Gate
@@ -141,6 +142,13 @@ interface Config {
   transition_guard_enabled: boolean;
   transition_boost_max: number;
   transition_risk_min: number;
+  // Reversal Stand-Aside Gate
+  reversal_standaside_enabled: boolean;
+  reversal_standaside_adx_frac: number;
+  reversal_standaside_min_bars: number;
+  // Post-Capitulation Block Gate
+  post_capitulation_block_enabled: boolean;
+  post_capitulation_ret_thr: number;
   // Pullback Entry
   pullback_entry_enabled: boolean;
   pullback_impulse_atr_mult: number;
@@ -327,6 +335,7 @@ const DEFAULTS: Config = {
   // Exhaustion Guard thresholds
   exhaustion_rsi_low: 28,
   exhaustion_rsi_high: 72,
+  exhaustion_ret_bars: 48,
   exhaustion_ret48_pct: 6.0,
   exhaustion_boost: 0.06,
   // ATR% Volatility Gate
@@ -375,6 +384,13 @@ const DEFAULTS: Config = {
   transition_guard_enabled: false,
   transition_boost_max: 0.05,
   transition_risk_min: 0.55,
+  // Reversal Stand-Aside Gate
+  reversal_standaside_enabled: false,
+  reversal_standaside_adx_frac: 0.60,
+  reversal_standaside_min_bars: 14,
+  // Post-Capitulation Block Gate
+  post_capitulation_block_enabled: false,
+  post_capitulation_ret_thr: 0.12,
   // Pullback Entry
   pullback_entry_enabled: false,
   pullback_impulse_atr_mult: 1.2,
@@ -1528,1143 +1544,6 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
               </div>
             )}
           </div>
-        </div>
-      </Section>
-
-      {/* Options IV Bias */}
-      <Section title="Options IV Bias — Sizing Adattivo" description="Riduce la size delle trade quando la Implied Volatility di Deribit è in zona estrema (alta incertezza del mercato). Dati gratuiti, nessuna API key richiesta. Non modifica i segnali — agisce solo sul rischio per trade.">
-        <div className={`flex flex-col gap-3 mb-6 pb-6 border-b transition-colors duration-200 ${config.options_bias_enabled ? 'border-violet-200 dark:border-violet-500/25' : 'border-slate-100 dark:border-white/5'}`}>
-          <Tooltip text="Fetcha la IV ATM 7-day da Deribit ogni ciclo. Quando il percentile rolling 90gg supera la soglia alta (default 80°), la size viene moltiplicata per iv_size_factor (default 0.70). In regime a bassa IV (< soglia bassa) la size rimane piena. Non richiede retrain per funzionare — agisce direttamente su size_factor nel DecisionResult." width="wide" pos="bottom">
-            <label className="flex items-center gap-3 cursor-pointer group">
-              <div className="relative">
-                <input type="checkbox" className="sr-only" checked={config.options_bias_enabled} onChange={e => setConfig(c => ({ ...c, options_bias_enabled: e.target.checked }))} />
-                <div className={`w-9 h-[18px] rounded-full transition-all duration-300 ${config.options_bias_enabled ? 'bg-violet-600' : 'bg-slate-200 dark:bg-white/10'}`} />
-                <div className={`absolute top-[3px] left-[3px] w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.options_bias_enabled ? 'translate-x-[18px]' : ''}`} />
-              </div>
-              <div className="flex-1">
-                <p className={`text-xs font-bold leading-tight transition-colors ${config.options_bias_enabled ? 'text-violet-600 dark:text-violet-400' : 'text-slate-700 dark:text-slate-300'}`}>
-                  Options IV Bias {config.options_bias_enabled && <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-violet-100 dark:bg-violet-500/20 text-violet-600 dark:text-violet-400 uppercase tracking-wider">Attivo</span>}
-                </p>
-                <p className="text-[10px] text-slate-400 dark:text-slate-500 mt-0.5">Deribit ATM IV 7d · percentile rolling 90gg · size ridotta in alta-IV</p>
-              </div>
-            </label>
-          </Tooltip>
-          {config.options_bias_enabled && (
-            <div className="mt-3 pt-3 border-t border-violet-100 dark:border-violet-500/15 flex flex-col gap-4">
-              <div className="flex flex-col gap-1">
-                <div className="flex items-center justify-between">
-                  <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">Soglia IV alta (size ridotta)</span>
-                  <span className="text-[10px] font-bold text-violet-600 dark:text-violet-400">{config.iv_high_percentile.toFixed(0)}°</span>
-                </div>
-                <input type="range" min={50} max={99} step={1} value={config.iv_high_percentile}
-                  onChange={e => setConfig(c => ({ ...c, iv_high_percentile: parseFloat(e.target.value) }))}
-                  className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-violet-500" />
-                <p className="text-[9px] text-slate-400 dark:text-slate-500">Percentile rolling 90gg oltre cui scatta la riduzione. Default: 80°</p>
-              </div>
-              <div className="flex flex-col gap-1">
-                <div className="flex items-center justify-between">
-                  <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">Soglia IV bassa (log only)</span>
-                  <span className="text-[10px] font-bold text-violet-600 dark:text-violet-400">{config.iv_low_percentile.toFixed(0)}°</span>
-                </div>
-                <input type="range" min={1} max={49} step={1} value={config.iv_low_percentile}
-                  onChange={e => setConfig(c => ({ ...c, iv_low_percentile: parseFloat(e.target.value) }))}
-                  className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-violet-500" />
-                <p className="text-[9px] text-slate-400 dark:text-slate-500">Al di sotto di questa soglia viene loggato "low-IV regime" ma size rimane piena. Default: 20°</p>
-              </div>
-              <div className="flex flex-col gap-1">
-                <div className="flex items-center justify-between">
-                  <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">IV Size Factor</span>
-                  <span className="text-[10px] font-bold text-violet-600 dark:text-violet-400">{(config.iv_size_factor * 100).toFixed(0)}%</span>
-                </div>
-                <input type="range" min={0.2} max={1.0} step={0.05} value={config.iv_size_factor}
-                  onChange={e => setConfig(c => ({ ...c, iv_size_factor: parseFloat(e.target.value) }))}
-                  className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-violet-500" />
-                <p className="text-[9px] text-slate-400 dark:text-slate-500">Moltiplicatore size in alta-IV. 0.70 = 70% della size normale. Default: 0.70</p>
-              </div>
-              <div className="p-2 rounded-lg bg-violet-50 dark:bg-violet-500/5 border border-violet-100 dark:border-violet-500/15">
-                <p className="text-[9px] text-violet-600 dark:text-violet-400 font-medium">2 feature aggiuntive per LGBM (al prossimo retrain): <code className="font-mono">iv_7d</code> · <code className="font-mono">iv_7d_percentile</code></p>
-                <p className="text-[9px] text-slate-400 dark:text-slate-500 mt-1">Il sizing IV è immediato (nessun retrain necessario). Le feature diventano input LGBM solo dopo un retrain esplicito con questo toggle attivo.</p>
-              </div>
-            </div>
-          )}
-        </div>
-      </Section>
-
-      {/* Bounce-Fade Entry */}
-      <Section title="Bounce-Fade Entry — Entry su Rimbalzi Controtendenza" description="Su segnali controtendenza (es. short mentre il 4H rimbalza), invece di entrare subito il bot piazza un limite ancorato alla resistenza sovrastante: entry più alto, SL stretto, R:R migliore. Size congelata (nessuna esplosione). Fallback a mercato a scadenza. Default OFF — validare in backtest prima del live.">
-        <div className={`flex flex-col gap-3 mb-6 pb-6 border-b transition-colors duration-200 ${config.bounce_fade_enabled ? 'border-rose-200 dark:border-rose-500/25' : 'border-slate-100 dark:border-white/5'}`}>
-          <label className="flex items-center gap-3 cursor-pointer group">
-            <div className="relative">
-              <input type="checkbox" className="sr-only" checked={config.bounce_fade_enabled} onChange={e => setConfig(c => ({ ...c, bounce_fade_enabled: e.target.checked }))} />
-              <div className={`w-9 h-[18px] rounded-full transition-all duration-300 ${config.bounce_fade_enabled ? 'bg-rose-600' : 'bg-slate-200 dark:bg-white/10'}`} />
-              <div className={`absolute top-[3px] left-[3px] w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.bounce_fade_enabled ? 'translate-x-[18px]' : ''}`} />
-            </div>
-            <div>
-              <p className={`text-xs font-bold leading-tight transition-colors ${config.bounce_fade_enabled ? 'text-rose-600 dark:text-rose-400' : 'text-slate-700 dark:text-slate-300'}`}>
-                Bounce-Fade Entry {config.bounce_fade_enabled && <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-rose-100 dark:bg-rose-500/20 text-rose-600 dark:text-rose-400 uppercase tracking-wider">Attivo</span>}
-              </p>
-              <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5">
-                {config.bounce_fade_enabled ? `Limite a ${Math.round(config.bounce_fade_penetration_pct * 100)}% verso la resistenza (cap ${config.bounce_fade_offset_atr}×ATR) · finestra ${config.bounce_fade_window_bars} bar · ${config.bounce_fade_market_fallback ? 'fallback mercato' : 'no fallback'}` : 'Entry immediata su ogni segnale (comportamento attuale)'}
-              </p>
-            </div>
-          </label>
-
-          {config.bounce_fade_enabled && (
-            <div className="flex flex-col gap-3 mt-1">
-              {/* Penetration */}
-              <div className="flex flex-col gap-1">
-                <div className="flex justify-between items-center">
-                  <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">Penetration verso resistenza</span>
-                  <span className="text-[10px] font-bold text-rose-600 dark:text-rose-400">{Math.round(config.bounce_fade_penetration_pct * 100)}%</span>
-                </div>
-                <input type="range" min={0.20} max={0.80} step={0.05} value={config.bounce_fade_penetration_pct}
-                  onChange={e => setConfig(c => ({ ...c, bounce_fade_penetration_pct: parseFloat(e.target.value) }))}
-                  className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-rose-500" />
-                <p className="text-[9px] text-slate-400 dark:text-slate-500">Frazione della distanza verso la resistenza. Più basso = riempie più spesso; più alto = entry migliore ma più fallback. Default 50%.</p>
-              </div>
-              {/* Offset cap */}
-              <div className="flex flex-col gap-1">
-                <div className="flex justify-between items-center">
-                  <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">Cap offset (×ATR)</span>
-                  <span className="text-[10px] font-bold text-rose-600 dark:text-rose-400">{config.bounce_fade_offset_atr.toFixed(2)}×</span>
-                </div>
-                <input type="range" min={0.20} max={1.50} step={0.05} value={config.bounce_fade_offset_atr}
-                  onChange={e => setConfig(c => ({ ...c, bounce_fade_offset_atr: parseFloat(e.target.value) }))}
-                  className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-rose-500" />
-                <p className="text-[9px] text-slate-400 dark:text-slate-500">Il limite non si allontana più di N×ATR dal prezzo (rete di sicurezza per i fill). Default 0.50.</p>
-              </div>
-              {/* Window */}
-              <div className="flex flex-col gap-1">
-                <div className="flex justify-between items-center">
-                  <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">Finestra (candele 4H)</span>
-                  <span className="text-[10px] font-bold text-rose-600 dark:text-rose-400">{config.bounce_fade_window_bars} bar</span>
-                </div>
-                <input type="range" min={1} max={4} step={1} value={config.bounce_fade_window_bars}
-                  onChange={e => setConfig(c => ({ ...c, bounce_fade_window_bars: parseInt(e.target.value) }))}
-                  className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-rose-500" />
-                <p className="text-[9px] text-slate-400 dark:text-slate-500">Candele 4H di attesa (2 = 8h). Alla scadenza: fallback a mercato o annulla. Default 2.</p>
-              </div>
-              {/* Min R:R */}
-              <div className="flex flex-col gap-1">
-                <div className="flex justify-between items-center">
-                  <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">R:R minimo</span>
-                  <span className="text-[10px] font-bold text-rose-600 dark:text-rose-400">{config.bounce_fade_min_rr.toFixed(1)}</span>
-                </div>
-                <input type="range" min={1.0} max={3.0} step={0.1} value={config.bounce_fade_min_rr}
-                  onChange={e => setConfig(c => ({ ...c, bounce_fade_min_rr: parseFloat(e.target.value) }))}
-                  className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-rose-500" />
-                <p className="text-[9px] text-slate-400 dark:text-slate-500">R:R minimo per accettare il fill al limite. Sotto soglia → trade annullato. Default 1.5.</p>
-              </div>
-              {/* SL buffer */}
-              <div className="flex flex-col gap-1">
-                <div className="flex justify-between items-center">
-                  <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">Buffer SL (×ATR)</span>
-                  <span className="text-[10px] font-bold text-rose-600 dark:text-rose-400">{config.bounce_fade_sl_buffer_atr.toFixed(2)}×</span>
-                </div>
-                <input type="range" min={0.10} max={1.00} step={0.05} value={config.bounce_fade_sl_buffer_atr}
-                  onChange={e => setConfig(c => ({ ...c, bounce_fade_sl_buffer_atr: parseFloat(e.target.value) }))}
-                  className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-rose-500" />
-                <p className="text-[9px] text-slate-400 dark:text-slate-500">Buffer SL sopra la resistenza. Default 0.30.</p>
-              </div>
-              {/* SL min floor */}
-              <div className="flex flex-col gap-1">
-                <div className="flex justify-between items-center">
-                  <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">SL minimo (floor ×ATR)</span>
-                  <span className="text-[10px] font-bold text-rose-600 dark:text-rose-400">{config.bounce_fade_sl_min_atr.toFixed(2)}×</span>
-                </div>
-                <input type="range" min={0.10} max={1.50} step={0.05} value={config.bounce_fade_sl_min_atr}
-                  onChange={e => setConfig(c => ({ ...c, bounce_fade_sl_min_atr: parseFloat(e.target.value) }))}
-                  className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-rose-500" />
-                <p className="text-[9px] text-slate-400 dark:text-slate-500">Distanza minima dello SL dall'entry (anti-rumore). Default 0.80.</p>
-              </div>
-              {/* Toggles */}
-              <label className="flex items-center gap-2 cursor-pointer mt-1">
-                <input type="checkbox" checked={config.bounce_fade_counter_trend_only} onChange={e => setConfig(c => ({ ...c, bounce_fade_counter_trend_only: e.target.checked }))} className="accent-rose-500" />
-                <span className="text-[10px] text-slate-600 dark:text-slate-400">Solo segnali controtendenza (ret_6 opposto al segnale)</span>
-              </label>
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input type="checkbox" checked={config.bounce_fade_market_fallback} onChange={e => setConfig(c => ({ ...c, bounce_fade_market_fallback: e.target.checked }))} className="accent-rose-500" />
-                <span className="text-[10px] text-slate-600 dark:text-slate-400">Fallback a mercato alla scadenza se il segnale persiste</span>
-              </label>
-            </div>
-          )}
-        </div>
-      </Section>
-
-      {/* Pullback Entry */}
-      <Section title="Pullback Entry — Timing Ottimizzato" description="Quando una candela 4H ha un range > N×ATR (impulso forte), invece di entrare subito il bot aspetta un ritracciamento tecnico. Migliora il R:R strutturalmente: entry più favorevole, SL più stretto. Default OFF — abilitare solo dopo 60+ trade live.">
-        <div className={`flex flex-col gap-3 mb-6 pb-6 border-b transition-colors duration-200 ${config.pullback_entry_enabled ? 'border-cyan-200 dark:border-cyan-500/25' : 'border-slate-100 dark:border-white/5'}`}>
-          <label className="flex items-center gap-3 cursor-pointer group">
-            <div className="relative">
-              <input type="checkbox" className="sr-only" checked={config.pullback_entry_enabled} onChange={e => setConfig(c => ({ ...c, pullback_entry_enabled: e.target.checked }))} />
-              <div className={`w-9 h-[18px] rounded-full transition-all duration-300 ${config.pullback_entry_enabled ? 'bg-cyan-600' : 'bg-slate-200 dark:bg-white/10'}`} />
-              <div className={`absolute top-[3px] left-[3px] w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.pullback_entry_enabled ? 'translate-x-[18px]' : ''}`} />
-            </div>
-            <div>
-              <p className={`text-xs font-bold leading-tight transition-colors ${config.pullback_entry_enabled ? 'text-cyan-600 dark:text-cyan-400' : 'text-slate-700 dark:text-slate-300'}`}>
-                Pullback Entry {config.pullback_entry_enabled && <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-cyan-100 dark:bg-cyan-500/20 text-cyan-600 dark:text-cyan-400 uppercase tracking-wider">Attivo</span>}
-              </p>
-              <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5">
-                {config.pullback_entry_enabled ? `Attiva su candele con corpo > ${config.pullback_impulse_atr_mult}×ATR — attende ritracciamento fino a ${config.pullback_window_h}h` : 'Entry immediata su ogni segnale (comportamento attuale)'}
-              </p>
-            </div>
-          </label>
-
-          {config.pullback_entry_enabled && (
-            <div className="flex flex-col gap-3 mt-1">
-              {/* Impulse threshold */}
-              <div className="flex flex-col gap-1">
-                <div className="flex justify-between items-center">
-                  <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">Soglia Impulso (×ATR)</span>
-                  <span className="text-[10px] font-bold text-cyan-600 dark:text-cyan-400">{config.pullback_impulse_atr_mult.toFixed(1)}×</span>
-                </div>
-                <input type="range" min={0.5} max={3.0} step={0.1} value={config.pullback_impulse_atr_mult}
-                  onChange={e => setConfig(c => ({ ...c, pullback_impulse_atr_mult: parseFloat(e.target.value) }))}
-                  className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-cyan-500" />
-                <p className="text-[9px] text-slate-400 dark:text-slate-500">Corpo candela (close−open) ≥ N×ATR. <strong>Misura solo il movimento netto, esclude shadow e doji.</strong> 1.2× = top ~7% candele (85% PB rate). 1.5× = top ~4% (87%). Default: 1.2</p>
-              </div>
-              {/* Pullback zone */}
-              <div className="flex flex-col gap-1">
-                <div className="flex justify-between items-center">
-                  <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">Profondità Pullback (×ATR)</span>
-                  <span className="text-[10px] font-bold text-cyan-600 dark:text-cyan-400">{config.pullback_zone_atr.toFixed(2)}×</span>
-                </div>
-                <input type="range" min={0.1} max={1.0} step={0.05} value={config.pullback_zone_atr}
-                  onChange={e => setConfig(c => ({ ...c, pullback_zone_atr: parseFloat(e.target.value) }))}
-                  className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-cyan-500" />
-                <p className="text-[9px] text-slate-400 dark:text-slate-500">Distanza dalla chiusura 4H che il prezzo deve raggiungere per triggerare l'entrata. 0.3 ≈ 20–30% del range candela. Default: 0.30</p>
-              </div>
-              {/* Window */}
-              <div className="flex flex-col gap-1">
-                <div className="flex justify-between items-center">
-                  <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">Finestra Attesa (ore)</span>
-                  <span className="text-[10px] font-bold text-cyan-600 dark:text-cyan-400">{config.pullback_window_h}h</span>
-                </div>
-                <input type="range" min={1} max={8} step={1} value={config.pullback_window_h}
-                  onChange={e => setConfig(c => ({ ...c, pullback_window_h: parseInt(e.target.value) }))}
-                  className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-cyan-500" />
-                <p className="text-[9px] text-slate-400 dark:text-slate-500">Ore massime di attesa. Dopo il timeout scatta il fallback (o decay). Default: 3h (prime 3 candele 1H)</p>
-              </div>
-              {/* Fallback ATR */}
-              <div className="flex flex-col gap-1">
-                <div className="flex justify-between items-center">
-                  <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">Limite Fallback (×ATR)</span>
-                  <span className="text-[10px] font-bold text-cyan-600 dark:text-cyan-400">{config.pullback_fallback_atr.toFixed(1)}×</span>
-                </div>
-                <input type="range" min={0.2} max={2.0} step={0.1} value={config.pullback_fallback_atr}
-                  onChange={e => setConfig(c => ({ ...c, pullback_fallback_atr: parseFloat(e.target.value) }))}
-                  className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-cyan-500" />
-                <p className="text-[9px] text-slate-400 dark:text-slate-500">Se scade il timeout ma il prezzo è ancora entro N×ATR dalla chiusura 4H, entra comunque. Oltre questa distanza il segnale decade. Default: 0.5</p>
-              </div>
-              <div className="p-2 rounded-lg bg-cyan-50 dark:bg-cyan-500/5 border border-cyan-100 dark:border-cyan-500/15">
-                <p className="text-[9px] text-cyan-700 dark:text-cyan-300 font-medium">Se c'è un Order Block attivo nella direzione del trade, il bot usa quel livello come zona target invece dell'ATR-based — SL strutturale più stretto.</p>
-                <p className="text-[9px] text-slate-400 dark:text-slate-500 mt-1">In live mode piazza un ordine GTC limit reale su HL. In paper mode simula l'attesa internamente. Completamente backtestabile.</p>
-              </div>
-            </div>
-          )}
-        </div>
-      </Section>
-
-      {/* Reversal Zone Detector */}
-      <Section title="Reversal Zone Detector — Inversioni Strutturali" description="Sistema parallelo al trend-following che identifica top/bottom con 7 componenti pesati (SMC, momentum, exhaustion, volume, regime, funding, candle). Entra solo quando il trend dice 'hold'. Zero impatto se disabilitato.">
-        <div className={`flex flex-col gap-3 mb-6 pb-6 border-b transition-colors duration-200 ${config.reversal_mode_enabled ? 'border-violet-200 dark:border-violet-500/25' : 'border-slate-100 dark:border-white/5'}`}>
-          <label className="flex items-center gap-3 cursor-pointer group">
-            <div className="relative">
-              <input type="checkbox" className="sr-only" checked={config.reversal_mode_enabled} onChange={e => setConfig(c => ({ ...c, reversal_mode_enabled: e.target.checked }))} />
-              <div className={`w-9 h-[18px] rounded-full transition-all duration-300 ${config.reversal_mode_enabled ? 'bg-violet-600' : 'bg-slate-200 dark:bg-white/10'}`} />
-              <div className={`absolute top-[3px] left-[3px] w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.reversal_mode_enabled ? 'translate-x-[18px]' : ''}`} />
-            </div>
-            <div>
-              <p className={`text-xs font-bold leading-tight transition-colors ${config.reversal_mode_enabled ? 'text-violet-600 dark:text-violet-400' : 'text-slate-700 dark:text-slate-300'}`}>
-                Reversal Detector {config.reversal_mode_enabled && <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-violet-100 dark:bg-violet-500/20 text-violet-600 dark:text-violet-400 uppercase tracking-wider">Attivo</span>}
-              </p>
-              <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5">
-                {config.reversal_mode_enabled ? `Score ≥ ${config.reversal_score_threshold} · ≥ ${config.reversal_min_components} componenti · entry ${config.reversal_entry_mode === 'limit_retest' ? 'retest wick' : 'market close'}` : 'Disabilitato — nessun impatto sulla logica attuale'}
-              </p>
-            </div>
-          </label>
-
-          {config.reversal_mode_enabled && (
-            <div className="flex flex-col gap-3 mt-1">
-              {/* Entry Mode */}
-              <div className="flex flex-col gap-1">
-                <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">Modalità Entry</span>
-                <div className="flex gap-2">
-                  {(['limit_retest', 'close'] as const).map(m => (
-                    <button key={m} onClick={() => setConfig(c => ({ ...c, reversal_entry_mode: m }))}
-                      className={`flex-1 py-1.5 px-3 rounded-lg text-[10px] font-bold border transition-all ${config.reversal_entry_mode === m ? 'bg-violet-100 dark:bg-violet-500/20 text-violet-600 dark:text-violet-400 border-violet-300 dark:border-violet-500/40' : 'bg-slate-50 dark:bg-white/5 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-white/10 hover:border-violet-300 dark:hover:border-violet-500/30'}`}>
-                      {m === 'limit_retest' ? 'Limit Retest (↑ R:R)' : 'Market Close'}
-                    </button>
-                  ))}
-                </div>
-                <p className="text-[9px] text-slate-400 dark:text-slate-500">Limit Retest: aspetta il pullback al wick → SL più stretto, R:R migliore. Market Close: entra subito alla chiusura 4H.</p>
-              </div>
-
-              {/* Score threshold */}
-              <div className="flex flex-col gap-1">
-                <div className="flex justify-between items-center">
-                  <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">Score Minimo</span>
-                  <span className="text-[10px] font-bold text-violet-600 dark:text-violet-400">{config.reversal_score_threshold.toFixed(2)}</span>
-                </div>
-                <input type="range" min={0.25} max={0.70} step={0.01} value={config.reversal_score_threshold}
-                  onChange={e => setConfig(c => ({ ...c, reversal_score_threshold: parseFloat(e.target.value) }))}
-                  className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-violet-500" />
-                <p className="text-[9px] text-slate-400 dark:text-slate-500">Score 0–1 aggregato pesato. Default 0.34 (calibrato su BTC 4H 3 anni: P99=0.40, max=0.53). Alzare per meno segnali ma più qualità.</p>
-              </div>
-
-              {/* Min components */}
-              <div className="flex flex-col gap-1">
-                <div className="flex justify-between items-center">
-                  <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">Componenti Minime</span>
-                  <span className="text-[10px] font-bold text-violet-600 dark:text-violet-400">{config.reversal_min_components}/7</span>
-                </div>
-                <input type="range" min={2} max={7} step={1} value={config.reversal_min_components}
-                  onChange={e => setConfig(c => ({ ...c, reversal_min_components: parseInt(e.target.value) }))}
-                  className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-violet-500" />
-                <p className="text-[9px] text-slate-400 dark:text-slate-500">Componenti con score {'>'} 0.5 che devono essere attivi contemporaneamente. Default 3/7 (solo il 2% delle barre raggiunge 4 componenti).</p>
-              </div>
-
-              {/* Size factor */}
-              <div className="flex flex-col gap-1">
-                <div className="flex justify-between items-center">
-                  <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">Size Riduzione</span>
-                  <span className="text-[10px] font-bold text-violet-600 dark:text-violet-400">{Math.round(config.reversal_size_factor * 100)}%</span>
-                </div>
-                <input type="range" min={0.20} max={1.00} step={0.05} value={config.reversal_size_factor}
-                  onChange={e => setConfig(c => ({ ...c, reversal_size_factor: parseFloat(e.target.value) }))}
-                  className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-violet-500" />
-                <p className="text-[9px] text-slate-400 dark:text-slate-500">Percentuale della size normale. 70% = trade reversal più piccolo del trend. Consigliato 60–80%.</p>
-              </div>
-
-              {/* SL / TP ATR mult */}
-              <div className="grid grid-cols-2 gap-3">
-                <div className="flex flex-col gap-1">
-                  <div className="flex justify-between items-center">
-                    <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">SL (×ATR)</span>
-                    <span className="text-[10px] font-bold text-red-500 dark:text-red-400">{config.reversal_sl_atr_mult.toFixed(1)}×</span>
-                  </div>
-                  <input type="range" min={0.5} max={3.0} step={0.1} value={config.reversal_sl_atr_mult}
-                    onChange={e => setConfig(c => ({ ...c, reversal_sl_atr_mult: parseFloat(e.target.value) }))}
-                    className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-red-400" />
-                </div>
-                <div className="flex flex-col gap-1">
-                  <div className="flex justify-between items-center">
-                    <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">TP (×ATR)</span>
-                    <span className="text-[10px] font-bold text-emerald-500 dark:text-emerald-400">{config.reversal_tp_atr_mult.toFixed(1)}×</span>
-                  </div>
-                  <input type="range" min={1.0} max={6.0} step={0.1} value={config.reversal_tp_atr_mult}
-                    onChange={e => setConfig(c => ({ ...c, reversal_tp_atr_mult: parseFloat(e.target.value) }))}
-                    className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-emerald-400" />
-                </div>
-              </div>
-              <p className="text-[9px] text-slate-400 dark:text-slate-500 -mt-1">SL più stretto del trend (default 1.2 vs 2.0). TP ancorato alla close della candela segnale + N×ATR.</p>
-
-              {/* R:R min */}
-              <div className="flex flex-col gap-1">
-                <div className="flex justify-between items-center">
-                  <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">R:R Minimo</span>
-                  <span className="text-[10px] font-bold text-violet-600 dark:text-violet-400">{config.reversal_rr_min.toFixed(1)}:1</span>
-                </div>
-                <input type="range" min={1.0} max={4.0} step={0.1} value={config.reversal_rr_min}
-                  onChange={e => setConfig(c => ({ ...c, reversal_rr_min: parseFloat(e.target.value) }))}
-                  className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-violet-500" />
-                <p className="text-[9px] text-slate-400 dark:text-slate-500">Se il setup non raggiunge questo R:R, il trade viene skippato. In limit_retest mode: calibra insieme a wick_pct.</p>
-              </div>
-
-              {/* Max hold bars */}
-              <div className="flex flex-col gap-1">
-                <div className="flex justify-between items-center">
-                  <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">Max Hold (barre 4H)</span>
-                  <span className="text-[10px] font-bold text-violet-600 dark:text-violet-400">{config.reversal_max_hold_bars} bars = {config.reversal_max_hold_bars * 4}h</span>
-                </div>
-                <input type="range" min={2} max={20} step={1} value={config.reversal_max_hold_bars}
-                  onChange={e => setConfig(c => ({ ...c, reversal_max_hold_bars: parseInt(e.target.value) }))}
-                  className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-violet-500" />
-                <p className="text-[9px] text-slate-400 dark:text-slate-500">Le inversioni si esauriscono in tempi più brevi del trend. Default 6 barre = 24h. Sempre attivo per i trade reversal.</p>
-              </div>
-
-              {/* Exhaustion calibration — 3 parametri chiave per lo use case */}
-              <div className="flex flex-col gap-3 p-3 rounded-lg bg-slate-50 dark:bg-white/[0.03] border border-slate-200 dark:border-white/8">
-                <p className="text-[9px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest">Soglie Exhaustion</p>
-                <p className="text-[9px] text-slate-400 dark:text-slate-500 leading-relaxed -mt-1">
-                  Calibrano il componente che misura l'esaurimento della mossa. Ottimizzati per mosse di 2-5 giorni su BTC.
-                </p>
-                {/* ADX Peak Min */}
-                <div className="flex flex-col gap-1">
-                  <div className="flex justify-between items-center">
-                    <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">ADX Picco Min</span>
-                    <span className="text-[10px] font-bold text-violet-600 dark:text-violet-400">{config.reversal_adx_peak_min.toFixed(0)}</span>
-                  </div>
-                  <input type="range" min={20} max={50} step={1} value={config.reversal_adx_peak_min}
-                    onChange={e => setConfig(c => ({ ...c, reversal_adx_peak_min: parseFloat(e.target.value) }))}
-                    className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-violet-500" />
-                  <p className="text-[9px] text-slate-400 dark:text-slate-500">ADX minimo per attivare il check exhaustion. 30 cattura mosse di medio termine; 35+ solo trend molto forti.</p>
-                </div>
-                {/* Ret48 Extreme */}
-                <div className="flex flex-col gap-1">
-                  <div className="flex justify-between items-center">
-                    <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">Ret 48 barre estremo</span>
-                    <span className="text-[10px] font-bold text-violet-600 dark:text-violet-400">{(config.reversal_ret48_extreme * 100).toFixed(0)}%</span>
-                  </div>
-                  <input type="range" min={3} max={20} step={1} value={config.reversal_ret48_extreme * 100}
-                    onChange={e => setConfig(c => ({ ...c, reversal_ret48_extreme: parseFloat(e.target.value) / 100 }))}
-                    className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-violet-500" />
-                  <p className="text-[9px] text-slate-400 dark:text-slate-500">Return minimo sulle ultime 48 barre (8 giorni 4H) per classificare la mossa come "estrema". 6% = soglia per BTC moderato.</p>
-                </div>
-                {/* Bars in regime min */}
-                <div className="flex flex-col gap-1">
-                  <div className="flex justify-between items-center">
-                    <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">Barre Regime Min</span>
-                    <span className="text-[10px] font-bold text-violet-600 dark:text-violet-400">{config.reversal_bars_in_regime_min} bar = {(config.reversal_bars_in_regime_min * 4 / 24).toFixed(1)}gg</span>
-                  </div>
-                  <input type="range" min={5} max={80} step={5} value={config.reversal_bars_in_regime_min}
-                    onChange={e => setConfig(c => ({ ...c, reversal_bars_in_regime_min: parseInt(e.target.value) }))}
-                    className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-violet-500" />
-                  <p className="text-[9px] text-slate-400 dark:text-slate-500">Barre minime in un regime prima che l'inversione sia probabile. 20 = ~3 giorni (mosse brevi). 40+ = macro-trend.</p>
-                </div>
-              </div>
-
-              {/* Limit retest params — solo se entry_mode == limit_retest */}
-              {config.reversal_entry_mode === 'limit_retest' && (
-                <div className="flex flex-col gap-3 p-3 rounded-lg bg-violet-50 dark:bg-violet-500/5 border border-violet-100 dark:border-violet-500/15">
-                  <p className="text-[9px] font-bold text-violet-700 dark:text-violet-300 uppercase tracking-widest">Parametri Limit Retest</p>
-                  <div className="flex flex-col gap-1">
-                    <div className="flex justify-between items-center">
-                      <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">Posizione nel Wick</span>
-                      <span className="text-[10px] font-bold text-violet-600 dark:text-violet-400">{Math.round(config.reversal_retest_wick_pct * 100)}%</span>
-                    </div>
-                    <input type="range" min={0} max={1} step={0.05} value={config.reversal_retest_wick_pct}
-                      onChange={e => setConfig(c => ({ ...c, reversal_retest_wick_pct: parseFloat(e.target.value) }))}
-                      className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-violet-500" />
-                    <p className="text-[9px] text-slate-400 dark:text-slate-500">0% = estremo del wick (SL minimo, R:R massimo). 50% = metà wick. 100% = close (nessun vantaggio sul market entry).</p>
-                  </div>
-                  <div className="flex flex-col gap-1">
-                    <div className="flex justify-between items-center">
-                      <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">Scadenza (barre 4H)</span>
-                      <span className="text-[10px] font-bold text-violet-600 dark:text-violet-400">{config.reversal_retest_expiry_bars} bar{config.reversal_retest_expiry_bars > 1 ? 're' : 'a'}</span>
-                    </div>
-                    <input type="range" min={1} max={6} step={1} value={config.reversal_retest_expiry_bars}
-                      onChange={e => setConfig(c => ({ ...c, reversal_retest_expiry_bars: parseInt(e.target.value) }))}
-                      className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-violet-500" />
-                    <p className="text-[9px] text-slate-400 dark:text-slate-500">Quante candele 4H aspettare il retest prima di annullare il pending. Default 2 = 8 ore di finestra.</p>
-                  </div>
-                </div>
-              )}
-
-              {/* Toggles conflict/hold-only */}
-              <div className="flex flex-col gap-2">
-                <label className="flex items-center gap-3 cursor-pointer">
-                  <div className="relative">
-                    <input type="checkbox" className="sr-only" checked={config.reversal_conflict_block} onChange={e => setConfig(c => ({ ...c, reversal_conflict_block: e.target.checked }))} />
-                    <div className={`w-8 h-4 rounded-full transition-all duration-300 ${config.reversal_conflict_block ? 'bg-violet-600' : 'bg-slate-200 dark:bg-white/10'}`} />
-                    <div className={`absolute top-0.5 left-0.5 w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.reversal_conflict_block ? 'translate-x-4' : ''}`} />
-                  </div>
-                  <div>
-                    <p className="text-[10px] font-bold text-slate-700 dark:text-slate-300">Conflict Block</p>
-                    <p className="text-[9px] text-slate-400 dark:text-slate-500">Se trend e reversal sono in direzioni opposte, blocca entrambi (hold). Raccomandato ON.</p>
-                  </div>
-                </label>
-                <label className="flex items-center gap-3 cursor-pointer">
-                  <div className="relative">
-                    <input type="checkbox" className="sr-only" checked={config.reversal_trend_hold_only} onChange={e => setConfig(c => ({ ...c, reversal_trend_hold_only: e.target.checked }))} />
-                    <div className={`w-8 h-4 rounded-full transition-all duration-300 ${config.reversal_trend_hold_only ? 'bg-violet-600' : 'bg-slate-200 dark:bg-white/10'}`} />
-                    <div className={`absolute top-0.5 left-0.5 w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.reversal_trend_hold_only ? 'translate-x-4' : ''}`} />
-                  </div>
-                  <div>
-                    <p className="text-[10px] font-bold text-slate-700 dark:text-slate-300">Solo su Trend Hold</p>
-                    <p className="text-[9px] text-slate-400 dark:text-slate-500">OFF = apre reversal anche quando trend concorda (boost). ON = reversal solo quando trend dice no-trade. Raccomandato ON.</p>
-                  </div>
-                </label>
-                <label className="flex items-center gap-3 cursor-pointer">
-                  <div className="relative">
-                    <input type="checkbox" className="sr-only" checked={config.reversal_guard_only} onChange={e => setConfig(c => ({ ...c, reversal_guard_only: e.target.checked }))} />
-                    <div className={`w-8 h-4 rounded-full transition-all duration-300 ${config.reversal_guard_only ? 'bg-violet-600' : 'bg-slate-200 dark:bg-white/10'}`} />
-                    <div className={`absolute top-0.5 left-0.5 w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.reversal_guard_only ? 'translate-x-4' : ''}`} />
-                  </div>
-                  <div>
-                    <p className="text-[10px] font-bold text-slate-700 dark:text-slate-300">Guard Only (solo blocco)</p>
-                    <p className="text-[9px] text-slate-400 dark:text-slate-500">ON = nessun trade contro-trend; il detector blocca solo i trade trend in zona di esaurimento. OFF = comportamento normale.</p>
-                  </div>
-                </label>
-              </div>
-
-              <div className="p-2 rounded-lg bg-violet-50 dark:bg-violet-500/5 border border-violet-100 dark:border-violet-500/15">
-                <p className="text-[9px] text-violet-700 dark:text-violet-300 font-medium">SL/TP calcolati strutturalmente al momento del segnale. lgbm_exit bypassato (LGBM non è addestrato su counter-trend). Max hold sempre attivo per i reversal.</p>
-                <p className="text-[9px] text-slate-400 dark:text-slate-500 mt-1">Attivare dopo 100+ trade trend in paper. Fare un retrain prima di andare live per includere le 13 feature reversal nel modello LightGBM.</p>
-              </div>
-            </div>
-          )}
-        </div>
-      </Section>
-
-      {/* Re-entry on TP */}
-      <Section title="Re-entry on TP" description="Riapre nella stessa direzione subito dopo un Take Profit, applicando una conferma 1H e parametri di rischio dedicati (SL/TP piu stretti, size ridotta). Utile per cavalcare trend forti senza aspettare la prossima candela 4H.">
-        <div className={`flex flex-col gap-3 mb-6 pb-6 border-b transition-colors duration-200 ${config.reentry_on_tp_enabled ? 'border-emerald-200 dark:border-emerald-500/25' : 'border-slate-100 dark:border-white/5'}`}>
-          <label className="flex items-center gap-3 cursor-pointer group">
-            <div className="relative">
-              <input type="checkbox" className="sr-only" checked={config.reentry_on_tp_enabled} onChange={e => setConfig(c => ({ ...c, reentry_on_tp_enabled: e.target.checked }))} />
-              <div className={`w-10 h-5 rounded-full transition-all duration-300 ${config.reentry_on_tp_enabled ? 'bg-emerald-600' : 'bg-slate-200 dark:bg-white/10'}`} />
-              <div className={`absolute top-1 left-1 w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.reentry_on_tp_enabled ? 'translate-x-5' : ''}`} />
-            </div>
-            <div>
-              <p className={`text-sm font-bold transition-colors ${config.reentry_on_tp_enabled ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-800 dark:text-slate-200 group-hover:text-emerald-600 dark:group-hover:text-emerald-400'}`}>
-                Re-entry on TP
-                {config.reentry_on_tp_enabled && <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-emerald-100 dark:bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 uppercase tracking-wider">Attivo</span>}
-              </p>
-              <p className="text-[11px] text-slate-400 dark:text-slate-500 mt-0.5">
-                {config.reentry_on_tp_enabled
-                  ? `LGBM min ${(config.reentry_min_lgbm_pct * 100).toFixed(0)}% · size ×${config.reentry_size_factor} · SL ${config.reentry_sl_atr_mult}×ATR · TP ${config.reentry_tp_atr_mult}×ATR`
-                  : 'Disattivato — nessuna riapertura dopo TP'}
-              </p>
-            </div>
-          </label>
-        </div>
-
-        {config.reentry_on_tp_enabled && (
-          <div className="flex flex-col gap-5">
-            <label className="flex items-center gap-3 cursor-pointer">
-              <div className="relative">
-                <input type="checkbox" className="sr-only" checked={config.reentry_1h_confirm_enabled} onChange={e => setConfig(c => ({ ...c, reentry_1h_confirm_enabled: e.target.checked }))} />
-                <div className={`w-8 h-4 rounded-full transition-all duration-300 ${config.reentry_1h_confirm_enabled ? 'bg-emerald-600' : 'bg-slate-200 dark:bg-white/10'}`} />
-                <div className={`absolute top-0.5 left-0.5 w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.reentry_1h_confirm_enabled ? 'translate-x-4' : ''}`} />
-              </div>
-              <div>
-                <p className="text-[10px] font-bold text-slate-700 dark:text-slate-300">Conferma Gate 1H</p>
-                <p className="text-[9px] text-slate-400 dark:text-slate-500">Richiede conferma del modello 1H prima di riaprire. Raccomandato ON.</p>
-              </div>
-            </label>
-
-            <div>
-              <Tooltip text="Soglia minima LGBM 4H nella direzione del re-entry. Garantisce che il segnale di trend sia ancora forte al momento della riapertura." width="wide" pos="top">
-                <p className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest mb-3">
-                  LGBM 4H min — <span className="text-emerald-600 dark:text-emerald-400">{(config.reentry_min_lgbm_pct * 100).toFixed(0)}%</span>
-                </p>
-              </Tooltip>
-              <input type="range" min={55} max={85} step={1} value={Math.round(config.reentry_min_lgbm_pct * 100)}
-                onChange={e => setConfig(c => ({ ...c, reentry_min_lgbm_pct: Number(e.target.value) / 100 }))}
-                className="w-full accent-emerald-500" />
-              <div className="flex justify-between text-[9px] text-slate-400 mt-1"><span>55%</span><span>85%</span></div>
-            </div>
-
-            {config.reentry_1h_confirm_enabled && (
-              <div>
-                <Tooltip text="Soglia minima del modello 1H nella direzione del re-entry. Filtra i casi in cui il momentum intracandle non supporta la riapertura." width="wide" pos="top">
-                  <p className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest mb-3">
-                    Gate 1H min — <span className="text-emerald-600 dark:text-emerald-400">{(config.reentry_min_1h_pct * 100).toFixed(0)}%</span>
-                  </p>
-                </Tooltip>
-                <input type="range" min={50} max={75} step={1} value={Math.round(config.reentry_min_1h_pct * 100)}
-                  onChange={e => setConfig(c => ({ ...c, reentry_min_1h_pct: Number(e.target.value) / 100 }))}
-                  className="w-full accent-emerald-500" />
-                <div className="flex justify-between text-[9px] text-slate-400 mt-1"><span>50%</span><span>75%</span></div>
-              </div>
-            )}
-
-            <div>
-              <Tooltip text="Moltiplicatore di size rispetto alla size normale calcolata da RiskEngine. Riduce l'esposizione perché il re-entry avviene senza una nuova chiusura 4H." width="wide" pos="top">
-                <p className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest mb-3">
-                  Size Factor — <span className="text-emerald-600 dark:text-emerald-400">×{config.reentry_size_factor.toFixed(2)}</span>
-                </p>
-              </Tooltip>
-              <input type="range" min={30} max={100} step={5} value={Math.round(config.reentry_size_factor * 100)}
-                onChange={e => setConfig(c => ({ ...c, reentry_size_factor: Number(e.target.value) / 100 }))}
-                className="w-full accent-emerald-500" />
-              <div className="flex justify-between text-[9px] text-slate-400 mt-1"><span>×0.30</span><span>×1.00</span></div>
-            </div>
-
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <Tooltip text="Moltiplicatore ATR per lo Stop Loss del re-entry. Piu stretto del normale (default 1.5×) perche il re-entry e eseguito senza struttura fresca." width="wide" pos="top">
-                  <p className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest mb-3">
-                    SL — <span className="text-rose-500">{config.reentry_sl_atr_mult.toFixed(1)}×ATR</span>
-                  </p>
-                </Tooltip>
-                <input type="range" min={5} max={30} step={1} value={Math.round(config.reentry_sl_atr_mult * 10)}
-                  onChange={e => setConfig(c => ({ ...c, reentry_sl_atr_mult: Number(e.target.value) / 10 }))}
-                  className="w-full accent-rose-500" />
-                <div className="flex justify-between text-[9px] text-slate-400 mt-1"><span>0.5×</span><span>3.0×</span></div>
-              </div>
-              <div>
-                <Tooltip text="Moltiplicatore ATR per il Take Profit del re-entry. Piu conservativo del normale (default 3.5×) per chiudere velocemente il guadagno." width="wide" pos="top">
-                  <p className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest mb-3">
-                    TP — <span className="text-emerald-500">{config.reentry_tp_atr_mult.toFixed(1)}×ATR</span>
-                  </p>
-                </Tooltip>
-                <input type="range" min={10} max={80} step={5} value={Math.round(config.reentry_tp_atr_mult * 10)}
-                  onChange={e => setConfig(c => ({ ...c, reentry_tp_atr_mult: Number(e.target.value) / 10 }))}
-                  className="w-full accent-emerald-500" />
-                <div className="flex justify-between text-[9px] text-slate-400 mt-1"><span>1.0×</span><span>8.0×</span></div>
-              </div>
-            </div>
-
-            <div className="p-2 rounded-lg bg-emerald-50 dark:bg-emerald-500/5 border border-emerald-100 dark:border-emerald-500/15">
-              <p className="text-[9px] text-emerald-700 dark:text-emerald-300 font-medium">SL strutturale, FVG-SL e pullback entry disabilitati per il re-entry (nessuna nuova candela 4H chiusa). Il re-entry usa ATR puro per SL e TP. Bounce-fade entry disabilitato.</p>
-              <p className="text-[9px] text-slate-400 dark:text-slate-500 mt-1">Backtestabile: il motore di backtest applica la stessa logica incluso il gate 1H. Statistiche: reentry_triggered / reentry_blocked_lgbm / reentry_blocked_1h nei param_stats.</p>
-            </div>
-          </div>
-        )}
-      </Section>
-
-      {/* Regime Bias */}
-      <Section title="Regime Bias — Threshold Asimmetrico" description="Penalizza i trade contro-trend richiedendo un segnale più forte. In regime bull, i short richiedono ensemble_prob > threshold + delta; in bear, i long richiedono lo stesso. Sideways = simmetrico.">
-        <div className={`flex flex-col gap-3 mb-6 pb-6 border-b transition-colors duration-200 ${config.regime_bias_enabled ? 'border-orange-200 dark:border-orange-500/25' : 'border-slate-100 dark:border-white/5'}`}>
-          <label className="flex items-center gap-3 cursor-pointer group">
-            <div className="relative">
-              <input type="checkbox" className="sr-only" checked={config.regime_bias_enabled} onChange={e => setConfig(c => ({ ...c, regime_bias_enabled: e.target.checked }))} />
-              <div className={`w-10 h-5 rounded-full transition-all duration-300 ${config.regime_bias_enabled ? 'bg-orange-600' : 'bg-slate-200 dark:bg-white/10'}`} />
-              <div className={`absolute top-1 left-1 w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.regime_bias_enabled ? 'translate-x-5' : ''}`} />
-            </div>
-            <div>
-              <p className={`text-sm font-bold transition-colors ${config.regime_bias_enabled ? 'text-orange-600 dark:text-orange-400' : 'text-slate-800 dark:text-slate-200 group-hover:text-orange-600 dark:group-hover:text-orange-400'}`}>
-                Threshold Asimmetrico
-                {config.regime_bias_enabled && <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-orange-100 dark:bg-orange-500/20 text-orange-600 dark:text-orange-400 uppercase tracking-wider">Attivo</span>}
-              </p>
-              <p className="text-[11px] text-slate-400 dark:text-slate-500 mt-0.5">
-                {config.regime_bias_enabled
-                  ? `Penalità +${config.regime_bias_delta} per trade contro-trend · size ×${config.regime_bias_size_factor}`
-                  : 'Soglia identica per long e short indipendentemente dal regime'}
-              </p>
-            </div>
-          </label>
-        </div>
-
-        {config.regime_bias_enabled && (
-          <>
-            {/* Forced regime selector */}
-            <div className="mb-6">
-              <Tooltip text="Scegli tu il regime di mercato manualmente, oppure lascia che sia il bot a rilevarlo automaticamente da EMA20+ADX. Con 'Neutro' il bias è attivo ma non penalizza nessuna direzione." width="wide" pos="bottom">
-                <p className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest mb-3">Regime di mercato</p>
-              </Tooltip>
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                {(['auto', 'bull', 'bear', 'neutral'] as const).map(r => {
-                  const labels: Record<string, string> = { auto: 'Auto', bull: 'Bull', bear: 'Bear', neutral: 'Neutro' };
-                  const active: Record<string, string> = {
-                    auto:    'bg-slate-800 dark:bg-white text-white dark:text-slate-900 border-slate-800 dark:border-white',
-                    bull:    'bg-emerald-600 text-white border-emerald-600 shadow-emerald-500/20',
-                    bear:    'bg-rose-600 text-white border-rose-600 shadow-rose-500/20',
-                    neutral: 'bg-slate-400 dark:bg-slate-500 text-white border-transparent',
-                  };
-                  const inactive = 'bg-slate-50 dark:bg-white/5 text-slate-400 dark:text-slate-500 border-slate-100 dark:border-white/10 hover:bg-slate-100 dark:hover:bg-white/10';
-                  return (
-                    <button
-                      key={r}
-                      onClick={() => setConfig(c => ({ ...c, forced_regime: r }))}
-                      className={`py-2.5 rounded-xl text-[10px] font-bold uppercase tracking-widest transition-all border shadow-sm ${config.forced_regime === r ? active[r] : inactive}`}
-                    >
-                      {labels[r]}
-                    </button>
-                  );
-                })}
-              </div>
-              {config.forced_regime !== 'auto' && (
-                <p className="text-[10px] font-bold mt-2 text-orange-600 dark:text-orange-400">
-                  {config.forced_regime === 'bull' && 'Regime BULL manuale — gli short richiedono soglia più alta'}
-                  {config.forced_regime === 'bear' && 'Regime BEAR manuale — i long richiedono soglia più alta'}
-                  {config.forced_regime === 'neutral' && 'Regime NEUTRO — nessun bias su nessuna direzione'}
-                </p>
-              )}
-              {/* Enhanced regime detection toggle — only relevant in Auto mode */}
-              {config.forced_regime === 'auto' && (
-                <label className={`flex items-center gap-3 mt-3 p-3 rounded-xl cursor-pointer transition-colors ${config.regime_bias_enhanced ? 'bg-indigo-50 dark:bg-indigo-500/10 border border-indigo-200 dark:border-indigo-500/25' : 'bg-slate-50 dark:bg-white/[0.03] border border-slate-100 dark:border-white/5'}`}>
-                  <div className="relative shrink-0">
-                    <input type="checkbox" className="sr-only" checked={config.regime_bias_enhanced} onChange={e => setConfig(c => ({ ...c, regime_bias_enhanced: e.target.checked }))} />
-                    <div className={`w-9 h-5 rounded-full transition-all duration-300 ${config.regime_bias_enhanced ? 'bg-indigo-600' : 'bg-slate-200 dark:bg-white/10'}`} />
-                    <div className={`absolute top-1 left-1 w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.regime_bias_enhanced ? 'translate-x-4' : ''}`} />
-                  </div>
-                  <div>
-                    <p className={`text-[11px] font-bold ${config.regime_bias_enhanced ? 'text-indigo-600 dark:text-indigo-400' : 'text-slate-600 dark:text-slate-400'}`}>
-                      Regime Detection Avanzato
-                      {config.regime_bias_enhanced && <span className="ml-1.5 px-1.5 py-0.5 rounded text-[9px] font-bold bg-indigo-100 dark:bg-indigo-500/20 text-indigo-600 dark:text-indigo-400 uppercase tracking-wider">Attivo</span>}
-                    </p>
-                    <p className="text-[10px] text-slate-400 dark:text-slate-500 mt-0.5">
-                      {config.regime_bias_enhanced
-                        ? 'ADX slope · BB compression · transition_risk · confidence — delta modulato dinamicamente'
-                        : 'Semplice: EMA20 + ADX > 20 (più reattivo, meno preciso)'}
-                    </p>
-                  </div>
-                </label>
-              )}
-            </div>
-
-            <div className="mb-4">
-              <Tooltip text="Delta aggiunto alla soglia direzionale per il lato contro-trend. Es. con threshold 0.62 e delta 0.08, in regime bull i short richiedono ensemble_prob > 0.70." width="wide" pos="bottom">
-                <label className="flex items-center justify-between mb-2">
-                  <span className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest">Penalità contro-trend (delta)</span>
-                  <span className="font-mono text-sm font-bold text-orange-600 dark:text-orange-400">+{config.regime_bias_delta.toFixed(2)}</span>
-                </label>
-              </Tooltip>
-              <input
-                type="range" min="0.01" max="0.20" step="0.01"
-                value={config.regime_bias_delta}
-                onChange={e => setConfig(c => ({ ...c, regime_bias_delta: parseFloat(e.target.value) }))}
-                className="w-full h-1.5 bg-slate-200 dark:bg-white/10 rounded-full appearance-none cursor-pointer accent-orange-600"
-              />
-              <div className="flex justify-between text-[9px] font-mono text-slate-400 dark:text-slate-500 mt-1">
-                <span>0.01</span><span>0.10</span><span>0.20</span>
-              </div>
-            </div>
-
-            <div>
-              <Tooltip text="Fattore di riduzione size per i trade contro-trend che superano comunque la soglia alzata. 1.0 = size piena, 0.5 = metà size." width="wide" pos="bottom">
-                <label className="flex items-center justify-between mb-2">
-                  <span className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest">Size factor contro-trend</span>
-                  <span className="font-mono text-sm font-bold text-orange-600 dark:text-orange-400">×{config.regime_bias_size_factor.toFixed(2)}</span>
-                </label>
-              </Tooltip>
-              <input
-                type="range" min="0.30" max="1.0" step="0.05"
-                value={config.regime_bias_size_factor}
-                onChange={e => setConfig(c => ({ ...c, regime_bias_size_factor: parseFloat(e.target.value) }))}
-                className="w-full h-1.5 bg-slate-200 dark:bg-white/10 rounded-full appearance-none cursor-pointer accent-orange-600"
-              />
-              <div className="flex justify-between text-[9px] font-mono text-slate-400 dark:text-slate-500 mt-1">
-                <span>0.30</span><span>0.65</span><span>1.0</span>
-              </div>
-            </div>
-          </>
-        )}
-      </Section>
-
-
-      {/* ── Bias di Mercato — Funding / Sentiment ── */}
-      <Section title="Bias di Mercato — Funding / Sentiment" description="Adatta le soglie direzionali al posizionamento del mercato. Funding Rate alto = mercato over-long → soglia long alzata. Fear &amp; Greed estremo = contrarian → favorisce il lato opposto.">
-        {/* Funding Rate Bias */}
-        <div className={`flex flex-col gap-3 mb-6 pb-6 border-b transition-colors duration-200 ${config.funding_gate_enabled ? 'border-cyan-200 dark:border-cyan-500/25' : 'border-slate-100 dark:border-white/5'}`}>
-          <label className="flex items-center gap-3 cursor-pointer group">
-            <div className="relative">
-              <input type="checkbox" className="sr-only" checked={config.funding_gate_enabled} onChange={e => setConfig(c => ({ ...c, funding_gate_enabled: e.target.checked }))} />
-              <div className={`w-10 h-5 rounded-full transition-all duration-300 ${config.funding_gate_enabled ? 'bg-cyan-600' : 'bg-slate-200 dark:bg-white/10'}`} />
-              <div className={`absolute top-1 left-1 w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.funding_gate_enabled ? 'translate-x-5' : ''}`} />
-            </div>
-            <div>
-              <p className={`text-sm font-bold transition-colors ${config.funding_gate_enabled ? 'text-cyan-600 dark:text-cyan-400' : 'text-slate-800 dark:text-slate-200 group-hover:text-cyan-600 dark:group-hover:text-cyan-400'}`}>
-                Funding Rate Bias
-                {config.funding_gate_enabled && <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-cyan-100 dark:bg-cyan-500/20 text-cyan-600 dark:text-cyan-400 uppercase tracking-wider">Attivo</span>}
-              </p>
-              <p className="text-[11px] font-medium text-slate-400 dark:text-slate-500 leading-tight">
-                {config.funding_gate_enabled
-                  ? `Lookback ${config.funding_gate_lookback} bar · high ≥${(config.funding_high_thr * 10000).toFixed(1)}bps · extreme ≥${(config.funding_extreme_thr * 10000).toFixed(1)}bps · Δ${config.funding_bias_delta}`
-                  : 'Funding positivo alto → soglia long alzata; funding negativo → soglia short alzata'}
-              </p>
-            </div>
-          </label>
-          {config.funding_gate_enabled && (
-            <div className="pl-12 grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-4 mt-1">
-              <div>
-                <label className="flex items-center justify-between mb-2">
-                  <span className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest">Lookback bars (4H)</span>
-                  <span className="font-mono text-sm font-bold text-cyan-600 dark:text-cyan-400">{config.funding_gate_lookback}</span>
-                </label>
-                <input type="range" min="2" max="24" step="1"
-                  value={config.funding_gate_lookback}
-                  onChange={e => setConfig(c => ({ ...c, funding_gate_lookback: parseInt(e.target.value) }))}
-                  className="w-full h-1.5 bg-slate-200 dark:bg-white/10 rounded-full appearance-none cursor-pointer accent-cyan-600"
-                />
-                <div className="flex justify-between text-[9px] font-mono text-slate-400 mt-1"><span>2</span><span>12</span><span>24</span></div>
-              </div>
-              <div>
-                <label className="flex items-center justify-between mb-2">
-                  <span className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest">Soglia high (bps/8h)</span>
-                  <span className="font-mono text-sm font-bold text-cyan-600 dark:text-cyan-400">{(config.funding_high_thr * 10000).toFixed(1)}</span>
-                </label>
-                <input type="range" min="0.00003" max="0.00050" step="0.00001"
-                  value={config.funding_high_thr}
-                  onChange={e => setConfig(c => ({ ...c, funding_high_thr: parseFloat(e.target.value) }))}
-                  className="w-full h-1.5 bg-slate-200 dark:bg-white/10 rounded-full appearance-none cursor-pointer accent-cyan-600"
-                />
-                <div className="flex justify-between text-[9px] font-mono text-slate-400 mt-1"><span>0.3</span><span>2.5</span><span>5.0</span></div>
-              </div>
-              <div>
-                <label className="flex items-center justify-between mb-2">
-                  <span className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest">Soglia extreme (bps/8h)</span>
-                  <span className="font-mono text-sm font-bold text-cyan-600 dark:text-cyan-400">{(config.funding_extreme_thr * 10000).toFixed(1)}</span>
-                </label>
-                <input type="range" min="0.00010" max="0.00100" step="0.00005"
-                  value={config.funding_extreme_thr}
-                  onChange={e => setConfig(c => ({ ...c, funding_extreme_thr: parseFloat(e.target.value) }))}
-                  className="w-full h-1.5 bg-slate-200 dark:bg-white/10 rounded-full appearance-none cursor-pointer accent-cyan-600"
-                />
-                <div className="flex justify-between text-[9px] font-mono text-slate-400 mt-1"><span>1.0</span><span>5.0</span><span>10.0</span></div>
-              </div>
-              <div>
-                <label className="flex items-center justify-between mb-2">
-                  <span className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest">Bias delta</span>
-                  <span className="font-mono text-sm font-bold text-cyan-600 dark:text-cyan-400">Δ{config.funding_bias_delta.toFixed(2)}</span>
-                </label>
-                <input type="range" min="0.01" max="0.08" step="0.005"
-                  value={config.funding_bias_delta}
-                  onChange={e => setConfig(c => ({ ...c, funding_bias_delta: parseFloat(e.target.value) }))}
-                  className="w-full h-1.5 bg-slate-200 dark:bg-white/10 rounded-full appearance-none cursor-pointer accent-cyan-600"
-                />
-                <div className="flex justify-between text-[9px] font-mono text-slate-400 mt-1"><span>0.01</span><span>0.04</span><span>0.08</span></div>
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* Fear & Greed Bias */}
-        <div className={`flex flex-col gap-3 transition-colors duration-200`}>
-          <label className="flex items-center gap-3 cursor-pointer group">
-            <div className="relative">
-              <input type="checkbox" className="sr-only" checked={config.fng_gate_enabled} onChange={e => setConfig(c => ({ ...c, fng_gate_enabled: e.target.checked }))} />
-              <div className={`w-10 h-5 rounded-full transition-all duration-300 ${config.fng_gate_enabled ? 'bg-violet-600' : 'bg-slate-200 dark:bg-white/10'}`} />
-              <div className={`absolute top-1 left-1 w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.fng_gate_enabled ? 'translate-x-5' : ''}`} />
-            </div>
-            <div>
-              <p className={`text-sm font-bold transition-colors ${config.fng_gate_enabled ? 'text-violet-600 dark:text-violet-400' : 'text-slate-800 dark:text-slate-200 group-hover:text-violet-600 dark:group-hover:text-violet-400'}`}>
-                Fear &amp; Greed Bias
-                {config.fng_gate_enabled && <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-violet-100 dark:bg-violet-500/20 text-violet-600 dark:text-violet-400 uppercase tracking-wider">Attivo</span>}
-              </p>
-              <p className="text-[11px] font-medium text-slate-400 dark:text-slate-500 leading-tight">
-                {config.fng_gate_enabled
-                  ? `Extreme Fear <${config.fng_extreme_fear_thr} · Fear <${config.fng_fear_thr} · Greed >${config.fng_greed_thr} · Extreme Greed >${config.fng_extreme_greed_thr} · Δ${config.fng_bias_delta}`
-                  : 'Contrarian: paura estrema favorisce long, greed estremo favorisce short'}
-              </p>
-            </div>
-          </label>
-          {config.fng_gate_enabled && (
-            <div className="pl-12 grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-4 mt-1">
-              <div>
-                <label className="flex items-center justify-between mb-2">
-                  <span className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest">Soglia Extreme Fear</span>
-                  <span className="font-mono text-sm font-bold text-violet-600 dark:text-violet-400">&lt;{config.fng_extreme_fear_thr.toFixed(0)}</span>
-                </label>
-                <input type="range" min="5" max="40" step="1"
-                  value={config.fng_extreme_fear_thr}
-                  onChange={e => setConfig(c => ({ ...c, fng_extreme_fear_thr: parseFloat(e.target.value) }))}
-                  className="w-full h-1.5 bg-slate-200 dark:bg-white/10 rounded-full appearance-none cursor-pointer accent-violet-600"
-                />
-                <div className="flex justify-between text-[9px] font-mono text-slate-400 mt-1"><span>5</span><span>20</span><span>40</span></div>
-              </div>
-              <div>
-                <label className="flex items-center justify-between mb-2">
-                  <span className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest">Soglia Fear</span>
-                  <span className="font-mono text-sm font-bold text-violet-600 dark:text-violet-400">&lt;{config.fng_fear_thr.toFixed(0)}</span>
-                </label>
-                <input type="range" min="20" max="50" step="1"
-                  value={config.fng_fear_thr}
-                  onChange={e => setConfig(c => ({ ...c, fng_fear_thr: parseFloat(e.target.value) }))}
-                  className="w-full h-1.5 bg-slate-200 dark:bg-white/10 rounded-full appearance-none cursor-pointer accent-violet-600"
-                />
-                <div className="flex justify-between text-[9px] font-mono text-slate-400 mt-1"><span>20</span><span>35</span><span>50</span></div>
-              </div>
-              <div>
-                <label className="flex items-center justify-between mb-2">
-                  <span className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest">Soglia Greed</span>
-                  <span className="font-mono text-sm font-bold text-violet-600 dark:text-violet-400">&gt;{config.fng_greed_thr.toFixed(0)}</span>
-                </label>
-                <input type="range" min="50" max="80" step="1"
-                  value={config.fng_greed_thr}
-                  onChange={e => setConfig(c => ({ ...c, fng_greed_thr: parseFloat(e.target.value) }))}
-                  className="w-full h-1.5 bg-slate-200 dark:bg-white/10 rounded-full appearance-none cursor-pointer accent-violet-600"
-                />
-                <div className="flex justify-between text-[9px] font-mono text-slate-400 mt-1"><span>50</span><span>65</span><span>80</span></div>
-              </div>
-              <div>
-                <label className="flex items-center justify-between mb-2">
-                  <span className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest">Soglia Extreme Greed</span>
-                  <span className="font-mono text-sm font-bold text-violet-600 dark:text-violet-400">&gt;{config.fng_extreme_greed_thr.toFixed(0)}</span>
-                </label>
-                <input type="range" min="60" max="95" step="1"
-                  value={config.fng_extreme_greed_thr}
-                  onChange={e => setConfig(c => ({ ...c, fng_extreme_greed_thr: parseFloat(e.target.value) }))}
-                  className="w-full h-1.5 bg-slate-200 dark:bg-white/10 rounded-full appearance-none cursor-pointer accent-violet-600"
-                />
-                <div className="flex justify-between text-[9px] font-mono text-slate-400 mt-1"><span>60</span><span>80</span><span>95</span></div>
-              </div>
-              <div className="sm:col-span-2">
-                <label className="flex items-center justify-between mb-2">
-                  <span className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest">Bias delta</span>
-                  <span className="font-mono text-sm font-bold text-violet-600 dark:text-violet-400">Δ{config.fng_bias_delta.toFixed(2)}</span>
-                </label>
-                <input type="range" min="0.01" max="0.08" step="0.005"
-                  value={config.fng_bias_delta}
-                  onChange={e => setConfig(c => ({ ...c, fng_bias_delta: parseFloat(e.target.value) }))}
-                  className="w-full h-1.5 bg-slate-200 dark:bg-white/10 rounded-full appearance-none cursor-pointer accent-violet-600"
-                />
-                <div className="flex justify-between text-[9px] font-mono text-slate-400 mt-1"><span>0.01</span><span>0.04</span><span>0.08</span></div>
-              </div>
-            </div>
-          )}
-        </div>
-      </Section>
-
-      {/* ── Squeeze Protection Gates ── */}
-      <Section
-        title="Squeeze Protection Gates — Protezione Short/Long Squeeze"
-        description="Tre gate indipendenti basati su dati di posizionamento del mercato (Coinalyze). Attivare in presenza di crowding direzionale elevato. Richiedono API key Coinalyze già configurata."
-      >
-        {/* ── Gate A: OI Spike ── */}
-        <div className={`flex flex-col gap-3 mb-6 pb-6 border-b transition-colors duration-200
-          ${config.oi_spike_gate_enabled ? 'border-rose-200 dark:border-rose-500/25' : 'border-slate-100 dark:border-white/5'}`}>
-
-          <label className="flex items-start gap-3 cursor-pointer group">
-            <div className="relative inline-flex items-center mt-0.5">
-              <input type="checkbox" className="sr-only"
-                checked={config.oi_spike_gate_enabled}
-                onChange={e => setConfig(c => ({ ...c, oi_spike_gate_enabled: e.target.checked }))} />
-              <div className={`w-10 h-5 rounded-full transition-all duration-300
-                ${config.oi_spike_gate_enabled ? 'bg-rose-600' : 'bg-slate-200 dark:bg-white/10'}`} />
-              <div className={`absolute top-1 left-1 w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300
-                ${config.oi_spike_gate_enabled ? 'translate-x-5' : ''}`} />
-            </div>
-            <div>
-              <p className={`text-sm font-bold transition-colors
-                ${config.oi_spike_gate_enabled ? 'text-rose-600 dark:text-rose-400' : 'text-slate-800 dark:text-slate-200'}`}>
-                OI Spike Gate
-                {config.oi_spike_gate_enabled && (
-                  <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-rose-100 dark:bg-rose-500/20 text-rose-600 dark:text-rose-400 uppercase tracking-wider">Attivo</span>
-                )}
-              </p>
-              <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                {config.oi_spike_gate_enabled
-                  ? `soglia ${config.oi_spike_thr.toFixed(1)}σ · lookback ${config.oi_spike_lookback} bar · ${config.oi_spike_mode === 'block' ? 'Blocco' : 'Scale'}`
-                  : 'Blocca/riduce trade quando OI_delta_z supera la soglia (crowding direzionale)'}
-              </p>
-            </div>
-          </label>
-
-          {config.oi_spike_gate_enabled && (
-            <div className="grid grid-cols-2 gap-4 pl-14">
-              <div>
-                <label className="flex items-center justify-between mb-2">
-                  <span className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest">Soglia (σ)</span>
-                  <span className="font-mono text-sm font-bold text-rose-600 dark:text-rose-400">{config.oi_spike_thr.toFixed(1)}σ</span>
-                </label>
-                <input type="range" min="1.0" max="4.0" step="0.1"
-                  value={config.oi_spike_thr}
-                  onChange={e => setConfig(c => ({ ...c, oi_spike_thr: parseFloat(e.target.value) }))}
-                  className="w-full h-1.5 bg-slate-200 dark:bg-white/10 rounded-full appearance-none cursor-pointer accent-rose-600" />
-                <div className="flex justify-between text-[9px] font-mono text-slate-400 mt-1"><span>1.0</span><span>2.5</span><span>4.0</span></div>
-              </div>
-              <div>
-                <label className="flex items-center justify-between mb-2">
-                  <span className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest">Lookback (bar)</span>
-                  <span className="font-mono text-sm font-bold text-rose-600 dark:text-rose-400">{config.oi_spike_lookback}</span>
-                </label>
-                <input type="range" min="1" max="6" step="1"
-                  value={config.oi_spike_lookback}
-                  onChange={e => setConfig(c => ({ ...c, oi_spike_lookback: parseInt(e.target.value) }))}
-                  className="w-full h-1.5 bg-slate-200 dark:bg-white/10 rounded-full appearance-none cursor-pointer accent-rose-600" />
-                <div className="flex justify-between text-[9px] font-mono text-slate-400 mt-1"><span>1</span><span>3</span><span>6</span></div>
-              </div>
-              <div className="col-span-2 flex gap-3">
-                {(['scale', 'block'] as const).map(mode => (
-                  <button key={mode}
-                    onClick={() => setConfig(c => ({ ...c, oi_spike_mode: mode }))}
-                    className={`flex-1 py-2 rounded-lg text-xs font-bold border transition-all ${
-                      config.oi_spike_mode === mode
-                        ? 'bg-rose-600 text-white border-rose-600'
-                        : 'bg-transparent text-slate-600 dark:text-slate-400 border-slate-200 dark:border-white/10 hover:border-rose-400'
-                    }`}>
-                    {mode === 'scale' ? '⚖️ Scale size' : '🚫 Blocca trade'}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* ── Gate B: Long/Short Ratio ── */}
-        <div className={`flex flex-col gap-3 mb-6 pb-6 border-b transition-colors duration-200
-          ${config.ls_gate_enabled ? 'border-rose-200 dark:border-rose-500/25' : 'border-slate-100 dark:border-white/5'}`}>
-
-          <label className="flex items-start gap-3 cursor-pointer group">
-            <div className="relative inline-flex items-center mt-0.5">
-              <input type="checkbox" className="sr-only"
-                checked={config.ls_gate_enabled}
-                onChange={e => setConfig(c => ({ ...c, ls_gate_enabled: e.target.checked }))} />
-              <div className={`w-10 h-5 rounded-full transition-all duration-300
-                ${config.ls_gate_enabled ? 'bg-rose-600' : 'bg-slate-200 dark:bg-white/10'}`} />
-              <div className={`absolute top-1 left-1 w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300
-                ${config.ls_gate_enabled ? 'translate-x-5' : ''}`} />
-            </div>
-            <div>
-              <p className={`text-sm font-bold transition-colors
-                ${config.ls_gate_enabled ? 'text-rose-600 dark:text-rose-400' : 'text-slate-800 dark:text-slate-200'}`}>
-                Long/Short Ratio Gate
-                {config.ls_gate_enabled && (
-                  <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-rose-100 dark:bg-rose-500/20 text-rose-600 dark:text-rose-400 uppercase tracking-wider">Attivo</span>
-                )}
-              </p>
-              <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                {config.ls_gate_enabled
-                  ? `block SHORT se long ≥${config.ls_long_block_pct.toFixed(0)}% · block LONG se long ≤${config.ls_short_block_pct.toFixed(0)}%`
-                  : 'Blocca/riduce trade quando il mercato è eccessivamente posizionato in una direzione (Coinalyze)'}
-              </p>
-            </div>
-          </label>
-
-          {config.ls_gate_enabled && (
-            <div className="grid grid-cols-2 gap-4 pl-14">
-              <div>
-                <label className="flex items-center justify-between mb-2">
-                  <span className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest">Block SHORT se long ≥</span>
-                  <span className="font-mono text-sm font-bold text-rose-600 dark:text-rose-400">{config.ls_long_block_pct.toFixed(0)}%</span>
-                </label>
-                <input type="range" min="55" max="80" step="1"
-                  value={config.ls_long_block_pct}
-                  onChange={e => setConfig(c => ({ ...c, ls_long_block_pct: parseFloat(e.target.value) }))}
-                  className="w-full h-1.5 bg-slate-200 dark:bg-white/10 rounded-full appearance-none cursor-pointer accent-rose-600" />
-                <div className="flex justify-between text-[9px] font-mono text-slate-400 mt-1"><span>55%</span><span>67%</span><span>80%</span></div>
-              </div>
-              <div>
-                <label className="flex items-center justify-between mb-2">
-                  <span className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest">Block LONG se long ≤</span>
-                  <span className="font-mono text-sm font-bold text-rose-600 dark:text-rose-400">{config.ls_short_block_pct.toFixed(0)}%</span>
-                </label>
-                <input type="range" min="20" max="45" step="1"
-                  value={config.ls_short_block_pct}
-                  onChange={e => setConfig(c => ({ ...c, ls_short_block_pct: parseFloat(e.target.value) }))}
-                  className="w-full h-1.5 bg-slate-200 dark:bg-white/10 rounded-full appearance-none cursor-pointer accent-rose-600" />
-                <div className="flex justify-between text-[9px] font-mono text-slate-400 mt-1"><span>20%</span><span>33%</span><span>45%</span></div>
-              </div>
-              {config.ls_gate_mode === 'scale' && (
-                <div>
-                  <label className="flex items-center justify-between mb-2">
-                    <span className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest">Scale factor</span>
-                    <span className="font-mono text-sm font-bold text-rose-600 dark:text-rose-400">×{config.ls_gate_scale_factor.toFixed(2)}</span>
-                  </label>
-                  <input type="range" min="0.20" max="0.80" step="0.05"
-                    value={config.ls_gate_scale_factor}
-                    onChange={e => setConfig(c => ({ ...c, ls_gate_scale_factor: parseFloat(e.target.value) }))}
-                    className="w-full h-1.5 bg-slate-200 dark:bg-white/10 rounded-full appearance-none cursor-pointer accent-rose-600" />
-                  <div className="flex justify-between text-[9px] font-mono text-slate-400 mt-1"><span>×0.20</span><span>×0.50</span><span>×0.80</span></div>
-                </div>
-              )}
-              <div className={config.ls_gate_mode === 'scale' ? '' : 'col-span-2'}>
-                <div className="flex gap-3">
-                  {(['scale', 'block'] as const).map(mode => (
-                    <button key={mode}
-                      onClick={() => setConfig(c => ({ ...c, ls_gate_mode: mode }))}
-                      className={`flex-1 py-2 rounded-lg text-xs font-bold border transition-all ${
-                        config.ls_gate_mode === mode
-                          ? 'bg-rose-600 text-white border-rose-600'
-                          : 'bg-transparent text-slate-600 dark:text-slate-400 border-slate-200 dark:border-white/10 hover:border-rose-400'
-                      }`}>
-                      {mode === 'scale' ? '⚖️ Scale size' : '🚫 Blocca trade'}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* ── Gate C: Liquidation Spike ── */}
-        <div className="flex flex-col gap-3 transition-colors duration-200">
-
-          <label className="flex items-start gap-3 cursor-pointer group">
-            <div className="relative inline-flex items-center mt-0.5">
-              <input type="checkbox" className="sr-only"
-                checked={config.liq_spike_gate_enabled}
-                onChange={e => setConfig(c => ({ ...c, liq_spike_gate_enabled: e.target.checked }))} />
-              <div className={`w-10 h-5 rounded-full transition-all duration-300
-                ${config.liq_spike_gate_enabled ? 'bg-rose-600' : 'bg-slate-200 dark:bg-white/10'}`} />
-              <div className={`absolute top-1 left-1 w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300
-                ${config.liq_spike_gate_enabled ? 'translate-x-5' : ''}`} />
-            </div>
-            <div>
-              <p className={`text-sm font-bold transition-colors
-                ${config.liq_spike_gate_enabled ? 'text-rose-600 dark:text-rose-400' : 'text-slate-800 dark:text-slate-200'}`}>
-                Liquidation Spike Gate
-                {config.liq_spike_gate_enabled && (
-                  <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-rose-100 dark:bg-rose-500/20 text-rose-600 dark:text-rose-400 uppercase tracking-wider">Attivo</span>
-                )}
-              </p>
-              <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                {config.liq_spike_gate_enabled
-                  ? `soglia ${config.liq_spike_thr.toFixed(1)}σ · lookback ${config.liq_spike_lookback} bar · ${config.liq_spike_mode === 'block' ? 'Blocco' : 'Scale'}`
-                  : 'Blocca trade quando liq_short_z o liq_long_z supera la soglia (squeeze in corso)'}
-              </p>
-            </div>
-          </label>
-
-          {config.liq_spike_gate_enabled && (
-            <div className="grid grid-cols-2 gap-4 pl-14">
-              <div>
-                <label className="flex items-center justify-between mb-2">
-                  <span className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest">Soglia (σ)</span>
-                  <span className="font-mono text-sm font-bold text-rose-600 dark:text-rose-400">{config.liq_spike_thr.toFixed(1)}σ</span>
-                </label>
-                <input type="range" min="1.5" max="5.0" step="0.1"
-                  value={config.liq_spike_thr}
-                  onChange={e => setConfig(c => ({ ...c, liq_spike_thr: parseFloat(e.target.value) }))}
-                  className="w-full h-1.5 bg-slate-200 dark:bg-white/10 rounded-full appearance-none cursor-pointer accent-rose-600" />
-                <div className="flex justify-between text-[9px] font-mono text-slate-400 mt-1"><span>1.5</span><span>3.0</span><span>5.0</span></div>
-              </div>
-              <div>
-                <label className="flex items-center justify-between mb-2">
-                  <span className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest">Lookback (bar)</span>
-                  <span className="font-mono text-sm font-bold text-rose-600 dark:text-rose-400">{config.liq_spike_lookback}</span>
-                </label>
-                <input type="range" min="1" max="6" step="1"
-                  value={config.liq_spike_lookback}
-                  onChange={e => setConfig(c => ({ ...c, liq_spike_lookback: parseInt(e.target.value) }))}
-                  className="w-full h-1.5 bg-slate-200 dark:bg-white/10 rounded-full appearance-none cursor-pointer accent-rose-600" />
-                <div className="flex justify-between text-[9px] font-mono text-slate-400 mt-1"><span>1</span><span>3</span><span>6</span></div>
-              </div>
-              {config.liq_spike_mode === 'scale' && (
-                <div className="col-span-2">
-                  <label className="flex items-center justify-between mb-2">
-                    <span className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest">Scale factor</span>
-                    <span className="font-mono text-sm font-bold text-rose-600 dark:text-rose-400">×{config.liq_spike_scale_factor.toFixed(2)}</span>
-                  </label>
-                  <input type="range" min="0.20" max="0.80" step="0.05"
-                    value={config.liq_spike_scale_factor}
-                    onChange={e => setConfig(c => ({ ...c, liq_spike_scale_factor: parseFloat(e.target.value) }))}
-                    className="w-full h-1.5 bg-slate-200 dark:bg-white/10 rounded-full appearance-none cursor-pointer accent-rose-600" />
-                  <div className="flex justify-between text-[9px] font-mono text-slate-400 mt-1"><span>×0.20</span><span>×0.40</span><span>×0.80</span></div>
-                </div>
-              )}
-              <div className="col-span-2 flex gap-3">
-                {(['block', 'scale'] as const).map(mode => (
-                  <button key={mode}
-                    onClick={() => setConfig(c => ({ ...c, liq_spike_mode: mode }))}
-                    className={`flex-1 py-2 rounded-lg text-xs font-bold border transition-all ${
-                      config.liq_spike_mode === mode
-                        ? 'bg-rose-600 text-white border-rose-600'
-                        : 'bg-transparent text-slate-600 dark:text-slate-400 border-slate-200 dark:border-white/10 hover:border-rose-400'
-                    }`}>
-                    {mode === 'scale' ? '⚖️ Scale size' : '🚫 Blocca trade'}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
-      </Section>
-
-      {/* ── Weekend Gate ── */}
-      <Section
-        title="Weekend Gate — Blocco Sabato / Domenica"
-        description="Blocca l'apertura di nuovi trade nei giorni in cui i mercati tradizionali sono chiusi (orario UTC). Sabato e domenica la liquidità è sottile e si formano spesso movimenti anomali. Non chiude le posizioni già aperte — agisce solo sulle nuove entrate."
-      >
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          {([
-            { key: 'weekend_gate_block_saturday' as const, label: 'Blocca Sabato',   sub: 'Nessuna nuova entrata il sabato (UTC)' },
-            { key: 'weekend_gate_block_sunday'   as const, label: 'Blocca Domenica', sub: 'Nessuna nuova entrata la domenica (UTC)' },
-          ]).map(({ key, label, sub }) => (
-            <label key={key} className={`flex items-start gap-3 cursor-pointer group p-4 rounded-xl border transition-all duration-200
-              ${config[key] ? 'border-amber-200 dark:border-amber-500/30 bg-amber-50/40 dark:bg-amber-500/5' : 'border-slate-100 dark:border-white/5 hover:bg-slate-50 dark:hover:bg-white/[0.03]'}`}>
-              <div className="relative inline-flex items-center mt-0.5">
-                <input type="checkbox" className="sr-only"
-                  checked={config[key]}
-                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setConfig((c: Config) => ({ ...c, [key]: e.target.checked }))} />
-                <div className={`w-10 h-5 rounded-full transition-all duration-300 ${config[key] ? 'bg-amber-500' : 'bg-slate-200 dark:bg-white/10'}`} />
-                <div className={`absolute top-1 left-1 w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config[key] ? 'translate-x-5' : ''}`} />
-              </div>
-              <div>
-                <p className={`text-sm font-bold transition-colors ${config[key] ? 'text-amber-600 dark:text-amber-400' : 'text-slate-800 dark:text-slate-200'}`}>
-                  {label}
-                  {config[key] && (
-                    <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-amber-100 dark:bg-amber-500/20 text-amber-600 dark:text-amber-400 uppercase tracking-wider">Attivo</span>
-                  )}
-                </p>
-                <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">{sub}</p>
-              </div>
-            </label>
-          ))}
         </div>
       </Section>
 
@@ -4061,6 +2940,1143 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
         )}
       </Section>
 
+      {/* Options IV Bias */}
+      <Section title="Options IV Bias — Sizing Adattivo" description="Riduce la size delle trade quando la Implied Volatility di Deribit è in zona estrema (alta incertezza del mercato). Dati gratuiti, nessuna API key richiesta. Non modifica i segnali — agisce solo sul rischio per trade.">
+        <div className={`flex flex-col gap-3 mb-6 pb-6 border-b transition-colors duration-200 ${config.options_bias_enabled ? 'border-violet-200 dark:border-violet-500/25' : 'border-slate-100 dark:border-white/5'}`}>
+          <Tooltip text="Fetcha la IV ATM 7-day da Deribit ogni ciclo. Quando il percentile rolling 90gg supera la soglia alta (default 80°), la size viene moltiplicata per iv_size_factor (default 0.70). In regime a bassa IV (< soglia bassa) la size rimane piena. Non richiede retrain per funzionare — agisce direttamente su size_factor nel DecisionResult." width="wide" pos="bottom">
+            <label className="flex items-center gap-3 cursor-pointer group">
+              <div className="relative">
+                <input type="checkbox" className="sr-only" checked={config.options_bias_enabled} onChange={e => setConfig(c => ({ ...c, options_bias_enabled: e.target.checked }))} />
+                <div className={`w-9 h-[18px] rounded-full transition-all duration-300 ${config.options_bias_enabled ? 'bg-violet-600' : 'bg-slate-200 dark:bg-white/10'}`} />
+                <div className={`absolute top-[3px] left-[3px] w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.options_bias_enabled ? 'translate-x-[18px]' : ''}`} />
+              </div>
+              <div className="flex-1">
+                <p className={`text-xs font-bold leading-tight transition-colors ${config.options_bias_enabled ? 'text-violet-600 dark:text-violet-400' : 'text-slate-700 dark:text-slate-300'}`}>
+                  Options IV Bias {config.options_bias_enabled && <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-violet-100 dark:bg-violet-500/20 text-violet-600 dark:text-violet-400 uppercase tracking-wider">Attivo</span>}
+                </p>
+                <p className="text-[10px] text-slate-400 dark:text-slate-500 mt-0.5">Deribit ATM IV 7d · percentile rolling 90gg · size ridotta in alta-IV</p>
+              </div>
+            </label>
+          </Tooltip>
+          {config.options_bias_enabled && (
+            <div className="mt-3 pt-3 border-t border-violet-100 dark:border-violet-500/15 flex flex-col gap-4">
+              <div className="flex flex-col gap-1">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">Soglia IV alta (size ridotta)</span>
+                  <span className="text-[10px] font-bold text-violet-600 dark:text-violet-400">{config.iv_high_percentile.toFixed(0)}°</span>
+                </div>
+                <input type="range" min={50} max={99} step={1} value={config.iv_high_percentile}
+                  onChange={e => setConfig(c => ({ ...c, iv_high_percentile: parseFloat(e.target.value) }))}
+                  className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-violet-500" />
+                <p className="text-[9px] text-slate-400 dark:text-slate-500">Percentile rolling 90gg oltre cui scatta la riduzione. Default: 80°</p>
+              </div>
+              <div className="flex flex-col gap-1">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">Soglia IV bassa (log only)</span>
+                  <span className="text-[10px] font-bold text-violet-600 dark:text-violet-400">{config.iv_low_percentile.toFixed(0)}°</span>
+                </div>
+                <input type="range" min={1} max={49} step={1} value={config.iv_low_percentile}
+                  onChange={e => setConfig(c => ({ ...c, iv_low_percentile: parseFloat(e.target.value) }))}
+                  className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-violet-500" />
+                <p className="text-[9px] text-slate-400 dark:text-slate-500">Al di sotto di questa soglia viene loggato "low-IV regime" ma size rimane piena. Default: 20°</p>
+              </div>
+              <div className="flex flex-col gap-1">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">IV Size Factor</span>
+                  <span className="text-[10px] font-bold text-violet-600 dark:text-violet-400">{(config.iv_size_factor * 100).toFixed(0)}%</span>
+                </div>
+                <input type="range" min={0.2} max={1.0} step={0.05} value={config.iv_size_factor}
+                  onChange={e => setConfig(c => ({ ...c, iv_size_factor: parseFloat(e.target.value) }))}
+                  className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-violet-500" />
+                <p className="text-[9px] text-slate-400 dark:text-slate-500">Moltiplicatore size in alta-IV. 0.70 = 70% della size normale. Default: 0.70</p>
+              </div>
+              <div className="p-2 rounded-lg bg-violet-50 dark:bg-violet-500/5 border border-violet-100 dark:border-violet-500/15">
+                <p className="text-[9px] text-violet-600 dark:text-violet-400 font-medium">2 feature aggiuntive per LGBM (al prossimo retrain): <code className="font-mono">iv_7d</code> · <code className="font-mono">iv_7d_percentile</code></p>
+                <p className="text-[9px] text-slate-400 dark:text-slate-500 mt-1">Il sizing IV è immediato (nessun retrain necessario). Le feature diventano input LGBM solo dopo un retrain esplicito con questo toggle attivo.</p>
+              </div>
+            </div>
+          )}
+        </div>
+      </Section>
+
+      {/* Bounce-Fade Entry */}
+      <Section title="Bounce-Fade Entry — Entry su Rimbalzi Controtendenza" description="Su segnali controtendenza (es. short mentre il 4H rimbalza), invece di entrare subito il bot piazza un limite ancorato alla resistenza sovrastante: entry più alto, SL stretto, R:R migliore. Size congelata (nessuna esplosione). Fallback a mercato a scadenza. Default OFF — validare in backtest prima del live.">
+        <div className={`flex flex-col gap-3 mb-6 pb-6 border-b transition-colors duration-200 ${config.bounce_fade_enabled ? 'border-rose-200 dark:border-rose-500/25' : 'border-slate-100 dark:border-white/5'}`}>
+          <label className="flex items-center gap-3 cursor-pointer group">
+            <div className="relative">
+              <input type="checkbox" className="sr-only" checked={config.bounce_fade_enabled} onChange={e => setConfig(c => ({ ...c, bounce_fade_enabled: e.target.checked }))} />
+              <div className={`w-9 h-[18px] rounded-full transition-all duration-300 ${config.bounce_fade_enabled ? 'bg-rose-600' : 'bg-slate-200 dark:bg-white/10'}`} />
+              <div className={`absolute top-[3px] left-[3px] w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.bounce_fade_enabled ? 'translate-x-[18px]' : ''}`} />
+            </div>
+            <div>
+              <p className={`text-xs font-bold leading-tight transition-colors ${config.bounce_fade_enabled ? 'text-rose-600 dark:text-rose-400' : 'text-slate-700 dark:text-slate-300'}`}>
+                Bounce-Fade Entry {config.bounce_fade_enabled && <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-rose-100 dark:bg-rose-500/20 text-rose-600 dark:text-rose-400 uppercase tracking-wider">Attivo</span>}
+              </p>
+              <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5">
+                {config.bounce_fade_enabled ? `Limite a ${Math.round(config.bounce_fade_penetration_pct * 100)}% verso la resistenza (cap ${config.bounce_fade_offset_atr}×ATR) · finestra ${config.bounce_fade_window_bars} bar · ${config.bounce_fade_market_fallback ? 'fallback mercato' : 'no fallback'}` : 'Entry immediata su ogni segnale (comportamento attuale)'}
+              </p>
+            </div>
+          </label>
+
+          {config.bounce_fade_enabled && (
+            <div className="flex flex-col gap-3 mt-1">
+              {/* Penetration */}
+              <div className="flex flex-col gap-1">
+                <div className="flex justify-between items-center">
+                  <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">Penetration verso resistenza</span>
+                  <span className="text-[10px] font-bold text-rose-600 dark:text-rose-400">{Math.round(config.bounce_fade_penetration_pct * 100)}%</span>
+                </div>
+                <input type="range" min={0.20} max={0.80} step={0.05} value={config.bounce_fade_penetration_pct}
+                  onChange={e => setConfig(c => ({ ...c, bounce_fade_penetration_pct: parseFloat(e.target.value) }))}
+                  className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-rose-500" />
+                <p className="text-[9px] text-slate-400 dark:text-slate-500">Frazione della distanza verso la resistenza. Più basso = riempie più spesso; più alto = entry migliore ma più fallback. Default 50%.</p>
+              </div>
+              {/* Offset cap */}
+              <div className="flex flex-col gap-1">
+                <div className="flex justify-between items-center">
+                  <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">Cap offset (×ATR)</span>
+                  <span className="text-[10px] font-bold text-rose-600 dark:text-rose-400">{config.bounce_fade_offset_atr.toFixed(2)}×</span>
+                </div>
+                <input type="range" min={0.20} max={1.50} step={0.05} value={config.bounce_fade_offset_atr}
+                  onChange={e => setConfig(c => ({ ...c, bounce_fade_offset_atr: parseFloat(e.target.value) }))}
+                  className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-rose-500" />
+                <p className="text-[9px] text-slate-400 dark:text-slate-500">Il limite non si allontana più di N×ATR dal prezzo (rete di sicurezza per i fill). Default 0.50.</p>
+              </div>
+              {/* Window */}
+              <div className="flex flex-col gap-1">
+                <div className="flex justify-between items-center">
+                  <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">Finestra (candele 4H)</span>
+                  <span className="text-[10px] font-bold text-rose-600 dark:text-rose-400">{config.bounce_fade_window_bars} bar</span>
+                </div>
+                <input type="range" min={1} max={4} step={1} value={config.bounce_fade_window_bars}
+                  onChange={e => setConfig(c => ({ ...c, bounce_fade_window_bars: parseInt(e.target.value) }))}
+                  className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-rose-500" />
+                <p className="text-[9px] text-slate-400 dark:text-slate-500">Candele 4H di attesa (2 = 8h). Alla scadenza: fallback a mercato o annulla. Default 2.</p>
+              </div>
+              {/* Min R:R */}
+              <div className="flex flex-col gap-1">
+                <div className="flex justify-between items-center">
+                  <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">R:R minimo</span>
+                  <span className="text-[10px] font-bold text-rose-600 dark:text-rose-400">{config.bounce_fade_min_rr.toFixed(1)}</span>
+                </div>
+                <input type="range" min={1.0} max={3.0} step={0.1} value={config.bounce_fade_min_rr}
+                  onChange={e => setConfig(c => ({ ...c, bounce_fade_min_rr: parseFloat(e.target.value) }))}
+                  className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-rose-500" />
+                <p className="text-[9px] text-slate-400 dark:text-slate-500">R:R minimo per accettare il fill al limite. Sotto soglia → trade annullato. Default 1.5.</p>
+              </div>
+              {/* SL buffer */}
+              <div className="flex flex-col gap-1">
+                <div className="flex justify-between items-center">
+                  <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">Buffer SL (×ATR)</span>
+                  <span className="text-[10px] font-bold text-rose-600 dark:text-rose-400">{config.bounce_fade_sl_buffer_atr.toFixed(2)}×</span>
+                </div>
+                <input type="range" min={0.10} max={1.00} step={0.05} value={config.bounce_fade_sl_buffer_atr}
+                  onChange={e => setConfig(c => ({ ...c, bounce_fade_sl_buffer_atr: parseFloat(e.target.value) }))}
+                  className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-rose-500" />
+                <p className="text-[9px] text-slate-400 dark:text-slate-500">Buffer SL sopra la resistenza. Default 0.30.</p>
+              </div>
+              {/* SL min floor */}
+              <div className="flex flex-col gap-1">
+                <div className="flex justify-between items-center">
+                  <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">SL minimo (floor ×ATR)</span>
+                  <span className="text-[10px] font-bold text-rose-600 dark:text-rose-400">{config.bounce_fade_sl_min_atr.toFixed(2)}×</span>
+                </div>
+                <input type="range" min={0.10} max={1.50} step={0.05} value={config.bounce_fade_sl_min_atr}
+                  onChange={e => setConfig(c => ({ ...c, bounce_fade_sl_min_atr: parseFloat(e.target.value) }))}
+                  className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-rose-500" />
+                <p className="text-[9px] text-slate-400 dark:text-slate-500">Distanza minima dello SL dall'entry (anti-rumore). Default 0.80.</p>
+              </div>
+              {/* Toggles */}
+              <label className="flex items-center gap-2 cursor-pointer mt-1">
+                <input type="checkbox" checked={config.bounce_fade_counter_trend_only} onChange={e => setConfig(c => ({ ...c, bounce_fade_counter_trend_only: e.target.checked }))} className="accent-rose-500" />
+                <span className="text-[10px] text-slate-600 dark:text-slate-400">Solo segnali controtendenza (ret_6 opposto al segnale)</span>
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input type="checkbox" checked={config.bounce_fade_market_fallback} onChange={e => setConfig(c => ({ ...c, bounce_fade_market_fallback: e.target.checked }))} className="accent-rose-500" />
+                <span className="text-[10px] text-slate-600 dark:text-slate-400">Fallback a mercato alla scadenza se il segnale persiste</span>
+              </label>
+            </div>
+          )}
+        </div>
+      </Section>
+
+      {/* Pullback Entry */}
+      <Section title="Pullback Entry — Timing Ottimizzato" description="Quando una candela 4H ha un range > N×ATR (impulso forte), invece di entrare subito il bot aspetta un ritracciamento tecnico. Migliora il R:R strutturalmente: entry più favorevole, SL più stretto. Default OFF — abilitare solo dopo 60+ trade live.">
+        <div className={`flex flex-col gap-3 mb-6 pb-6 border-b transition-colors duration-200 ${config.pullback_entry_enabled ? 'border-cyan-200 dark:border-cyan-500/25' : 'border-slate-100 dark:border-white/5'}`}>
+          <label className="flex items-center gap-3 cursor-pointer group">
+            <div className="relative">
+              <input type="checkbox" className="sr-only" checked={config.pullback_entry_enabled} onChange={e => setConfig(c => ({ ...c, pullback_entry_enabled: e.target.checked }))} />
+              <div className={`w-9 h-[18px] rounded-full transition-all duration-300 ${config.pullback_entry_enabled ? 'bg-cyan-600' : 'bg-slate-200 dark:bg-white/10'}`} />
+              <div className={`absolute top-[3px] left-[3px] w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.pullback_entry_enabled ? 'translate-x-[18px]' : ''}`} />
+            </div>
+            <div>
+              <p className={`text-xs font-bold leading-tight transition-colors ${config.pullback_entry_enabled ? 'text-cyan-600 dark:text-cyan-400' : 'text-slate-700 dark:text-slate-300'}`}>
+                Pullback Entry {config.pullback_entry_enabled && <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-cyan-100 dark:bg-cyan-500/20 text-cyan-600 dark:text-cyan-400 uppercase tracking-wider">Attivo</span>}
+              </p>
+              <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5">
+                {config.pullback_entry_enabled ? `Attiva su candele con corpo > ${config.pullback_impulse_atr_mult}×ATR — attende ritracciamento fino a ${config.pullback_window_h}h` : 'Entry immediata su ogni segnale (comportamento attuale)'}
+              </p>
+            </div>
+          </label>
+
+          {config.pullback_entry_enabled && (
+            <div className="flex flex-col gap-3 mt-1">
+              {/* Impulse threshold */}
+              <div className="flex flex-col gap-1">
+                <div className="flex justify-between items-center">
+                  <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">Soglia Impulso (×ATR)</span>
+                  <span className="text-[10px] font-bold text-cyan-600 dark:text-cyan-400">{config.pullback_impulse_atr_mult.toFixed(1)}×</span>
+                </div>
+                <input type="range" min={0.5} max={3.0} step={0.1} value={config.pullback_impulse_atr_mult}
+                  onChange={e => setConfig(c => ({ ...c, pullback_impulse_atr_mult: parseFloat(e.target.value) }))}
+                  className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-cyan-500" />
+                <p className="text-[9px] text-slate-400 dark:text-slate-500">Corpo candela (close−open) ≥ N×ATR. <strong>Misura solo il movimento netto, esclude shadow e doji.</strong> 1.2× = top ~7% candele (85% PB rate). 1.5× = top ~4% (87%). Default: 1.2</p>
+              </div>
+              {/* Pullback zone */}
+              <div className="flex flex-col gap-1">
+                <div className="flex justify-between items-center">
+                  <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">Profondità Pullback (×ATR)</span>
+                  <span className="text-[10px] font-bold text-cyan-600 dark:text-cyan-400">{config.pullback_zone_atr.toFixed(2)}×</span>
+                </div>
+                <input type="range" min={0.1} max={1.0} step={0.05} value={config.pullback_zone_atr}
+                  onChange={e => setConfig(c => ({ ...c, pullback_zone_atr: parseFloat(e.target.value) }))}
+                  className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-cyan-500" />
+                <p className="text-[9px] text-slate-400 dark:text-slate-500">Distanza dalla chiusura 4H che il prezzo deve raggiungere per triggerare l'entrata. 0.3 ≈ 20–30% del range candela. Default: 0.30</p>
+              </div>
+              {/* Window */}
+              <div className="flex flex-col gap-1">
+                <div className="flex justify-between items-center">
+                  <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">Finestra Attesa (ore)</span>
+                  <span className="text-[10px] font-bold text-cyan-600 dark:text-cyan-400">{config.pullback_window_h}h</span>
+                </div>
+                <input type="range" min={1} max={8} step={1} value={config.pullback_window_h}
+                  onChange={e => setConfig(c => ({ ...c, pullback_window_h: parseInt(e.target.value) }))}
+                  className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-cyan-500" />
+                <p className="text-[9px] text-slate-400 dark:text-slate-500">Ore massime di attesa. Dopo il timeout scatta il fallback (o decay). Default: 3h (prime 3 candele 1H)</p>
+              </div>
+              {/* Fallback ATR */}
+              <div className="flex flex-col gap-1">
+                <div className="flex justify-between items-center">
+                  <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">Limite Fallback (×ATR)</span>
+                  <span className="text-[10px] font-bold text-cyan-600 dark:text-cyan-400">{config.pullback_fallback_atr.toFixed(1)}×</span>
+                </div>
+                <input type="range" min={0.2} max={2.0} step={0.1} value={config.pullback_fallback_atr}
+                  onChange={e => setConfig(c => ({ ...c, pullback_fallback_atr: parseFloat(e.target.value) }))}
+                  className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-cyan-500" />
+                <p className="text-[9px] text-slate-400 dark:text-slate-500">Se scade il timeout ma il prezzo è ancora entro N×ATR dalla chiusura 4H, entra comunque. Oltre questa distanza il segnale decade. Default: 0.5</p>
+              </div>
+              <div className="p-2 rounded-lg bg-cyan-50 dark:bg-cyan-500/5 border border-cyan-100 dark:border-cyan-500/15">
+                <p className="text-[9px] text-cyan-700 dark:text-cyan-300 font-medium">Se c'è un Order Block attivo nella direzione del trade, il bot usa quel livello come zona target invece dell'ATR-based — SL strutturale più stretto.</p>
+                <p className="text-[9px] text-slate-400 dark:text-slate-500 mt-1">In live mode piazza un ordine GTC limit reale su HL. In paper mode simula l'attesa internamente. Completamente backtestabile.</p>
+              </div>
+            </div>
+          )}
+        </div>
+      </Section>
+
+      {/* Reversal Zone Detector */}
+      <Section title="Reversal Zone Detector — Inversioni Strutturali" description="Sistema parallelo al trend-following che identifica top/bottom con 7 componenti pesati (SMC, momentum, exhaustion, volume, regime, funding, candle). Entra solo quando il trend dice 'hold'. Zero impatto se disabilitato.">
+        <div className={`flex flex-col gap-3 mb-6 pb-6 border-b transition-colors duration-200 ${config.reversal_mode_enabled ? 'border-violet-200 dark:border-violet-500/25' : 'border-slate-100 dark:border-white/5'}`}>
+          <label className="flex items-center gap-3 cursor-pointer group">
+            <div className="relative">
+              <input type="checkbox" className="sr-only" checked={config.reversal_mode_enabled} onChange={e => setConfig(c => ({ ...c, reversal_mode_enabled: e.target.checked }))} />
+              <div className={`w-9 h-[18px] rounded-full transition-all duration-300 ${config.reversal_mode_enabled ? 'bg-violet-600' : 'bg-slate-200 dark:bg-white/10'}`} />
+              <div className={`absolute top-[3px] left-[3px] w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.reversal_mode_enabled ? 'translate-x-[18px]' : ''}`} />
+            </div>
+            <div>
+              <p className={`text-xs font-bold leading-tight transition-colors ${config.reversal_mode_enabled ? 'text-violet-600 dark:text-violet-400' : 'text-slate-700 dark:text-slate-300'}`}>
+                Reversal Detector {config.reversal_mode_enabled && <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-violet-100 dark:bg-violet-500/20 text-violet-600 dark:text-violet-400 uppercase tracking-wider">Attivo</span>}
+              </p>
+              <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5">
+                {config.reversal_mode_enabled ? `Score ≥ ${config.reversal_score_threshold} · ≥ ${config.reversal_min_components} componenti · entry ${config.reversal_entry_mode === 'limit_retest' ? 'retest wick' : 'market close'}` : 'Disabilitato — nessun impatto sulla logica attuale'}
+              </p>
+            </div>
+          </label>
+
+          {config.reversal_mode_enabled && (
+            <div className="flex flex-col gap-3 mt-1">
+              {/* Entry Mode */}
+              <div className="flex flex-col gap-1">
+                <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">Modalità Entry</span>
+                <div className="flex gap-2">
+                  {(['limit_retest', 'close'] as const).map(m => (
+                    <button key={m} onClick={() => setConfig(c => ({ ...c, reversal_entry_mode: m }))}
+                      className={`flex-1 py-1.5 px-3 rounded-lg text-[10px] font-bold border transition-all ${config.reversal_entry_mode === m ? 'bg-violet-100 dark:bg-violet-500/20 text-violet-600 dark:text-violet-400 border-violet-300 dark:border-violet-500/40' : 'bg-slate-50 dark:bg-white/5 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-white/10 hover:border-violet-300 dark:hover:border-violet-500/30'}`}>
+                      {m === 'limit_retest' ? 'Limit Retest (↑ R:R)' : 'Market Close'}
+                    </button>
+                  ))}
+                </div>
+                <p className="text-[9px] text-slate-400 dark:text-slate-500">Limit Retest: aspetta il pullback al wick → SL più stretto, R:R migliore. Market Close: entra subito alla chiusura 4H.</p>
+              </div>
+
+              {/* Score threshold */}
+              <div className="flex flex-col gap-1">
+                <div className="flex justify-between items-center">
+                  <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">Score Minimo</span>
+                  <span className="text-[10px] font-bold text-violet-600 dark:text-violet-400">{config.reversal_score_threshold.toFixed(2)}</span>
+                </div>
+                <input type="range" min={0.25} max={0.70} step={0.01} value={config.reversal_score_threshold}
+                  onChange={e => setConfig(c => ({ ...c, reversal_score_threshold: parseFloat(e.target.value) }))}
+                  className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-violet-500" />
+                <p className="text-[9px] text-slate-400 dark:text-slate-500">Score 0–1 aggregato pesato. Default 0.34 (calibrato su BTC 4H 3 anni: P99=0.40, max=0.53). Alzare per meno segnali ma più qualità.</p>
+              </div>
+
+              {/* Min components */}
+              <div className="flex flex-col gap-1">
+                <div className="flex justify-between items-center">
+                  <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">Componenti Minime</span>
+                  <span className="text-[10px] font-bold text-violet-600 dark:text-violet-400">{config.reversal_min_components}/7</span>
+                </div>
+                <input type="range" min={2} max={7} step={1} value={config.reversal_min_components}
+                  onChange={e => setConfig(c => ({ ...c, reversal_min_components: parseInt(e.target.value) }))}
+                  className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-violet-500" />
+                <p className="text-[9px] text-slate-400 dark:text-slate-500">Componenti con score {'>'} 0.5 che devono essere attivi contemporaneamente. Default 3/7 (solo il 2% delle barre raggiunge 4 componenti).</p>
+              </div>
+
+              {/* Size factor */}
+              <div className="flex flex-col gap-1">
+                <div className="flex justify-between items-center">
+                  <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">Size Riduzione</span>
+                  <span className="text-[10px] font-bold text-violet-600 dark:text-violet-400">{Math.round(config.reversal_size_factor * 100)}%</span>
+                </div>
+                <input type="range" min={0.20} max={1.00} step={0.05} value={config.reversal_size_factor}
+                  onChange={e => setConfig(c => ({ ...c, reversal_size_factor: parseFloat(e.target.value) }))}
+                  className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-violet-500" />
+                <p className="text-[9px] text-slate-400 dark:text-slate-500">Percentuale della size normale. 70% = trade reversal più piccolo del trend. Consigliato 60–80%.</p>
+              </div>
+
+              {/* SL / TP ATR mult */}
+              <div className="grid grid-cols-2 gap-3">
+                <div className="flex flex-col gap-1">
+                  <div className="flex justify-between items-center">
+                    <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">SL (×ATR)</span>
+                    <span className="text-[10px] font-bold text-red-500 dark:text-red-400">{config.reversal_sl_atr_mult.toFixed(1)}×</span>
+                  </div>
+                  <input type="range" min={0.5} max={3.0} step={0.1} value={config.reversal_sl_atr_mult}
+                    onChange={e => setConfig(c => ({ ...c, reversal_sl_atr_mult: parseFloat(e.target.value) }))}
+                    className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-red-400" />
+                </div>
+                <div className="flex flex-col gap-1">
+                  <div className="flex justify-between items-center">
+                    <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">TP (×ATR)</span>
+                    <span className="text-[10px] font-bold text-emerald-500 dark:text-emerald-400">{config.reversal_tp_atr_mult.toFixed(1)}×</span>
+                  </div>
+                  <input type="range" min={1.0} max={6.0} step={0.1} value={config.reversal_tp_atr_mult}
+                    onChange={e => setConfig(c => ({ ...c, reversal_tp_atr_mult: parseFloat(e.target.value) }))}
+                    className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-emerald-400" />
+                </div>
+              </div>
+              <p className="text-[9px] text-slate-400 dark:text-slate-500 -mt-1">SL più stretto del trend (default 1.2 vs 2.0). TP ancorato alla close della candela segnale + N×ATR.</p>
+
+              {/* R:R min */}
+              <div className="flex flex-col gap-1">
+                <div className="flex justify-between items-center">
+                  <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">R:R Minimo</span>
+                  <span className="text-[10px] font-bold text-violet-600 dark:text-violet-400">{config.reversal_rr_min.toFixed(1)}:1</span>
+                </div>
+                <input type="range" min={1.0} max={4.0} step={0.1} value={config.reversal_rr_min}
+                  onChange={e => setConfig(c => ({ ...c, reversal_rr_min: parseFloat(e.target.value) }))}
+                  className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-violet-500" />
+                <p className="text-[9px] text-slate-400 dark:text-slate-500">Se il setup non raggiunge questo R:R, il trade viene skippato. In limit_retest mode: calibra insieme a wick_pct.</p>
+              </div>
+
+              {/* Max hold bars */}
+              <div className="flex flex-col gap-1">
+                <div className="flex justify-between items-center">
+                  <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">Max Hold (barre 4H)</span>
+                  <span className="text-[10px] font-bold text-violet-600 dark:text-violet-400">{config.reversal_max_hold_bars} bars = {config.reversal_max_hold_bars * 4}h</span>
+                </div>
+                <input type="range" min={2} max={20} step={1} value={config.reversal_max_hold_bars}
+                  onChange={e => setConfig(c => ({ ...c, reversal_max_hold_bars: parseInt(e.target.value) }))}
+                  className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-violet-500" />
+                <p className="text-[9px] text-slate-400 dark:text-slate-500">Le inversioni si esauriscono in tempi più brevi del trend. Default 6 barre = 24h. Sempre attivo per i trade reversal.</p>
+              </div>
+
+              {/* Exhaustion calibration — 3 parametri chiave per lo use case */}
+              <div className="flex flex-col gap-3 p-3 rounded-lg bg-slate-50 dark:bg-white/[0.03] border border-slate-200 dark:border-white/8">
+                <p className="text-[9px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest">Soglie Exhaustion</p>
+                <p className="text-[9px] text-slate-400 dark:text-slate-500 leading-relaxed -mt-1">
+                  Calibrano il componente che misura l'esaurimento della mossa. Ottimizzati per mosse di 2-5 giorni su BTC.
+                </p>
+                {/* ADX Peak Min */}
+                <div className="flex flex-col gap-1">
+                  <div className="flex justify-between items-center">
+                    <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">ADX Picco Min</span>
+                    <span className="text-[10px] font-bold text-violet-600 dark:text-violet-400">{config.reversal_adx_peak_min.toFixed(0)}</span>
+                  </div>
+                  <input type="range" min={20} max={50} step={1} value={config.reversal_adx_peak_min}
+                    onChange={e => setConfig(c => ({ ...c, reversal_adx_peak_min: parseFloat(e.target.value) }))}
+                    className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-violet-500" />
+                  <p className="text-[9px] text-slate-400 dark:text-slate-500">ADX minimo per attivare il check exhaustion. 30 cattura mosse di medio termine; 35+ solo trend molto forti.</p>
+                </div>
+                {/* Ret48 Extreme */}
+                <div className="flex flex-col gap-1">
+                  <div className="flex justify-between items-center">
+                    <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">Ret 48 barre estremo</span>
+                    <span className="text-[10px] font-bold text-violet-600 dark:text-violet-400">{(config.reversal_ret48_extreme * 100).toFixed(0)}%</span>
+                  </div>
+                  <input type="range" min={3} max={20} step={1} value={config.reversal_ret48_extreme * 100}
+                    onChange={e => setConfig(c => ({ ...c, reversal_ret48_extreme: parseFloat(e.target.value) / 100 }))}
+                    className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-violet-500" />
+                  <p className="text-[9px] text-slate-400 dark:text-slate-500">Return minimo sulle ultime 48 barre (8 giorni 4H) per classificare la mossa come "estrema". 6% = soglia per BTC moderato.</p>
+                </div>
+                {/* Bars in regime min */}
+                <div className="flex flex-col gap-1">
+                  <div className="flex justify-between items-center">
+                    <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">Barre Regime Min</span>
+                    <span className="text-[10px] font-bold text-violet-600 dark:text-violet-400">{config.reversal_bars_in_regime_min} bar = {(config.reversal_bars_in_regime_min * 4 / 24).toFixed(1)}gg</span>
+                  </div>
+                  <input type="range" min={5} max={80} step={5} value={config.reversal_bars_in_regime_min}
+                    onChange={e => setConfig(c => ({ ...c, reversal_bars_in_regime_min: parseInt(e.target.value) }))}
+                    className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-violet-500" />
+                  <p className="text-[9px] text-slate-400 dark:text-slate-500">Barre minime in un regime prima che l'inversione sia probabile. 20 = ~3 giorni (mosse brevi). 40+ = macro-trend.</p>
+                </div>
+              </div>
+
+              {/* Limit retest params — solo se entry_mode == limit_retest */}
+              {config.reversal_entry_mode === 'limit_retest' && (
+                <div className="flex flex-col gap-3 p-3 rounded-lg bg-violet-50 dark:bg-violet-500/5 border border-violet-100 dark:border-violet-500/15">
+                  <p className="text-[9px] font-bold text-violet-700 dark:text-violet-300 uppercase tracking-widest">Parametri Limit Retest</p>
+                  <div className="flex flex-col gap-1">
+                    <div className="flex justify-between items-center">
+                      <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">Posizione nel Wick</span>
+                      <span className="text-[10px] font-bold text-violet-600 dark:text-violet-400">{Math.round(config.reversal_retest_wick_pct * 100)}%</span>
+                    </div>
+                    <input type="range" min={0} max={1} step={0.05} value={config.reversal_retest_wick_pct}
+                      onChange={e => setConfig(c => ({ ...c, reversal_retest_wick_pct: parseFloat(e.target.value) }))}
+                      className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-violet-500" />
+                    <p className="text-[9px] text-slate-400 dark:text-slate-500">0% = estremo del wick (SL minimo, R:R massimo). 50% = metà wick. 100% = close (nessun vantaggio sul market entry).</p>
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <div className="flex justify-between items-center">
+                      <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">Scadenza (barre 4H)</span>
+                      <span className="text-[10px] font-bold text-violet-600 dark:text-violet-400">{config.reversal_retest_expiry_bars} bar{config.reversal_retest_expiry_bars > 1 ? 're' : 'a'}</span>
+                    </div>
+                    <input type="range" min={1} max={6} step={1} value={config.reversal_retest_expiry_bars}
+                      onChange={e => setConfig(c => ({ ...c, reversal_retest_expiry_bars: parseInt(e.target.value) }))}
+                      className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-violet-500" />
+                    <p className="text-[9px] text-slate-400 dark:text-slate-500">Quante candele 4H aspettare il retest prima di annullare il pending. Default 2 = 8 ore di finestra.</p>
+                  </div>
+                </div>
+              )}
+
+              {/* Toggles conflict/hold-only */}
+              <div className="flex flex-col gap-2">
+                <label className="flex items-center gap-3 cursor-pointer">
+                  <div className="relative">
+                    <input type="checkbox" className="sr-only" checked={config.reversal_conflict_block} onChange={e => setConfig(c => ({ ...c, reversal_conflict_block: e.target.checked }))} />
+                    <div className={`w-8 h-4 rounded-full transition-all duration-300 ${config.reversal_conflict_block ? 'bg-violet-600' : 'bg-slate-200 dark:bg-white/10'}`} />
+                    <div className={`absolute top-0.5 left-0.5 w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.reversal_conflict_block ? 'translate-x-4' : ''}`} />
+                  </div>
+                  <div>
+                    <p className="text-[10px] font-bold text-slate-700 dark:text-slate-300">Conflict Block</p>
+                    <p className="text-[9px] text-slate-400 dark:text-slate-500">Se trend e reversal sono in direzioni opposte, blocca entrambi (hold). Raccomandato ON.</p>
+                  </div>
+                </label>
+                <label className="flex items-center gap-3 cursor-pointer">
+                  <div className="relative">
+                    <input type="checkbox" className="sr-only" checked={config.reversal_trend_hold_only} onChange={e => setConfig(c => ({ ...c, reversal_trend_hold_only: e.target.checked }))} />
+                    <div className={`w-8 h-4 rounded-full transition-all duration-300 ${config.reversal_trend_hold_only ? 'bg-violet-600' : 'bg-slate-200 dark:bg-white/10'}`} />
+                    <div className={`absolute top-0.5 left-0.5 w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.reversal_trend_hold_only ? 'translate-x-4' : ''}`} />
+                  </div>
+                  <div>
+                    <p className="text-[10px] font-bold text-slate-700 dark:text-slate-300">Solo su Trend Hold</p>
+                    <p className="text-[9px] text-slate-400 dark:text-slate-500">OFF = apre reversal anche quando trend concorda (boost). ON = reversal solo quando trend dice no-trade. Raccomandato ON.</p>
+                  </div>
+                </label>
+                <label className="flex items-center gap-3 cursor-pointer">
+                  <div className="relative">
+                    <input type="checkbox" className="sr-only" checked={config.reversal_guard_only} onChange={e => setConfig(c => ({ ...c, reversal_guard_only: e.target.checked }))} />
+                    <div className={`w-8 h-4 rounded-full transition-all duration-300 ${config.reversal_guard_only ? 'bg-violet-600' : 'bg-slate-200 dark:bg-white/10'}`} />
+                    <div className={`absolute top-0.5 left-0.5 w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.reversal_guard_only ? 'translate-x-4' : ''}`} />
+                  </div>
+                  <div>
+                    <p className="text-[10px] font-bold text-slate-700 dark:text-slate-300">Guard Only (solo blocco)</p>
+                    <p className="text-[9px] text-slate-400 dark:text-slate-500">ON = nessun trade contro-trend; il detector blocca solo i trade trend in zona di esaurimento. OFF = comportamento normale.</p>
+                  </div>
+                </label>
+              </div>
+
+              <div className="p-2 rounded-lg bg-violet-50 dark:bg-violet-500/5 border border-violet-100 dark:border-violet-500/15">
+                <p className="text-[9px] text-violet-700 dark:text-violet-300 font-medium">SL/TP calcolati strutturalmente al momento del segnale. lgbm_exit bypassato (LGBM non è addestrato su counter-trend). Max hold sempre attivo per i reversal.</p>
+                <p className="text-[9px] text-slate-400 dark:text-slate-500 mt-1">Attivare dopo 100+ trade trend in paper. Fare un retrain prima di andare live per includere le 13 feature reversal nel modello LightGBM.</p>
+              </div>
+            </div>
+          )}
+        </div>
+      </Section>
+
+      {/* Re-entry on TP */}
+      <Section title="Re-entry on TP" description="Riapre nella stessa direzione subito dopo un Take Profit, applicando una conferma 1H e parametri di rischio dedicati (SL/TP piu stretti, size ridotta). Utile per cavalcare trend forti senza aspettare la prossima candela 4H.">
+        <div className={`flex flex-col gap-3 mb-6 pb-6 border-b transition-colors duration-200 ${config.reentry_on_tp_enabled ? 'border-emerald-200 dark:border-emerald-500/25' : 'border-slate-100 dark:border-white/5'}`}>
+          <label className="flex items-center gap-3 cursor-pointer group">
+            <div className="relative">
+              <input type="checkbox" className="sr-only" checked={config.reentry_on_tp_enabled} onChange={e => setConfig(c => ({ ...c, reentry_on_tp_enabled: e.target.checked }))} />
+              <div className={`w-10 h-5 rounded-full transition-all duration-300 ${config.reentry_on_tp_enabled ? 'bg-emerald-600' : 'bg-slate-200 dark:bg-white/10'}`} />
+              <div className={`absolute top-1 left-1 w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.reentry_on_tp_enabled ? 'translate-x-5' : ''}`} />
+            </div>
+            <div>
+              <p className={`text-sm font-bold transition-colors ${config.reentry_on_tp_enabled ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-800 dark:text-slate-200 group-hover:text-emerald-600 dark:group-hover:text-emerald-400'}`}>
+                Re-entry on TP
+                {config.reentry_on_tp_enabled && <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-emerald-100 dark:bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 uppercase tracking-wider">Attivo</span>}
+              </p>
+              <p className="text-[11px] text-slate-400 dark:text-slate-500 mt-0.5">
+                {config.reentry_on_tp_enabled
+                  ? `LGBM min ${(config.reentry_min_lgbm_pct * 100).toFixed(0)}% · size ×${config.reentry_size_factor} · SL ${config.reentry_sl_atr_mult}×ATR · TP ${config.reentry_tp_atr_mult}×ATR`
+                  : 'Disattivato — nessuna riapertura dopo TP'}
+              </p>
+            </div>
+          </label>
+        </div>
+
+        {config.reentry_on_tp_enabled && (
+          <div className="flex flex-col gap-5">
+            <label className="flex items-center gap-3 cursor-pointer">
+              <div className="relative">
+                <input type="checkbox" className="sr-only" checked={config.reentry_1h_confirm_enabled} onChange={e => setConfig(c => ({ ...c, reentry_1h_confirm_enabled: e.target.checked }))} />
+                <div className={`w-8 h-4 rounded-full transition-all duration-300 ${config.reentry_1h_confirm_enabled ? 'bg-emerald-600' : 'bg-slate-200 dark:bg-white/10'}`} />
+                <div className={`absolute top-0.5 left-0.5 w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.reentry_1h_confirm_enabled ? 'translate-x-4' : ''}`} />
+              </div>
+              <div>
+                <p className="text-[10px] font-bold text-slate-700 dark:text-slate-300">Conferma Gate 1H</p>
+                <p className="text-[9px] text-slate-400 dark:text-slate-500">Richiede conferma del modello 1H prima di riaprire. Raccomandato ON.</p>
+              </div>
+            </label>
+
+            <div>
+              <Tooltip text="Soglia minima LGBM 4H nella direzione del re-entry. Garantisce che il segnale di trend sia ancora forte al momento della riapertura." width="wide" pos="top">
+                <p className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest mb-3">
+                  LGBM 4H min — <span className="text-emerald-600 dark:text-emerald-400">{(config.reentry_min_lgbm_pct * 100).toFixed(0)}%</span>
+                </p>
+              </Tooltip>
+              <input type="range" min={55} max={85} step={1} value={Math.round(config.reentry_min_lgbm_pct * 100)}
+                onChange={e => setConfig(c => ({ ...c, reentry_min_lgbm_pct: Number(e.target.value) / 100 }))}
+                className="w-full accent-emerald-500" />
+              <div className="flex justify-between text-[9px] text-slate-400 mt-1"><span>55%</span><span>85%</span></div>
+            </div>
+
+            {config.reentry_1h_confirm_enabled && (
+              <div>
+                <Tooltip text="Soglia minima del modello 1H nella direzione del re-entry. Filtra i casi in cui il momentum intracandle non supporta la riapertura." width="wide" pos="top">
+                  <p className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest mb-3">
+                    Gate 1H min — <span className="text-emerald-600 dark:text-emerald-400">{(config.reentry_min_1h_pct * 100).toFixed(0)}%</span>
+                  </p>
+                </Tooltip>
+                <input type="range" min={50} max={75} step={1} value={Math.round(config.reentry_min_1h_pct * 100)}
+                  onChange={e => setConfig(c => ({ ...c, reentry_min_1h_pct: Number(e.target.value) / 100 }))}
+                  className="w-full accent-emerald-500" />
+                <div className="flex justify-between text-[9px] text-slate-400 mt-1"><span>50%</span><span>75%</span></div>
+              </div>
+            )}
+
+            <div>
+              <Tooltip text="Moltiplicatore di size rispetto alla size normale calcolata da RiskEngine. Riduce l'esposizione perché il re-entry avviene senza una nuova chiusura 4H." width="wide" pos="top">
+                <p className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest mb-3">
+                  Size Factor — <span className="text-emerald-600 dark:text-emerald-400">×{config.reentry_size_factor.toFixed(2)}</span>
+                </p>
+              </Tooltip>
+              <input type="range" min={30} max={100} step={5} value={Math.round(config.reentry_size_factor * 100)}
+                onChange={e => setConfig(c => ({ ...c, reentry_size_factor: Number(e.target.value) / 100 }))}
+                className="w-full accent-emerald-500" />
+              <div className="flex justify-between text-[9px] text-slate-400 mt-1"><span>×0.30</span><span>×1.00</span></div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <Tooltip text="Moltiplicatore ATR per lo Stop Loss del re-entry. Piu stretto del normale (default 1.5×) perche il re-entry e eseguito senza struttura fresca." width="wide" pos="top">
+                  <p className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest mb-3">
+                    SL — <span className="text-rose-500">{config.reentry_sl_atr_mult.toFixed(1)}×ATR</span>
+                  </p>
+                </Tooltip>
+                <input type="range" min={5} max={30} step={1} value={Math.round(config.reentry_sl_atr_mult * 10)}
+                  onChange={e => setConfig(c => ({ ...c, reentry_sl_atr_mult: Number(e.target.value) / 10 }))}
+                  className="w-full accent-rose-500" />
+                <div className="flex justify-between text-[9px] text-slate-400 mt-1"><span>0.5×</span><span>3.0×</span></div>
+              </div>
+              <div>
+                <Tooltip text="Moltiplicatore ATR per il Take Profit del re-entry. Piu conservativo del normale (default 3.5×) per chiudere velocemente il guadagno." width="wide" pos="top">
+                  <p className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest mb-3">
+                    TP — <span className="text-emerald-500">{config.reentry_tp_atr_mult.toFixed(1)}×ATR</span>
+                  </p>
+                </Tooltip>
+                <input type="range" min={10} max={80} step={5} value={Math.round(config.reentry_tp_atr_mult * 10)}
+                  onChange={e => setConfig(c => ({ ...c, reentry_tp_atr_mult: Number(e.target.value) / 10 }))}
+                  className="w-full accent-emerald-500" />
+                <div className="flex justify-between text-[9px] text-slate-400 mt-1"><span>1.0×</span><span>8.0×</span></div>
+              </div>
+            </div>
+
+            <div className="p-2 rounded-lg bg-emerald-50 dark:bg-emerald-500/5 border border-emerald-100 dark:border-emerald-500/15">
+              <p className="text-[9px] text-emerald-700 dark:text-emerald-300 font-medium">SL strutturale, FVG-SL e pullback entry disabilitati per il re-entry (nessuna nuova candela 4H chiusa). Il re-entry usa ATR puro per SL e TP. Bounce-fade entry disabilitato.</p>
+              <p className="text-[9px] text-slate-400 dark:text-slate-500 mt-1">Backtestabile: il motore di backtest applica la stessa logica incluso il gate 1H. Statistiche: reentry_triggered / reentry_blocked_lgbm / reentry_blocked_1h nei param_stats.</p>
+            </div>
+          </div>
+        )}
+      </Section>
+
+      {/* Regime Bias */}
+      <Section title="Regime Bias — Threshold Asimmetrico" description="Penalizza i trade contro-trend richiedendo un segnale più forte. In regime bull, i short richiedono ensemble_prob > threshold + delta; in bear, i long richiedono lo stesso. Sideways = simmetrico.">
+        <div className={`flex flex-col gap-3 mb-6 pb-6 border-b transition-colors duration-200 ${config.regime_bias_enabled ? 'border-orange-200 dark:border-orange-500/25' : 'border-slate-100 dark:border-white/5'}`}>
+          <label className="flex items-center gap-3 cursor-pointer group">
+            <div className="relative">
+              <input type="checkbox" className="sr-only" checked={config.regime_bias_enabled} onChange={e => setConfig(c => ({ ...c, regime_bias_enabled: e.target.checked }))} />
+              <div className={`w-10 h-5 rounded-full transition-all duration-300 ${config.regime_bias_enabled ? 'bg-orange-600' : 'bg-slate-200 dark:bg-white/10'}`} />
+              <div className={`absolute top-1 left-1 w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.regime_bias_enabled ? 'translate-x-5' : ''}`} />
+            </div>
+            <div>
+              <p className={`text-sm font-bold transition-colors ${config.regime_bias_enabled ? 'text-orange-600 dark:text-orange-400' : 'text-slate-800 dark:text-slate-200 group-hover:text-orange-600 dark:group-hover:text-orange-400'}`}>
+                Threshold Asimmetrico
+                {config.regime_bias_enabled && <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-orange-100 dark:bg-orange-500/20 text-orange-600 dark:text-orange-400 uppercase tracking-wider">Attivo</span>}
+              </p>
+              <p className="text-[11px] text-slate-400 dark:text-slate-500 mt-0.5">
+                {config.regime_bias_enabled
+                  ? `Penalità +${config.regime_bias_delta} per trade contro-trend · size ×${config.regime_bias_size_factor}`
+                  : 'Soglia identica per long e short indipendentemente dal regime'}
+              </p>
+            </div>
+          </label>
+        </div>
+
+        {config.regime_bias_enabled && (
+          <>
+            {/* Forced regime selector */}
+            <div className="mb-6">
+              <Tooltip text="Scegli tu il regime di mercato manualmente, oppure lascia che sia il bot a rilevarlo automaticamente da EMA20+ADX. Con 'Neutro' il bias è attivo ma non penalizza nessuna direzione." width="wide" pos="bottom">
+                <p className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest mb-3">Regime di mercato</p>
+              </Tooltip>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                {(['auto', 'bull', 'bear', 'neutral'] as const).map(r => {
+                  const labels: Record<string, string> = { auto: 'Auto', bull: 'Bull', bear: 'Bear', neutral: 'Neutro' };
+                  const active: Record<string, string> = {
+                    auto:    'bg-slate-800 dark:bg-white text-white dark:text-slate-900 border-slate-800 dark:border-white',
+                    bull:    'bg-emerald-600 text-white border-emerald-600 shadow-emerald-500/20',
+                    bear:    'bg-rose-600 text-white border-rose-600 shadow-rose-500/20',
+                    neutral: 'bg-slate-400 dark:bg-slate-500 text-white border-transparent',
+                  };
+                  const inactive = 'bg-slate-50 dark:bg-white/5 text-slate-400 dark:text-slate-500 border-slate-100 dark:border-white/10 hover:bg-slate-100 dark:hover:bg-white/10';
+                  return (
+                    <button
+                      key={r}
+                      onClick={() => setConfig(c => ({ ...c, forced_regime: r }))}
+                      className={`py-2.5 rounded-xl text-[10px] font-bold uppercase tracking-widest transition-all border shadow-sm ${config.forced_regime === r ? active[r] : inactive}`}
+                    >
+                      {labels[r]}
+                    </button>
+                  );
+                })}
+              </div>
+              {config.forced_regime !== 'auto' && (
+                <p className="text-[10px] font-bold mt-2 text-orange-600 dark:text-orange-400">
+                  {config.forced_regime === 'bull' && 'Regime BULL manuale — gli short richiedono soglia più alta'}
+                  {config.forced_regime === 'bear' && 'Regime BEAR manuale — i long richiedono soglia più alta'}
+                  {config.forced_regime === 'neutral' && 'Regime NEUTRO — nessun bias su nessuna direzione'}
+                </p>
+              )}
+              {/* Enhanced regime detection toggle — only relevant in Auto mode */}
+              {config.forced_regime === 'auto' && (
+                <label className={`flex items-center gap-3 mt-3 p-3 rounded-xl cursor-pointer transition-colors ${config.regime_bias_enhanced ? 'bg-indigo-50 dark:bg-indigo-500/10 border border-indigo-200 dark:border-indigo-500/25' : 'bg-slate-50 dark:bg-white/[0.03] border border-slate-100 dark:border-white/5'}`}>
+                  <div className="relative shrink-0">
+                    <input type="checkbox" className="sr-only" checked={config.regime_bias_enhanced} onChange={e => setConfig(c => ({ ...c, regime_bias_enhanced: e.target.checked }))} />
+                    <div className={`w-9 h-5 rounded-full transition-all duration-300 ${config.regime_bias_enhanced ? 'bg-indigo-600' : 'bg-slate-200 dark:bg-white/10'}`} />
+                    <div className={`absolute top-1 left-1 w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.regime_bias_enhanced ? 'translate-x-4' : ''}`} />
+                  </div>
+                  <div>
+                    <p className={`text-[11px] font-bold ${config.regime_bias_enhanced ? 'text-indigo-600 dark:text-indigo-400' : 'text-slate-600 dark:text-slate-400'}`}>
+                      Regime Detection Avanzato
+                      {config.regime_bias_enhanced && <span className="ml-1.5 px-1.5 py-0.5 rounded text-[9px] font-bold bg-indigo-100 dark:bg-indigo-500/20 text-indigo-600 dark:text-indigo-400 uppercase tracking-wider">Attivo</span>}
+                    </p>
+                    <p className="text-[10px] text-slate-400 dark:text-slate-500 mt-0.5">
+                      {config.regime_bias_enhanced
+                        ? 'ADX slope · BB compression · transition_risk · confidence — delta modulato dinamicamente'
+                        : 'Semplice: EMA20 + ADX > 20 (più reattivo, meno preciso)'}
+                    </p>
+                  </div>
+                </label>
+              )}
+            </div>
+
+            <div className="mb-4">
+              <Tooltip text="Delta aggiunto alla soglia direzionale per il lato contro-trend. Es. con threshold 0.62 e delta 0.08, in regime bull i short richiedono ensemble_prob > 0.70." width="wide" pos="bottom">
+                <label className="flex items-center justify-between mb-2">
+                  <span className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest">Penalità contro-trend (delta)</span>
+                  <span className="font-mono text-sm font-bold text-orange-600 dark:text-orange-400">+{config.regime_bias_delta.toFixed(2)}</span>
+                </label>
+              </Tooltip>
+              <input
+                type="range" min="0.01" max="0.20" step="0.01"
+                value={config.regime_bias_delta}
+                onChange={e => setConfig(c => ({ ...c, regime_bias_delta: parseFloat(e.target.value) }))}
+                className="w-full h-1.5 bg-slate-200 dark:bg-white/10 rounded-full appearance-none cursor-pointer accent-orange-600"
+              />
+              <div className="flex justify-between text-[9px] font-mono text-slate-400 dark:text-slate-500 mt-1">
+                <span>0.01</span><span>0.10</span><span>0.20</span>
+              </div>
+            </div>
+
+            <div>
+              <Tooltip text="Fattore di riduzione size per i trade contro-trend che superano comunque la soglia alzata. 1.0 = size piena, 0.5 = metà size." width="wide" pos="bottom">
+                <label className="flex items-center justify-between mb-2">
+                  <span className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest">Size factor contro-trend</span>
+                  <span className="font-mono text-sm font-bold text-orange-600 dark:text-orange-400">×{config.regime_bias_size_factor.toFixed(2)}</span>
+                </label>
+              </Tooltip>
+              <input
+                type="range" min="0.30" max="1.0" step="0.05"
+                value={config.regime_bias_size_factor}
+                onChange={e => setConfig(c => ({ ...c, regime_bias_size_factor: parseFloat(e.target.value) }))}
+                className="w-full h-1.5 bg-slate-200 dark:bg-white/10 rounded-full appearance-none cursor-pointer accent-orange-600"
+              />
+              <div className="flex justify-between text-[9px] font-mono text-slate-400 dark:text-slate-500 mt-1">
+                <span>0.30</span><span>0.65</span><span>1.0</span>
+              </div>
+            </div>
+          </>
+        )}
+      </Section>
+
+
+      {/* ── Bias di Mercato — Funding / Sentiment ── */}
+      <Section title="Bias di Mercato — Funding / Sentiment" description="Adatta le soglie direzionali al posizionamento del mercato. Funding Rate alto = mercato over-long → soglia long alzata. Fear &amp; Greed estremo = contrarian → favorisce il lato opposto.">
+        {/* Funding Rate Bias */}
+        <div className={`flex flex-col gap-3 mb-6 pb-6 border-b transition-colors duration-200 ${config.funding_gate_enabled ? 'border-cyan-200 dark:border-cyan-500/25' : 'border-slate-100 dark:border-white/5'}`}>
+          <label className="flex items-center gap-3 cursor-pointer group">
+            <div className="relative">
+              <input type="checkbox" className="sr-only" checked={config.funding_gate_enabled} onChange={e => setConfig(c => ({ ...c, funding_gate_enabled: e.target.checked }))} />
+              <div className={`w-10 h-5 rounded-full transition-all duration-300 ${config.funding_gate_enabled ? 'bg-cyan-600' : 'bg-slate-200 dark:bg-white/10'}`} />
+              <div className={`absolute top-1 left-1 w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.funding_gate_enabled ? 'translate-x-5' : ''}`} />
+            </div>
+            <div>
+              <p className={`text-sm font-bold transition-colors ${config.funding_gate_enabled ? 'text-cyan-600 dark:text-cyan-400' : 'text-slate-800 dark:text-slate-200 group-hover:text-cyan-600 dark:group-hover:text-cyan-400'}`}>
+                Funding Rate Bias
+                {config.funding_gate_enabled && <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-cyan-100 dark:bg-cyan-500/20 text-cyan-600 dark:text-cyan-400 uppercase tracking-wider">Attivo</span>}
+              </p>
+              <p className="text-[11px] font-medium text-slate-400 dark:text-slate-500 leading-tight">
+                {config.funding_gate_enabled
+                  ? `Lookback ${config.funding_gate_lookback} bar · high ≥${(config.funding_high_thr * 10000).toFixed(1)}bps · extreme ≥${(config.funding_extreme_thr * 10000).toFixed(1)}bps · Δ${config.funding_bias_delta}`
+                  : 'Funding positivo alto → soglia long alzata; funding negativo → soglia short alzata'}
+              </p>
+            </div>
+          </label>
+          {config.funding_gate_enabled && (
+            <div className="pl-12 grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-4 mt-1">
+              <div>
+                <label className="flex items-center justify-between mb-2">
+                  <span className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest">Lookback bars (4H)</span>
+                  <span className="font-mono text-sm font-bold text-cyan-600 dark:text-cyan-400">{config.funding_gate_lookback}</span>
+                </label>
+                <input type="range" min="2" max="24" step="1"
+                  value={config.funding_gate_lookback}
+                  onChange={e => setConfig(c => ({ ...c, funding_gate_lookback: parseInt(e.target.value) }))}
+                  className="w-full h-1.5 bg-slate-200 dark:bg-white/10 rounded-full appearance-none cursor-pointer accent-cyan-600"
+                />
+                <div className="flex justify-between text-[9px] font-mono text-slate-400 mt-1"><span>2</span><span>12</span><span>24</span></div>
+              </div>
+              <div>
+                <label className="flex items-center justify-between mb-2">
+                  <span className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest">Soglia high (bps/8h)</span>
+                  <span className="font-mono text-sm font-bold text-cyan-600 dark:text-cyan-400">{(config.funding_high_thr * 10000).toFixed(1)}</span>
+                </label>
+                <input type="range" min="0.00003" max="0.00050" step="0.00001"
+                  value={config.funding_high_thr}
+                  onChange={e => setConfig(c => ({ ...c, funding_high_thr: parseFloat(e.target.value) }))}
+                  className="w-full h-1.5 bg-slate-200 dark:bg-white/10 rounded-full appearance-none cursor-pointer accent-cyan-600"
+                />
+                <div className="flex justify-between text-[9px] font-mono text-slate-400 mt-1"><span>0.3</span><span>2.5</span><span>5.0</span></div>
+              </div>
+              <div>
+                <label className="flex items-center justify-between mb-2">
+                  <span className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest">Soglia extreme (bps/8h)</span>
+                  <span className="font-mono text-sm font-bold text-cyan-600 dark:text-cyan-400">{(config.funding_extreme_thr * 10000).toFixed(1)}</span>
+                </label>
+                <input type="range" min="0.00010" max="0.00100" step="0.00005"
+                  value={config.funding_extreme_thr}
+                  onChange={e => setConfig(c => ({ ...c, funding_extreme_thr: parseFloat(e.target.value) }))}
+                  className="w-full h-1.5 bg-slate-200 dark:bg-white/10 rounded-full appearance-none cursor-pointer accent-cyan-600"
+                />
+                <div className="flex justify-between text-[9px] font-mono text-slate-400 mt-1"><span>1.0</span><span>5.0</span><span>10.0</span></div>
+              </div>
+              <div>
+                <label className="flex items-center justify-between mb-2">
+                  <span className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest">Bias delta</span>
+                  <span className="font-mono text-sm font-bold text-cyan-600 dark:text-cyan-400">Δ{config.funding_bias_delta.toFixed(2)}</span>
+                </label>
+                <input type="range" min="0.01" max="0.08" step="0.005"
+                  value={config.funding_bias_delta}
+                  onChange={e => setConfig(c => ({ ...c, funding_bias_delta: parseFloat(e.target.value) }))}
+                  className="w-full h-1.5 bg-slate-200 dark:bg-white/10 rounded-full appearance-none cursor-pointer accent-cyan-600"
+                />
+                <div className="flex justify-between text-[9px] font-mono text-slate-400 mt-1"><span>0.01</span><span>0.04</span><span>0.08</span></div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Fear & Greed Bias */}
+        <div className={`flex flex-col gap-3 transition-colors duration-200`}>
+          <label className="flex items-center gap-3 cursor-pointer group">
+            <div className="relative">
+              <input type="checkbox" className="sr-only" checked={config.fng_gate_enabled} onChange={e => setConfig(c => ({ ...c, fng_gate_enabled: e.target.checked }))} />
+              <div className={`w-10 h-5 rounded-full transition-all duration-300 ${config.fng_gate_enabled ? 'bg-violet-600' : 'bg-slate-200 dark:bg-white/10'}`} />
+              <div className={`absolute top-1 left-1 w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.fng_gate_enabled ? 'translate-x-5' : ''}`} />
+            </div>
+            <div>
+              <p className={`text-sm font-bold transition-colors ${config.fng_gate_enabled ? 'text-violet-600 dark:text-violet-400' : 'text-slate-800 dark:text-slate-200 group-hover:text-violet-600 dark:group-hover:text-violet-400'}`}>
+                Fear &amp; Greed Bias
+                {config.fng_gate_enabled && <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-violet-100 dark:bg-violet-500/20 text-violet-600 dark:text-violet-400 uppercase tracking-wider">Attivo</span>}
+              </p>
+              <p className="text-[11px] font-medium text-slate-400 dark:text-slate-500 leading-tight">
+                {config.fng_gate_enabled
+                  ? `Extreme Fear <${config.fng_extreme_fear_thr} · Fear <${config.fng_fear_thr} · Greed >${config.fng_greed_thr} · Extreme Greed >${config.fng_extreme_greed_thr} · Δ${config.fng_bias_delta}`
+                  : 'Contrarian: paura estrema favorisce long, greed estremo favorisce short'}
+              </p>
+            </div>
+          </label>
+          {config.fng_gate_enabled && (
+            <div className="pl-12 grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-4 mt-1">
+              <div>
+                <label className="flex items-center justify-between mb-2">
+                  <span className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest">Soglia Extreme Fear</span>
+                  <span className="font-mono text-sm font-bold text-violet-600 dark:text-violet-400">&lt;{config.fng_extreme_fear_thr.toFixed(0)}</span>
+                </label>
+                <input type="range" min="5" max="40" step="1"
+                  value={config.fng_extreme_fear_thr}
+                  onChange={e => setConfig(c => ({ ...c, fng_extreme_fear_thr: parseFloat(e.target.value) }))}
+                  className="w-full h-1.5 bg-slate-200 dark:bg-white/10 rounded-full appearance-none cursor-pointer accent-violet-600"
+                />
+                <div className="flex justify-between text-[9px] font-mono text-slate-400 mt-1"><span>5</span><span>20</span><span>40</span></div>
+              </div>
+              <div>
+                <label className="flex items-center justify-between mb-2">
+                  <span className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest">Soglia Fear</span>
+                  <span className="font-mono text-sm font-bold text-violet-600 dark:text-violet-400">&lt;{config.fng_fear_thr.toFixed(0)}</span>
+                </label>
+                <input type="range" min="20" max="50" step="1"
+                  value={config.fng_fear_thr}
+                  onChange={e => setConfig(c => ({ ...c, fng_fear_thr: parseFloat(e.target.value) }))}
+                  className="w-full h-1.5 bg-slate-200 dark:bg-white/10 rounded-full appearance-none cursor-pointer accent-violet-600"
+                />
+                <div className="flex justify-between text-[9px] font-mono text-slate-400 mt-1"><span>20</span><span>35</span><span>50</span></div>
+              </div>
+              <div>
+                <label className="flex items-center justify-between mb-2">
+                  <span className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest">Soglia Greed</span>
+                  <span className="font-mono text-sm font-bold text-violet-600 dark:text-violet-400">&gt;{config.fng_greed_thr.toFixed(0)}</span>
+                </label>
+                <input type="range" min="50" max="80" step="1"
+                  value={config.fng_greed_thr}
+                  onChange={e => setConfig(c => ({ ...c, fng_greed_thr: parseFloat(e.target.value) }))}
+                  className="w-full h-1.5 bg-slate-200 dark:bg-white/10 rounded-full appearance-none cursor-pointer accent-violet-600"
+                />
+                <div className="flex justify-between text-[9px] font-mono text-slate-400 mt-1"><span>50</span><span>65</span><span>80</span></div>
+              </div>
+              <div>
+                <label className="flex items-center justify-between mb-2">
+                  <span className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest">Soglia Extreme Greed</span>
+                  <span className="font-mono text-sm font-bold text-violet-600 dark:text-violet-400">&gt;{config.fng_extreme_greed_thr.toFixed(0)}</span>
+                </label>
+                <input type="range" min="60" max="95" step="1"
+                  value={config.fng_extreme_greed_thr}
+                  onChange={e => setConfig(c => ({ ...c, fng_extreme_greed_thr: parseFloat(e.target.value) }))}
+                  className="w-full h-1.5 bg-slate-200 dark:bg-white/10 rounded-full appearance-none cursor-pointer accent-violet-600"
+                />
+                <div className="flex justify-between text-[9px] font-mono text-slate-400 mt-1"><span>60</span><span>80</span><span>95</span></div>
+              </div>
+              <div className="sm:col-span-2">
+                <label className="flex items-center justify-between mb-2">
+                  <span className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest">Bias delta</span>
+                  <span className="font-mono text-sm font-bold text-violet-600 dark:text-violet-400">Δ{config.fng_bias_delta.toFixed(2)}</span>
+                </label>
+                <input type="range" min="0.01" max="0.08" step="0.005"
+                  value={config.fng_bias_delta}
+                  onChange={e => setConfig(c => ({ ...c, fng_bias_delta: parseFloat(e.target.value) }))}
+                  className="w-full h-1.5 bg-slate-200 dark:bg-white/10 rounded-full appearance-none cursor-pointer accent-violet-600"
+                />
+                <div className="flex justify-between text-[9px] font-mono text-slate-400 mt-1"><span>0.01</span><span>0.04</span><span>0.08</span></div>
+              </div>
+            </div>
+          )}
+        </div>
+      </Section>
+
+      {/* ── Squeeze Protection Gates ── */}
+      <Section
+        title="Squeeze Protection Gates — Protezione Short/Long Squeeze"
+        description="Tre gate indipendenti basati su dati di posizionamento del mercato (Coinalyze). Attivare in presenza di crowding direzionale elevato. Richiedono API key Coinalyze già configurata."
+      >
+        {/* ── Gate A: OI Spike ── */}
+        <div className={`flex flex-col gap-3 mb-6 pb-6 border-b transition-colors duration-200
+          ${config.oi_spike_gate_enabled ? 'border-rose-200 dark:border-rose-500/25' : 'border-slate-100 dark:border-white/5'}`}>
+
+          <label className="flex items-start gap-3 cursor-pointer group">
+            <div className="relative inline-flex items-center mt-0.5">
+              <input type="checkbox" className="sr-only"
+                checked={config.oi_spike_gate_enabled}
+                onChange={e => setConfig(c => ({ ...c, oi_spike_gate_enabled: e.target.checked }))} />
+              <div className={`w-10 h-5 rounded-full transition-all duration-300
+                ${config.oi_spike_gate_enabled ? 'bg-rose-600' : 'bg-slate-200 dark:bg-white/10'}`} />
+              <div className={`absolute top-1 left-1 w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300
+                ${config.oi_spike_gate_enabled ? 'translate-x-5' : ''}`} />
+            </div>
+            <div>
+              <p className={`text-sm font-bold transition-colors
+                ${config.oi_spike_gate_enabled ? 'text-rose-600 dark:text-rose-400' : 'text-slate-800 dark:text-slate-200'}`}>
+                OI Spike Gate
+                {config.oi_spike_gate_enabled && (
+                  <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-rose-100 dark:bg-rose-500/20 text-rose-600 dark:text-rose-400 uppercase tracking-wider">Attivo</span>
+                )}
+              </p>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                {config.oi_spike_gate_enabled
+                  ? `soglia ${config.oi_spike_thr.toFixed(1)}σ · lookback ${config.oi_spike_lookback} bar · ${config.oi_spike_mode === 'block' ? 'Blocco' : 'Scale'}`
+                  : 'Blocca/riduce trade quando OI_delta_z supera la soglia (crowding direzionale)'}
+              </p>
+            </div>
+          </label>
+
+          {config.oi_spike_gate_enabled && (
+            <div className="grid grid-cols-2 gap-4 pl-14">
+              <div>
+                <label className="flex items-center justify-between mb-2">
+                  <span className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest">Soglia (σ)</span>
+                  <span className="font-mono text-sm font-bold text-rose-600 dark:text-rose-400">{config.oi_spike_thr.toFixed(1)}σ</span>
+                </label>
+                <input type="range" min="1.0" max="4.0" step="0.1"
+                  value={config.oi_spike_thr}
+                  onChange={e => setConfig(c => ({ ...c, oi_spike_thr: parseFloat(e.target.value) }))}
+                  className="w-full h-1.5 bg-slate-200 dark:bg-white/10 rounded-full appearance-none cursor-pointer accent-rose-600" />
+                <div className="flex justify-between text-[9px] font-mono text-slate-400 mt-1"><span>1.0</span><span>2.5</span><span>4.0</span></div>
+              </div>
+              <div>
+                <label className="flex items-center justify-between mb-2">
+                  <span className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest">Lookback (bar)</span>
+                  <span className="font-mono text-sm font-bold text-rose-600 dark:text-rose-400">{config.oi_spike_lookback}</span>
+                </label>
+                <input type="range" min="1" max="6" step="1"
+                  value={config.oi_spike_lookback}
+                  onChange={e => setConfig(c => ({ ...c, oi_spike_lookback: parseInt(e.target.value) }))}
+                  className="w-full h-1.5 bg-slate-200 dark:bg-white/10 rounded-full appearance-none cursor-pointer accent-rose-600" />
+                <div className="flex justify-between text-[9px] font-mono text-slate-400 mt-1"><span>1</span><span>3</span><span>6</span></div>
+              </div>
+              <div className="col-span-2 flex gap-3">
+                {(['scale', 'block'] as const).map(mode => (
+                  <button key={mode}
+                    onClick={() => setConfig(c => ({ ...c, oi_spike_mode: mode }))}
+                    className={`flex-1 py-2 rounded-lg text-xs font-bold border transition-all ${
+                      config.oi_spike_mode === mode
+                        ? 'bg-rose-600 text-white border-rose-600'
+                        : 'bg-transparent text-slate-600 dark:text-slate-400 border-slate-200 dark:border-white/10 hover:border-rose-400'
+                    }`}>
+                    {mode === 'scale' ? '⚖️ Scale size' : '🚫 Blocca trade'}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* ── Gate B: Long/Short Ratio ── */}
+        <div className={`flex flex-col gap-3 mb-6 pb-6 border-b transition-colors duration-200
+          ${config.ls_gate_enabled ? 'border-rose-200 dark:border-rose-500/25' : 'border-slate-100 dark:border-white/5'}`}>
+
+          <label className="flex items-start gap-3 cursor-pointer group">
+            <div className="relative inline-flex items-center mt-0.5">
+              <input type="checkbox" className="sr-only"
+                checked={config.ls_gate_enabled}
+                onChange={e => setConfig(c => ({ ...c, ls_gate_enabled: e.target.checked }))} />
+              <div className={`w-10 h-5 rounded-full transition-all duration-300
+                ${config.ls_gate_enabled ? 'bg-rose-600' : 'bg-slate-200 dark:bg-white/10'}`} />
+              <div className={`absolute top-1 left-1 w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300
+                ${config.ls_gate_enabled ? 'translate-x-5' : ''}`} />
+            </div>
+            <div>
+              <p className={`text-sm font-bold transition-colors
+                ${config.ls_gate_enabled ? 'text-rose-600 dark:text-rose-400' : 'text-slate-800 dark:text-slate-200'}`}>
+                Long/Short Ratio Gate
+                {config.ls_gate_enabled && (
+                  <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-rose-100 dark:bg-rose-500/20 text-rose-600 dark:text-rose-400 uppercase tracking-wider">Attivo</span>
+                )}
+              </p>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                {config.ls_gate_enabled
+                  ? `block SHORT se long ≥${config.ls_long_block_pct.toFixed(0)}% · block LONG se long ≤${config.ls_short_block_pct.toFixed(0)}%`
+                  : 'Blocca/riduce trade quando il mercato è eccessivamente posizionato in una direzione (Coinalyze)'}
+              </p>
+            </div>
+          </label>
+
+          {config.ls_gate_enabled && (
+            <div className="grid grid-cols-2 gap-4 pl-14">
+              <div>
+                <label className="flex items-center justify-between mb-2">
+                  <span className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest">Block SHORT se long ≥</span>
+                  <span className="font-mono text-sm font-bold text-rose-600 dark:text-rose-400">{config.ls_long_block_pct.toFixed(0)}%</span>
+                </label>
+                <input type="range" min="55" max="80" step="1"
+                  value={config.ls_long_block_pct}
+                  onChange={e => setConfig(c => ({ ...c, ls_long_block_pct: parseFloat(e.target.value) }))}
+                  className="w-full h-1.5 bg-slate-200 dark:bg-white/10 rounded-full appearance-none cursor-pointer accent-rose-600" />
+                <div className="flex justify-between text-[9px] font-mono text-slate-400 mt-1"><span>55%</span><span>67%</span><span>80%</span></div>
+              </div>
+              <div>
+                <label className="flex items-center justify-between mb-2">
+                  <span className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest">Block LONG se long ≤</span>
+                  <span className="font-mono text-sm font-bold text-rose-600 dark:text-rose-400">{config.ls_short_block_pct.toFixed(0)}%</span>
+                </label>
+                <input type="range" min="20" max="45" step="1"
+                  value={config.ls_short_block_pct}
+                  onChange={e => setConfig(c => ({ ...c, ls_short_block_pct: parseFloat(e.target.value) }))}
+                  className="w-full h-1.5 bg-slate-200 dark:bg-white/10 rounded-full appearance-none cursor-pointer accent-rose-600" />
+                <div className="flex justify-between text-[9px] font-mono text-slate-400 mt-1"><span>20%</span><span>33%</span><span>45%</span></div>
+              </div>
+              {config.ls_gate_mode === 'scale' && (
+                <div>
+                  <label className="flex items-center justify-between mb-2">
+                    <span className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest">Scale factor</span>
+                    <span className="font-mono text-sm font-bold text-rose-600 dark:text-rose-400">×{config.ls_gate_scale_factor.toFixed(2)}</span>
+                  </label>
+                  <input type="range" min="0.20" max="0.80" step="0.05"
+                    value={config.ls_gate_scale_factor}
+                    onChange={e => setConfig(c => ({ ...c, ls_gate_scale_factor: parseFloat(e.target.value) }))}
+                    className="w-full h-1.5 bg-slate-200 dark:bg-white/10 rounded-full appearance-none cursor-pointer accent-rose-600" />
+                  <div className="flex justify-between text-[9px] font-mono text-slate-400 mt-1"><span>×0.20</span><span>×0.50</span><span>×0.80</span></div>
+                </div>
+              )}
+              <div className={config.ls_gate_mode === 'scale' ? '' : 'col-span-2'}>
+                <div className="flex gap-3">
+                  {(['scale', 'block'] as const).map(mode => (
+                    <button key={mode}
+                      onClick={() => setConfig(c => ({ ...c, ls_gate_mode: mode }))}
+                      className={`flex-1 py-2 rounded-lg text-xs font-bold border transition-all ${
+                        config.ls_gate_mode === mode
+                          ? 'bg-rose-600 text-white border-rose-600'
+                          : 'bg-transparent text-slate-600 dark:text-slate-400 border-slate-200 dark:border-white/10 hover:border-rose-400'
+                      }`}>
+                      {mode === 'scale' ? '⚖️ Scale size' : '🚫 Blocca trade'}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* ── Gate C: Liquidation Spike ── */}
+        <div className="flex flex-col gap-3 transition-colors duration-200">
+
+          <label className="flex items-start gap-3 cursor-pointer group">
+            <div className="relative inline-flex items-center mt-0.5">
+              <input type="checkbox" className="sr-only"
+                checked={config.liq_spike_gate_enabled}
+                onChange={e => setConfig(c => ({ ...c, liq_spike_gate_enabled: e.target.checked }))} />
+              <div className={`w-10 h-5 rounded-full transition-all duration-300
+                ${config.liq_spike_gate_enabled ? 'bg-rose-600' : 'bg-slate-200 dark:bg-white/10'}`} />
+              <div className={`absolute top-1 left-1 w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300
+                ${config.liq_spike_gate_enabled ? 'translate-x-5' : ''}`} />
+            </div>
+            <div>
+              <p className={`text-sm font-bold transition-colors
+                ${config.liq_spike_gate_enabled ? 'text-rose-600 dark:text-rose-400' : 'text-slate-800 dark:text-slate-200'}`}>
+                Liquidation Spike Gate
+                {config.liq_spike_gate_enabled && (
+                  <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-rose-100 dark:bg-rose-500/20 text-rose-600 dark:text-rose-400 uppercase tracking-wider">Attivo</span>
+                )}
+              </p>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                {config.liq_spike_gate_enabled
+                  ? `soglia ${config.liq_spike_thr.toFixed(1)}σ · lookback ${config.liq_spike_lookback} bar · ${config.liq_spike_mode === 'block' ? 'Blocco' : 'Scale'}`
+                  : 'Blocca trade quando liq_short_z o liq_long_z supera la soglia (squeeze in corso)'}
+              </p>
+            </div>
+          </label>
+
+          {config.liq_spike_gate_enabled && (
+            <div className="grid grid-cols-2 gap-4 pl-14">
+              <div>
+                <label className="flex items-center justify-between mb-2">
+                  <span className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest">Soglia (σ)</span>
+                  <span className="font-mono text-sm font-bold text-rose-600 dark:text-rose-400">{config.liq_spike_thr.toFixed(1)}σ</span>
+                </label>
+                <input type="range" min="1.5" max="5.0" step="0.1"
+                  value={config.liq_spike_thr}
+                  onChange={e => setConfig(c => ({ ...c, liq_spike_thr: parseFloat(e.target.value) }))}
+                  className="w-full h-1.5 bg-slate-200 dark:bg-white/10 rounded-full appearance-none cursor-pointer accent-rose-600" />
+                <div className="flex justify-between text-[9px] font-mono text-slate-400 mt-1"><span>1.5</span><span>3.0</span><span>5.0</span></div>
+              </div>
+              <div>
+                <label className="flex items-center justify-between mb-2">
+                  <span className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest">Lookback (bar)</span>
+                  <span className="font-mono text-sm font-bold text-rose-600 dark:text-rose-400">{config.liq_spike_lookback}</span>
+                </label>
+                <input type="range" min="1" max="6" step="1"
+                  value={config.liq_spike_lookback}
+                  onChange={e => setConfig(c => ({ ...c, liq_spike_lookback: parseInt(e.target.value) }))}
+                  className="w-full h-1.5 bg-slate-200 dark:bg-white/10 rounded-full appearance-none cursor-pointer accent-rose-600" />
+                <div className="flex justify-between text-[9px] font-mono text-slate-400 mt-1"><span>1</span><span>3</span><span>6</span></div>
+              </div>
+              {config.liq_spike_mode === 'scale' && (
+                <div className="col-span-2">
+                  <label className="flex items-center justify-between mb-2">
+                    <span className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest">Scale factor</span>
+                    <span className="font-mono text-sm font-bold text-rose-600 dark:text-rose-400">×{config.liq_spike_scale_factor.toFixed(2)}</span>
+                  </label>
+                  <input type="range" min="0.20" max="0.80" step="0.05"
+                    value={config.liq_spike_scale_factor}
+                    onChange={e => setConfig(c => ({ ...c, liq_spike_scale_factor: parseFloat(e.target.value) }))}
+                    className="w-full h-1.5 bg-slate-200 dark:bg-white/10 rounded-full appearance-none cursor-pointer accent-rose-600" />
+                  <div className="flex justify-between text-[9px] font-mono text-slate-400 mt-1"><span>×0.20</span><span>×0.40</span><span>×0.80</span></div>
+                </div>
+              )}
+              <div className="col-span-2 flex gap-3">
+                {(['block', 'scale'] as const).map(mode => (
+                  <button key={mode}
+                    onClick={() => setConfig(c => ({ ...c, liq_spike_mode: mode }))}
+                    className={`flex-1 py-2 rounded-lg text-xs font-bold border transition-all ${
+                      config.liq_spike_mode === mode
+                        ? 'bg-rose-600 text-white border-rose-600'
+                        : 'bg-transparent text-slate-600 dark:text-slate-400 border-slate-200 dark:border-white/10 hover:border-rose-400'
+                    }`}>
+                    {mode === 'scale' ? '⚖️ Scale size' : '🚫 Blocca trade'}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      </Section>
+
+      {/* ── Weekend Gate ── */}
+      <Section
+        title="Weekend Gate — Blocco Sabato / Domenica"
+        description="Blocca l'apertura di nuovi trade nei giorni in cui i mercati tradizionali sono chiusi (orario UTC). Sabato e domenica la liquidità è sottile e si formano spesso movimenti anomali. Non chiude le posizioni già aperte — agisce solo sulle nuove entrate."
+      >
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          {([
+            { key: 'weekend_gate_block_saturday' as const, label: 'Blocca Sabato',   sub: 'Nessuna nuova entrata il sabato (UTC)' },
+            { key: 'weekend_gate_block_sunday'   as const, label: 'Blocca Domenica', sub: 'Nessuna nuova entrata la domenica (UTC)' },
+          ]).map(({ key, label, sub }) => (
+            <label key={key} className={`flex items-start gap-3 cursor-pointer group p-4 rounded-xl border transition-all duration-200
+              ${config[key] ? 'border-amber-200 dark:border-amber-500/30 bg-amber-50/40 dark:bg-amber-500/5' : 'border-slate-100 dark:border-white/5 hover:bg-slate-50 dark:hover:bg-white/[0.03]'}`}>
+              <div className="relative inline-flex items-center mt-0.5">
+                <input type="checkbox" className="sr-only"
+                  checked={config[key]}
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setConfig((c: Config) => ({ ...c, [key]: e.target.checked }))} />
+                <div className={`w-10 h-5 rounded-full transition-all duration-300 ${config[key] ? 'bg-amber-500' : 'bg-slate-200 dark:bg-white/10'}`} />
+                <div className={`absolute top-1 left-1 w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config[key] ? 'translate-x-5' : ''}`} />
+              </div>
+              <div>
+                <p className={`text-sm font-bold transition-colors ${config[key] ? 'text-amber-600 dark:text-amber-400' : 'text-slate-800 dark:text-slate-200'}`}>
+                  {label}
+                  {config[key] && (
+                    <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-amber-100 dark:bg-amber-500/20 text-amber-600 dark:text-amber-400 uppercase tracking-wider">Attivo</span>
+                  )}
+                </p>
+                <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">{sub}</p>
+              </div>
+            </label>
+          ))}
+        </div>
+      </Section>
+
       {/* ── Macro Event Pause ──────────────────────────────────────────────── */}
       <Section
         title="Pausa Macro Eventi"
@@ -4636,16 +4652,27 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                   className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-rose-500" />
                 <p className="text-[9px] text-slate-400 dark:text-slate-500">Quando RSI 4H supera questa soglia, la guard alza il threshold long (rischio pullback). Default: 72</p>
               </div>
-              {/* ret_48 */}
+              {/* ret_N — giorni lookback configurabile */}
               <div className="flex flex-col gap-1">
                 <div className="flex justify-between items-center">
-                  <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">Soglia Rendimento 48 bar 4H ≈ 8 giorni (%)</span>
+                  <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">Giorni lookback rendimento (ret_{config.exhaustion_ret_bars})</span>
+                  <span className="text-[10px] font-bold text-rose-600 dark:text-rose-400">{Math.round(config.exhaustion_ret_bars / 6)}gg</span>
+                </div>
+                <input type="range" min={6} max={96} step={6} value={config.exhaustion_ret_bars}
+                  onChange={e => setConfig(c => ({ ...c, exhaustion_ret_bars: parseInt(e.target.value) }))}
+                  className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-rose-500" />
+                <p className="text-[9px] text-slate-400 dark:text-slate-500">Numero di candele 4H per il calcolo del rendimento (1 giorno = 6 bar). Default: 48 bar = 8 giorni</p>
+              </div>
+              {/* soglia % rendimento */}
+              <div className="flex flex-col gap-1">
+                <div className="flex justify-between items-center">
+                  <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">Soglia Rendimento {config.exhaustion_ret_bars} bar 4H ≈ {Math.round(config.exhaustion_ret_bars / 6)} giorni (%)</span>
                   <span className="text-[10px] font-bold text-rose-600 dark:text-rose-400">±{config.exhaustion_ret48_pct}%</span>
                 </div>
                 <input type="range" min={2} max={20} step={0.5} value={config.exhaustion_ret48_pct}
                   onChange={e => setConfig(c => ({ ...c, exhaustion_ret48_pct: parseFloat(e.target.value) }))}
                   className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-rose-500" />
-                <p className="text-[9px] text-slate-400 dark:text-slate-500">Se il rendimento sulle ultime 48 candele 4H (192h ≈ 8 giorni) supera ±N%, il mercato è overextended. Usato insieme all'RSI. Default: 6%</p>
+                <p className="text-[9px] text-slate-400 dark:text-slate-500">Se il rendimento sulle ultime {config.exhaustion_ret_bars} candele 4H ({config.exhaustion_ret_bars * 4}h ≈ {Math.round(config.exhaustion_ret_bars / 6)} giorni) supera ±N%, il mercato è overextended. Default: 6%</p>
               </div>
               {/* boost */}
               <div className="flex flex-col gap-1">
@@ -4681,7 +4708,7 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                     {config.exhaustion_prop_enabled && <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-rose-100 dark:bg-rose-500/20 text-rose-600 dark:text-rose-400 uppercase tracking-wider">Attivo</span>}
                   </p>
                   <p className="text-[10px] text-slate-400 dark:text-slate-500 leading-snug mt-1">
-                    Scala il boost ExhaustionGuard in base alla severità del ret_48. A −12% (2× soglia) aggiunge +{config.exhaustion_prop_scale.toFixed(2)} extra. Capped a +0.15.
+                    Scala il boost ExhaustionGuard in base alla severità del ret_{config.exhaustion_ret_bars}. A −12% (2× soglia) aggiunge +{config.exhaustion_prop_scale.toFixed(2)} extra. Capped a +0.15.
                   </p>
                 </div>
               </label>
@@ -4895,6 +4922,96 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                     onChange={e => setConfig(c => ({ ...c, transition_risk_min: parseFloat(e.target.value) }))}
                     className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-cyan-500" />
                   <p className="text-[9px] text-slate-400 dark:text-slate-500 mt-1">Il guard si attiva solo se transition_risk ≥ questo valore. Default 0.55.</p>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Reversal Stand-Aside Gate */}
+          <div className="mt-1 pt-4 border-t border-slate-100 dark:border-white/5">
+            <label className={`flex items-start gap-3 cursor-pointer group p-4 rounded-xl border transition-all duration-200 ${config.reversal_standaside_enabled ? 'border-amber-200 dark:border-amber-500/30 bg-amber-50/40 dark:bg-amber-500/5' : 'border-slate-100 dark:border-white/5 hover:bg-slate-50 dark:hover:bg-white/[0.03]'}`}>
+              <div className="relative mt-0.5 flex-shrink-0">
+                <input type="checkbox" className="sr-only" checked={config.reversal_standaside_enabled}
+                  onChange={e => setConfig(c => ({ ...c, reversal_standaside_enabled: e.target.checked }))} />
+                <div className={`w-9 h-[18px] rounded-full transition-all duration-300 ${config.reversal_standaside_enabled ? 'bg-amber-500' : 'bg-slate-200 dark:bg-white/10'}`} />
+                <div className={`absolute top-[3px] left-[3px] w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.reversal_standaside_enabled ? 'translate-x-[18px]' : ''}`} />
+              </div>
+              <div className="min-w-0">
+                <p className={`text-xs font-bold leading-tight transition-colors ${config.reversal_standaside_enabled ? 'text-amber-600 dark:text-amber-400' : 'text-slate-700 dark:text-slate-300'}`}>
+                  Reversal Stand-Aside
+                  {config.reversal_standaside_enabled && (
+                    <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-amber-100 dark:bg-amber-500/20 text-amber-600 dark:text-amber-400 uppercase tracking-wider">
+                      Attivo
+                    </span>
+                  )}
+                </p>
+                <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5">
+                  <code className="text-[9px]">no_trade</code> quando entreremmo CON il trend daily ma quello è esausto: ADX 4H crollato sotto frazione del picco recente + laterale da N barre + struttura 4H invertita (ret_12). Non flippa, attende conferma. Default OFF.
+                </p>
+              </div>
+            </label>
+
+            {config.reversal_standaside_enabled && (
+              <div className="mt-3 px-4 space-y-3">
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">Frazione crollo ADX</span>
+                    <span className="text-[10px] font-bold text-amber-600 dark:text-amber-400">×{config.reversal_standaside_adx_frac.toFixed(2)}</span>
+                  </div>
+                  <input type="range" min={0.30} max={0.90} step={0.05} value={config.reversal_standaside_adx_frac}
+                    onChange={e => setConfig(c => ({ ...c, reversal_standaside_adx_frac: parseFloat(e.target.value) }))}
+                    className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-amber-500" />
+                  <p className="text-[9px] text-slate-400 dark:text-slate-500 mt-1">Scatta se ADX_14 &lt; questa frazione × picco ADX ultime 12 barre. 0.60 = perso &gt;40% del picco.</p>
+                </div>
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">Barre minime in regime</span>
+                    <span className="text-[10px] font-bold text-amber-600 dark:text-amber-400">{config.reversal_standaside_min_bars}</span>
+                  </div>
+                  <input type="range" min={4} max={48} step={1} value={config.reversal_standaside_min_bars}
+                    onChange={e => setConfig(c => ({ ...c, reversal_standaside_min_bars: parseInt(e.target.value) }))}
+                    className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-amber-500" />
+                  <p className="text-[9px] text-slate-400 dark:text-slate-500 mt-1">Regime 4H laterale/transizione da almeno N barre (1 barra = 4h). Default 14 (~2.3gg).</p>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Post-Capitulation Block Gate */}
+          <div className="mt-1 pt-4 border-t border-slate-100 dark:border-white/5">
+            <label className={`flex items-start gap-3 cursor-pointer group p-4 rounded-xl border transition-all duration-200 ${config.post_capitulation_block_enabled ? 'border-amber-200 dark:border-amber-500/30 bg-amber-50/40 dark:bg-amber-500/5' : 'border-slate-100 dark:border-white/5 hover:bg-slate-50 dark:hover:bg-white/[0.03]'}`}>
+              <div className="relative mt-0.5 flex-shrink-0">
+                <input type="checkbox" className="sr-only" checked={config.post_capitulation_block_enabled}
+                  onChange={e => setConfig(c => ({ ...c, post_capitulation_block_enabled: e.target.checked }))} />
+                <div className={`w-9 h-[18px] rounded-full transition-all duration-300 ${config.post_capitulation_block_enabled ? 'bg-amber-500' : 'bg-slate-200 dark:bg-white/10'}`} />
+                <div className={`absolute top-[3px] left-[3px] w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.post_capitulation_block_enabled ? 'translate-x-[18px]' : ''}`} />
+              </div>
+              <div className="min-w-0">
+                <p className={`text-xs font-bold leading-tight transition-colors ${config.post_capitulation_block_enabled ? 'text-amber-600 dark:text-amber-400' : 'text-slate-700 dark:text-slate-300'}`}>
+                  Post-Capitulation Block
+                  {config.post_capitulation_block_enabled && (
+                    <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-amber-100 dark:bg-amber-500/20 text-amber-600 dark:text-amber-400 uppercase tracking-wider">
+                      Attivo — ±{(config.post_capitulation_ret_thr * 100).toFixed(0)}%
+                    </span>
+                  )}
+                </p>
+                <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5">
+                  <code className="text-[9px]">no_trade</code> nella direzione di un crash/blow-off recente (ret_24 estremo nelle ultime ~18 barre) mentre è già in corso un rimbalzo (ret_6 inverso). Blocca il "coltello che cade"; lascia intatta la continuazione in un crash ancora attivo. Default OFF.
+                </p>
+              </div>
+            </label>
+
+            {config.post_capitulation_block_enabled && (
+              <div className="mt-3 px-4 space-y-3">
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400">Soglia ret_24 (4 giorni)</span>
+                    <span className="text-[10px] font-bold text-amber-600 dark:text-amber-400">±{(config.post_capitulation_ret_thr * 100).toFixed(0)}%</span>
+                  </div>
+                  <input type="range" min={0.05} max={0.30} step={0.01} value={config.post_capitulation_ret_thr}
+                    onChange={e => setConfig(c => ({ ...c, post_capitulation_ret_thr: parseFloat(e.target.value) }))}
+                    className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/10 accent-amber-500" />
+                  <p className="text-[9px] text-slate-400 dark:text-slate-500 mt-1">Capitolazione = ret su 24 barre (4gg) ≤ −soglia (short block) o ≥ +soglia (long block). Default 12%.</p>
                 </div>
               </div>
             )}

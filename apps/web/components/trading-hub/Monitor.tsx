@@ -613,10 +613,10 @@ export const Monitor: React.FC<{ apiBase: string }> = ({ apiBase }) => {
         )}
         {/* System status badges */}
         <div className="flex gap-2 ml-auto">
-          <Tooltip text="Modello machine learning per previsione direzione del prezzo. Addestrato su 64 feature di prezzo, volume e dati on-chain. Verde = modello caricato in memoria." pos="bottom">
+          <Tooltip text="Modello machine learning per previsione direzione del prezzo. Addestrato su 64 feature di prezzo, volume e dati on-chain. Verde = modello caricato in memoria." pos="bottom" fit>
             <StatusBadge label="LightGBM" active={status?.model_loaded ?? false} />
           </Tooltip>
-          <Tooltip text="Connessione in tempo reale a Hyperliquid per ricevere prezzi, order book e aggiornamenti posizioni. Verde = connesso e riceve dati live." pos="bottom">
+          <Tooltip text="Connessione in tempo reale a Hyperliquid per ricevere prezzi, order book e aggiornamenti posizioni. Verde = connesso e riceve dati live." pos="bottom" fit>
             <StatusBadge label="WebSocket" active={status?.ws_connected ?? false} />
           </Tooltip>
           {/* Network badge: visible only when running in live mode */}
@@ -626,6 +626,7 @@ export const Monitor: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                 ? 'Bot live su Hyperliquid TESTNET — ordini con fondi virtuali HL.'
                 : 'Bot live su Hyperliquid MAINNET — ordini con fondi REALI.'}
               pos="bottom"
+              fit
             >
               <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-[10px] font-bold uppercase tracking-widest ${
                 status.hl_testnet
@@ -2034,7 +2035,7 @@ const TrendMeter: React.FC<{ meter: TrendMeterData }> = ({ meter }) => {
   const Dot: React.FC<{ value: number | null; label: string; tooltip: string }> = ({ value, label, tooltip }) => {
     const v = value ?? 50;
     return (
-      <Tooltip text={tooltip} pos="top">
+      <Tooltip text={tooltip} pos="top" fit>
         <div className="flex items-center gap-1 cursor-default">
           <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${accentColor(v)}`} />
           <span className="text-[8px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest">{label}</span>

@@ -36,6 +36,34 @@ def _safe_px(v) -> Optional[float]:
         return None
 
 
+def _apply_slippage(price: float, side: str, kind: str,
+                    bps: float, sl_mult: float, limit_favorable: bool) -> float:
+    """
+    Applica slippage al prezzo di esecuzione.
+      side: "long" | "short"  — direzione della posizione
+      kind: "entry" | "entry_limit" | "sl" | "tp" | "liquidation" | "partial" | "market_close"
+    Convenzione: slippage AVVERSO = peggiora il prezzo per chi esegue a mercato.
+      - entry (market)  → long paga di più (prezzo ↑), short vende a meno (prezzo ↓)
+      - entry_limit     → fill passivo (retest/pullback/bounce-fade): 0 slippage se
+                          limit_favorable, altrimenti bps normale avverso
+      - sl/liquidation  → slippage × sl_mult (esecuzione forzata su spike)
+      - tp/partial      → limit order: 0 slippage se limit_favorable, altrimenti bps normale
+      - market_close    → uscita market a close (lgbm_exit, max_hold, adverse, EOP): bps normale
+    """
+    if bps <= 0:
+        return price
+    frac = bps / 10_000.0
+    if kind in ("tp", "partial", "entry_limit") and limit_favorable:
+        return price  # ordine passivo: nessun costo di impatto
+    if kind in ("sl", "liquidation"):
+        frac *= sl_mult
+    # Direzione avversa: per long l'entrata è più cara e l'uscita più bassa
+    if kind in ("entry", "entry_limit"):
+        return price * (1 + frac) if side == "long" else price * (1 - frac)
+    # Uscite (sl/liq/tp-market): per long si esce più in basso, per short più in alto
+    return price * (1 - frac) if side == "long" else price * (1 + frac)
+
+
 _HL_MM_RATE = 0.005  # Maintenance margin rate BTC isolated margin (HL)
 
 
@@ -81,6 +109,31 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
     adverse_confirm_cycles   = getattr(cfg, "adverse_confirm_cycles",   2)
     adverse_min_hold_bars    = getattr(cfg, "adverse_min_hold_bars",    3)
     adverse_partial_pct      = getattr(cfg, "adverse_partial_pct",      0.50)
+    # Intrabar fill model (backtest only): how the SL is ordered vs favorable
+    # exits (partial-TP/TP) when BOTH are touched inside the same 4H bar — the
+    # one thing OHLC data cannot resolve without tick data.
+    #   "optimistic"  → legacy: favorable partial harvested before the SL check.
+    #   "pessimistic" → adverse (SL) assumed to fire first → no favorable harvest
+    #                   on bars where the stop is also in range (closest to a live
+    #                   realtime SL monitor on adverse-first bars).
+    #   "balanced"    → infer the intrabar path from candle direction:
+    #                   up bar (close≥open) → low made first; down bar → high first.
+    intrabar_fill_mode    = getattr(cfg, "intrabar_fill_mode",    "optimistic")
+    # Next-Bar-Open entry: signal su barra N → fill a open di barra N+1 (più fedele al live).
+    # Disabilitato per re-entry e per entrate già differite (pullback/bounce-fade/reversal-limit).
+    next_bar_open_enabled = getattr(cfg, "next_bar_open_enabled", False)
+    # Slippage Model (backtest only) — no-op totale quando il toggle è OFF
+    slippage_enabled         = getattr(cfg, "slippage_enabled",         False)
+    slippage_bps             = getattr(cfg, "slippage_bps",             3.0)
+    slippage_sl_multiplier   = getattr(cfg, "slippage_sl_multiplier",   2.0)
+    slippage_limit_favorable = getattr(cfg, "slippage_limit_favorable", True)
+
+    def _slip(price: float, side_: str, kind: str) -> float:
+        """Prezzo di esecuzione effettivo: identico all'input quando slippage è OFF."""
+        if not slippage_enabled:
+            return price
+        return _apply_slippage(price, side_, kind, slippage_bps,
+                               slippage_sl_multiplier, slippage_limit_favorable)
     use_binance              = getattr(req,  "use_binance",              True)
     use_chronos              = getattr(req,  "use_chronos",              False)
     # Advanced signal controls
@@ -152,6 +205,7 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
     exhaustion_rsi_low    = getattr(cfg, "exhaustion_rsi_low",    28.0)
     exhaustion_rsi_high   = getattr(cfg, "exhaustion_rsi_high",   72.0)
     exhaustion_ret48_pct  = getattr(cfg, "exhaustion_ret48_pct",   6.0)
+    exhaustion_ret_bars   = getattr(cfg, "exhaustion_ret_bars",    48)
     exhaustion_boost      = getattr(cfg, "exhaustion_boost",       0.06)
     # ATR% Volatility Gate
     atr_pct_gate_enabled  = getattr(cfg, "atr_pct_gate_enabled",  False)
@@ -203,6 +257,12 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
     transition_guard_enabled = getattr(cfg, "transition_guard_enabled", False)
     transition_boost_max     = getattr(cfg, "transition_boost_max",     0.05)
     transition_risk_min      = getattr(cfg, "transition_risk_min",      0.55)
+    # Reversal Stand-Aside + Post-Capitulation gates
+    reversal_standaside_enabled     = getattr(cfg, "reversal_standaside_enabled",     False)
+    reversal_standaside_adx_frac    = getattr(cfg, "reversal_standaside_adx_frac",    0.60)
+    reversal_standaside_min_bars    = getattr(cfg, "reversal_standaside_min_bars",    14)
+    post_capitulation_block_enabled = getattr(cfg, "post_capitulation_block_enabled", False)
+    post_capitulation_ret_thr       = getattr(cfg, "post_capitulation_ret_thr",       0.12)
     # Pullback Entry
     pullback_entry_enabled    = getattr(cfg, "pullback_entry_enabled",    False)
     pullback_impulse_atr_mult = getattr(cfg, "pullback_impulse_atr_mult", 1.5)
@@ -425,6 +485,7 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
         df_binance=df_binance,
         binance_cvd_enabled=binance_cvd_enabled,
         reversal_mode_enabled=reversal_mode_enabled,
+        adverse_monitor_enabled=adverse_monitor_enabled,
     )
 
     # ── 2b. Validate F&G date format against the actual feature index ────────
@@ -498,6 +559,7 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
         exhaustion_rsi_low=exhaustion_rsi_low,
         exhaustion_rsi_high=exhaustion_rsi_high,
         exhaustion_ret48_pct=exhaustion_ret48_pct,
+        exhaustion_ret_bars=exhaustion_ret_bars,
         exhaustion_boost=exhaustion_boost,
         # ATR% Volatility Gate
         atr_pct_gate_enabled=atr_pct_gate_enabled,
@@ -542,6 +604,12 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
         transition_guard_enabled=transition_guard_enabled,
         transition_boost_max=transition_boost_max,
         transition_risk_min=transition_risk_min,
+        # Reversal Stand-Aside + Post-Capitulation gates
+        reversal_standaside_enabled=reversal_standaside_enabled,
+        reversal_standaside_adx_frac=reversal_standaside_adx_frac,
+        reversal_standaside_min_bars=reversal_standaside_min_bars,
+        post_capitulation_block_enabled=post_capitulation_block_enabled,
+        post_capitulation_ret_thr=post_capitulation_ret_thr,
     )
     risk = RiskManager(
         sl_atr_mult=sl_atr_mult,
@@ -563,6 +631,7 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
     pending_pb    = None   # pending pullback dict when pullback_entry_enabled
     pending_bf    = None   # pending bounce-fade dict when bounce_fade_enabled
     pending_rev   = None   # pending reversal dict when reversal_entry_mode == "limit_retest"
+    pending_nbo   = None   # deferred entry when next_bar_open_enabled: fill at open of next bar
     trades        = []
     equity_curve  = [{"bar": 0, "equity": equity}]
     funding_col   = "funding" in df_feat.columns
@@ -626,11 +695,10 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
         "pm_exhaust_max_hold":      0,
         # Exhaustion Guard breakdown
         "exh_trigger_rsi_only":     0,   # guard fired on RSI condition only
-        "exh_trigger_ret48_only":   0,   # guard fired on ret_48 condition only
-        "exh_trigger_both":         0,   # guard fired on both RSI + ret_48
+        "exh_trigger_ret_only":     0,   # guard fired on ret_N condition only
+        "exh_trigger_both":         0,   # guard fired on both RSI + ret_N
         "exh_guard_passed":         0,   # guard active on the trade's own side → trade still opened
         "exh_guard_blocked":        0,   # guard active → no trade this bar
-        "exh_guard_decisive":       0,   # signal passed base threshold but failed guard-boosted one
         "exh_passed_wins":          0,   # trades opened during guard → profit
         "exh_passed_losses":        0,   # trades opened during guard → loss
         # Entry — structural SL/TP overrides
@@ -672,6 +740,11 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
         "rev_conflict_block":       0,
         "rev_trend_boost":          0,
         "rev_guard_triggered":      0,
+        # Next-bar-open deferred entries
+        "nbo_triggered":            0,
+        # New gates
+        "gate_reversal_standaside": 0,
+        "gate_post_capitulation":   0,
     }
 
     # Enhanced regime detection — mirrors live behavior (every 4 bars, cached between).
@@ -707,7 +780,7 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                 )
                 if _rev_triggered:
                     param_stats["rev_pending_triggered"] += 1
-                    _rev_entry_px = _rp["entry_limit"]
+                    _rev_entry_px = _slip(_rp["entry_limit"], _rp["direction"], "entry_limit")
                     _rev_size_usd = _rp["size_usd"]
                     fee_entry_rev = _rev_size_usd * HL_TAKER_FEE
                     equity -= fee_entry_rev
@@ -733,6 +806,8 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                         "rev_max_hold":       reversal_max_hold_bars_val,
                         "leverage":           lev,
                         "liq_px":             _liq_price(_rp["direction"], _rev_entry_px, lev),
+                        "_mae":               0.0,
+                        "_mfe":               0.0,
                     }
                     pending_rev = None
 
@@ -765,7 +840,7 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
             elif _filled:
                 param_stats["pb_filled_zone"] += 1
                 # Entry at the pullback zone price (limit-like fill)
-                _entry_px = pb_zone
+                _entry_px = _slip(pb_zone, pb_dir, "entry_limit")
                 _orig_sl_dist = (
                     abs(pending_pb["orig_sl"] - pb_close_4h) / pb_atr
                     if pb_atr > 0 else getattr(cfg, "sl_atr_mult", 2.0)
@@ -800,6 +875,8 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                     "entry_mode":        "pullback",
                     "leverage":          lev,
                     "liq_px":            _liq_price(pb_dir, _entry_px, lev),
+                    "_mae":              0.0,
+                    "_mfe":              0.0,
                 }
                 pending_pb = None
             elif i >= pending_pb["expires_bar"]:
@@ -811,7 +888,7 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                 )
                 if _in_range:
                     param_stats["pb_filled_fallback"] += 1
-                    _entry_px = _cur_px
+                    _entry_px = _slip(_cur_px, pb_dir, "entry")  # market fill a close
                     if pb_ob_sl is not None:
                         _pb_sl = pb_ob_sl
                     else:
@@ -841,6 +918,8 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                         "entry_mode":        "pullback_fallback",
                         "leverage":          lev,
                         "liq_px":            _liq_price(pb_dir, _entry_px, lev),
+                        "_mae":              0.0,
+                        "_mfe":              0.0,
                     }
                 else:
                     param_stats["pb_decayed"] += 1
@@ -863,7 +942,7 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
             )
 
             if _bf_reached:
-                _bf_entry = bf["entry_limit"]
+                _bf_entry = _slip(bf["entry_limit"], bf["direction"], "entry_limit")
                 _sl_buf   = bf["sl_buffer_atr"] * _bf_atr
                 _sl_min   = bf["sl_min_atr"]    * _bf_atr
                 if bf["direction"] == "short":
@@ -900,6 +979,8 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                         "origin":            "trend",
                         "leverage":          lev,
                         "liq_px":            _liq_price(bf["direction"], _bf_entry, lev),
+                        "_mae":              0.0,
+                        "_mfe":              0.0,
                     }
                     param_stats["bf_filled_limit"] += 1
                     pending_bf = None
@@ -907,7 +988,7 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
             elif i >= bf["expires_bar"]:
                 # Expiry: market fallback (re-anchored to this bar's close) or abandon
                 if bf["market_fallback"]:
-                    _fb_entry = float(row["close"])
+                    _fb_entry = _slip(float(row["close"]), bf["direction"], "entry")  # market fill
                     if bf["direction"] == "short":
                         _fb_sl = _fb_entry + bf["orig_sl_dist"]
                         _fb_tp = _fb_entry - bf["orig_tp_dist"]
@@ -935,11 +1016,66 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                         "origin":            "trend",
                         "leverage":          lev,
                         "liq_px":            _liq_price(bf["direction"], _fb_entry, lev),
+                        "_mae":              0.0,
+                        "_mfe":              0.0,
                     }
                     param_stats["bf_market_fallback"] += 1
                 else:
                     param_stats["bf_abandoned"] += 1
                 pending_bf = None
+
+        # ── Pending next-bar-open entry ────────────────────────────────────────
+        # Signal triggered on previous bar → fill at open of this bar.
+        # Cancelled silently when another entry path opened a position first.
+        if pending_nbo is not None:
+            if position is not None:
+                pending_nbo = None  # another entry path won — discard
+            else:
+                _nbo        = pending_nbo
+                pending_nbo = None
+                _nbo_px     = float(row.get("open", row["close"]))
+                _nbo_exec   = _slip(_nbo_px, _nbo["side"], "entry")
+                _nbo_dir    = _nbo["side"]
+                # Re-anchor SL/TP to fill price, preserving ATR-relative distances
+                _nbo_sl     = (_nbo_exec + _nbo["sl_dist"]) if _nbo_dir == "short" \
+                              else (_nbo_exec - _nbo["sl_dist"])
+                _nbo_tp     = (_nbo_exec - _nbo["tp_dist"]) if _nbo_dir == "short" \
+                              else (_nbo_exec + _nbo["tp_dist"])
+                fee_entry   = _nbo["size_usd"] * HL_TAKER_FEE
+                equity     -= fee_entry
+                position    = {
+                    "side":               _nbo_dir,
+                    "entry":              _nbo_exec,
+                    "sl":                 _nbo_sl,
+                    "tp":                 _nbo_tp,
+                    "size_usd":           _nbo["size_usd"],
+                    "bar_idx":            i,
+                    "entry_atr":          _nbo["atr"],
+                    "partial_done":       False,
+                    "sl_trailing_active": False,
+                    "high_water":         _nbo_exec,
+                    "be_sl_applied":      False,
+                    "lgbm_strikes":       0,
+                    "fee_entry":          fee_entry,
+                    "funding_paid":       0.0,
+                    "entry_mode":         "nbo_reversal" if _nbo["_is_rev"] else "next_bar_open",
+                    "origin":             "reversal" if _nbo["_is_rev"] else "trend",
+                    "is_reversal":        _nbo["_is_rev"],
+                    "is_reentry":         False,
+                    "rev_sl_atr_mult":    reversal_sl_atr_mult if _nbo["_is_rev"] else sl_atr_mult,
+                    "rev_max_hold":       reversal_max_hold_bars_val,
+                    "exhaust_max_hold":   (
+                        exhaustion_max_hold_bars
+                        if _nbo["_exhaust"] and exhaustion_max_hold_enabled else None
+                    ),
+                    "is_exhaust_hold":    _nbo["_exhaust"] and exhaustion_max_hold_enabled,
+                    "exh_guard_at_entry": _nbo["_exhaust"],
+                    "leverage":           lev,
+                    "liq_px":             _liq_price(_nbo_dir, _nbo_exec, lev),
+                    "_mae":               0.0,
+                    "_mfe":               0.0,
+                }
+                param_stats["nbo_triggered"] += 1
 
         # Inject RegimeDetector signal — update every 4 bars (matching live cadence).
         if _bt_regime_detector is not None and i % 4 == 0 and i >= 120:
@@ -982,6 +1118,15 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
             side        = position["side"]
             entry       = position["entry"]
             entry_atr   = position["entry_atr"]
+
+            # Track MAE (max adverse excursion) and MFE (max favorable excursion)
+            if side == "long":
+                position["_mae"] = max(position["_mae"], (entry - curr_low)  / entry * 100)
+                position["_mfe"] = max(position["_mfe"], (curr_high - entry) / entry * 100)
+            else:
+                position["_mae"] = max(position["_mae"], (curr_high - entry) / entry * 100)
+                position["_mfe"] = max(position["_mfe"], (entry - curr_low)  / entry * 100)
+
             # Snapshot the SL before any intrabar ratcheting (trailing / BE).
             # The SL check below uses this value so that trail/BE updates applied
             # during the same bar cannot trigger a stop that was only valid AFTER
@@ -1024,15 +1169,33 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                     position["be_sl_applied"] = True
                     param_stats["pm_be_sl"] += 1
 
+            # ── Intrabar fill ordering: would the SL fire before favorable exits? ─
+            # When the assumed intrabar path reaches the adverse extreme first AND
+            # the SL is within this bar's range, the stop fills before any favorable
+            # partial-TP/TP wick — so we must NOT harvest the favorable partial here.
+            # "optimistic" keeps the legacy favorable-first behaviour (no-op).
+            _curr_open = float(row.get("open", close_price))
+            if intrabar_fill_mode == "pessimistic":
+                _adverse_first = True
+            elif intrabar_fill_mode == "balanced":
+                # up bar → low first (favorable for short); down bar → high first.
+                _adverse_first = (close_price < _curr_open) if side == "short" \
+                                 else (close_price >= _curr_open)
+            else:  # "optimistic" (legacy)
+                _adverse_first = False
+            _sl_hit_bar = (side == "long"  and curr_low  <= sl_before_update) or \
+                          (side == "short" and curr_high >= sl_before_update)
+            _suppress_favorable = _adverse_first and _sl_hit_bar
+
             # ── Partial TP: close partial_tp_pct% at partial_tp_atr_mult×ATR ──
             # Use high/low for detection; exit at the target price, not close.
-            if partial_tp_enabled and not position.get("partial_done"):
+            if partial_tp_enabled and not position.get("partial_done") and not _suppress_favorable:
                 partial_target = entry + partial_tp_atr_mult * entry_atr if side == "long" \
                                  else entry - partial_tp_atr_mult * entry_atr
                 hit_partial = (side == "long"  and curr_high >= partial_target) or \
                               (side == "short" and curr_low  <= partial_target)
                 if hit_partial:
-                    partial_exit_price = partial_target
+                    partial_exit_price = _slip(partial_target, side, "partial")
                     partial_frac = partial_tp_pct / 100.0
                     partial_size = position["size_usd"] * partial_frac
                     pnl_pct_p = (partial_exit_price - entry) / entry * 100 if side == "long" \
@@ -1058,6 +1221,8 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                         "origin": position.get("origin", "trend"),
                         "date": str(row.name.date()) if hasattr(row.name, "date") else "",
                         "equity_after": round(equity, 2),
+                        "mae_pct": round(position.get("_mae", 0.0), 4),
+                        "mfe_pct": round(position.get("_mfe", 0.0), 4),
                     })
                     equity_curve.append({"bar": i, "equity": round(equity, 2)})
 
@@ -1106,7 +1271,8 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                 if hit_sl: param_stats["exit_stop_loss"]   += 1
                 else:       param_stats["exit_take_profit"] += 1
                 reason     = "stop_loss" if hit_sl else "take_profit"
-                exit_price = sl_before_update if hit_sl else position["tp"]
+                exit_price = _slip(sl_before_update, side, "sl") if hit_sl \
+                             else _slip(position["tp"], side, "tp")
                 pnl_pct    = (exit_price - entry) / entry * 100 if side == "long" \
                              else (entry - exit_price) / entry * 100
                 pnl_usd    = position["size_usd"] * pnl_pct / 100
@@ -1124,6 +1290,8 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                     "reason":     reason,
                     "holding_bars": i - position["bar_idx"],
                     "bar":        i,
+                    "mae_pct":    round(position.get("_mae", 0.0), 4),
+                    "mfe_pct":    round(position.get("_mfe", 0.0), 4),
                     "origin":     position.get("origin", "trend"),
                     "date": str(row.name.date()) if hasattr(row.name, "date") else "",
                     "equity_after": round(equity, 2),
@@ -1159,9 +1327,10 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                 )
                 if _hit_liq:
                     param_stats["exit_liquidation"] = param_stats.get("exit_liquidation", 0) + 1
+                    _liq_exec   = _slip(_bt_liq, side, "liquidation")
                     pnl_pct_liq = (
-                        (_bt_liq - entry) / entry * 100 if side == "long"
-                        else (entry - _bt_liq) / entry * 100
+                        (_liq_exec - entry) / entry * 100 if side == "long"
+                        else (entry - _liq_exec) / entry * 100
                     )
                     pnl_usd_liq = position["size_usd"] * pnl_pct_liq / 100
                     fee_liq     = position["size_usd"] * HL_TAKER_FEE
@@ -1169,7 +1338,7 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                     entry_fee_used = position.get("fee_entry", 0.0)
                     funding_used   = position.get("funding_paid", 0.0)
                     trades.append({
-                        "side": side, "entry": entry, "exit": _bt_liq,
+                        "side": side, "entry": entry, "exit": _liq_exec,
                         "pnl_pct": round(pnl_pct_liq, 4),
                         "pnl_usd": round(pnl_usd_liq - fee_liq - entry_fee_used - funding_used, 2),
                         "fee_entry": round(entry_fee_used, 2),
@@ -1179,6 +1348,8 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                         "leverage": position.get("leverage", 1),
                         "date": str(row.name.date()) if hasattr(row.name, "date") else "",
                         "equity_after": round(equity, 2),
+                        "mae_pct": round(position.get("_mae", 0.0), 4),
+                        "mfe_pct": round(position.get("_mfe", 0.0), 4),
                     })
                     if position.get("exh_guard_at_entry"):
                         if pnl_pct_liq > 0: param_stats["exh_passed_wins"]   += 1
@@ -1206,15 +1377,16 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                     position["lgbm_strikes"] = 0
                 if position.get("lgbm_strikes", 0) >= lgbm_exit_confirm_bars:
                     param_stats["pm_lgbm_exit"] += 1
-                    pnl_pct_e  = (close_price - entry) / entry * 100 if side == "long" \
-                                 else (entry - close_price) / entry * 100
+                    _exit_px_e = _slip(close_price, side, "market_close")
+                    pnl_pct_e  = (_exit_px_e - entry) / entry * 100 if side == "long" \
+                                 else (entry - _exit_px_e) / entry * 100
                     pnl_usd_e  = position["size_usd"] * pnl_pct_e / 100
                     fee_e      = position["size_usd"] * HL_TAKER_FEE
                     equity    += pnl_usd_e - fee_e
                     entry_fee_used = position.get("fee_entry", 0.0)
                     funding_used   = position.get("funding_paid", 0.0)
                     trades.append({
-                        "side": side, "entry": entry, "exit": close_price,
+                        "side": side, "entry": entry, "exit": _exit_px_e,
                         "pnl_pct":     round(pnl_pct_e, 4),
                         "pnl_usd":     round(pnl_usd_e - fee_e - entry_fee_used - funding_used, 2),
                         "fee_entry":   round(entry_fee_used, 2),
@@ -1225,6 +1397,8 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                         "origin":      position.get("origin", "trend"),
                         "date": str(row.name.date()) if hasattr(row.name, "date") else "",
                         "equity_after": round(equity, 2),
+                        "mae_pct":     round(position.get("_mae", 0.0), 4),
+                        "mfe_pct":     round(position.get("_mfe", 0.0), 4),
                     })
                     if position.get("exh_guard_at_entry"):
                         if pnl_pct_e > 0: param_stats["exh_passed_wins"]   += 1
@@ -1298,9 +1472,10 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
 
                     elif adverse_action in ("partial_close", "close"):
                         _pct_bt  = adverse_partial_pct if adverse_action == "partial_close" else 1.0
+                        _adv_exit_px = _slip(close_price, _adv_side_bt, "market_close")
                         _pnl_pct_bt = (
-                            (close_price - entry) / entry * 100 if _adv_side_bt == "long"
-                            else (entry - close_price) / entry * 100
+                            (_adv_exit_px - entry) / entry * 100 if _adv_side_bt == "long"
+                            else (entry - _adv_exit_px) / entry * 100
                         )
                         _sz_bt   = position["size_usd"] * _pct_bt
                         _pnl_bt  = _sz_bt * _pnl_pct_bt / 100
@@ -1311,7 +1486,7 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                         trades.append({
                             "side":         _adv_side_bt,
                             "entry":        entry,
-                            "exit":         close_price,
+                            "exit":         _adv_exit_px,
                             "pnl_pct":      round(_pnl_pct_bt * _pct_bt, 4),
                             "pnl_usd":      round(_pnl_bt - _fee_bt - entry_fee_used - funding_used, 2),
                             "fee_entry":    round(entry_fee_used, 2),
@@ -1322,6 +1497,8 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                             "origin":       position.get("origin", "trend"),
                             "date":         str(row.name.date()) if hasattr(row.name, "date") else "",
                             "equity_after": round(equity, 2),
+                            "mae_pct":      round(position.get("_mae", 0.0), 4),
+                            "mfe_pct":      round(position.get("_mfe", 0.0), 4),
                         })
                         if adverse_action == "close":
                             if position.get("exh_guard_at_entry"):
@@ -1352,15 +1529,16 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                 param_stats["pm_max_hold"] += 1
                 if _exhaust_max_h_bt is not None:
                     param_stats["pm_exhaust_max_hold"] += 1
-                pnl_pct_m  = (close_price - entry) / entry * 100 if side == "long" \
-                             else (entry - close_price) / entry * 100
+                _exit_px_m = _slip(close_price, side, "market_close")
+                pnl_pct_m  = (_exit_px_m - entry) / entry * 100 if side == "long" \
+                             else (entry - _exit_px_m) / entry * 100
                 pnl_usd_m  = position["size_usd"] * pnl_pct_m / 100
                 fee_m      = position["size_usd"] * HL_TAKER_FEE
                 equity    += pnl_usd_m - fee_m
                 entry_fee_used = position.get("fee_entry", 0.0)
                 funding_used   = position.get("funding_paid", 0.0)
                 trades.append({
-                    "side": side, "entry": entry, "exit": close_price,
+                    "side": side, "entry": entry, "exit": _exit_px_m,
                     "pnl_pct":     round(pnl_pct_m, 4),
                     "pnl_usd":     round(pnl_usd_m - fee_m - entry_fee_used - funding_used, 2),
                     "fee_entry":   round(entry_fee_used, 2),
@@ -1371,6 +1549,8 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                     "origin":      position.get("origin", "trend"),
                     "date": str(row.name.date()) if hasattr(row.name, "date") else "",
                     "equity_after": round(equity, 2),
+                    "mae_pct":     round(position.get("_mae", 0.0), 4),
+                    "mfe_pct":     round(position.get("_mfe", 0.0), 4),
                 })
                 if position.get("exh_guard_at_entry"):
                     if pnl_pct_m > 0: param_stats["exh_passed_wins"]   += 1
@@ -1517,7 +1697,10 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
 
             # ── Reversal Zone Detection (mirrors live _cycle logic) ───────────
             _rev_res = None  # reset each bar; used by build_pending_reversal below
-            if _bt_rev_detector is not None and pending_rev is None:
+            # Guard: only run signal routing when reversal entries are enabled.
+            # When only adverse_monitor_enabled=True the detector exists but must
+            # not generate _is_reversal signals or call build_pending_reversal.
+            if reversal_mode_enabled and _bt_rev_detector is not None and pending_rev is None:
                 try:
                     _rev_slice = df_feat.iloc[:i + 1]
                     _rev_res   = _bt_rev_detector.score(_rev_slice, _bt_regime_sig, cfg)
@@ -1580,6 +1763,8 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                 if "GATE: LIQ_SPIKE"         in _line: param_stats["gate_liq_spike"]         += 1; break
                 if "GATE: WEEKEND"           in _line: param_stats["gate_weekend"]           += 1; break
                 if "1H gate BLOCK"           in _line: param_stats["gate_1h_block"]           += 1; break
+                if "GATE: ReversalStandAside" in _line: param_stats["gate_reversal_standaside"] += 1; break
+                if "GATE: PostCapitulation"   in _line: param_stats["gate_post_capitulation"]   += 1; break
             # Modifier loop: per-evaluation flags avoid double-count from multi-line modifiers
             # (e.g. ExhaustionGuard adds up to 2 lines when both long and short conditions fire).
             _mods_seen: set = set()
@@ -1594,13 +1779,11 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                     param_stats["mod_fng_bias"]         += 1; _mods_seen.add("mod_fng")
                 if "ExhaustionGuard"  in _line and "mod_exhaust" not in _mods_seen:
                     param_stats["mod_exhaustion_guard"] += 1; _mods_seen.add("mod_exhaust")
-                    _exh_rsi   = "RSI" in _line
-                    _exh_ret48 = "ret_48" in _line
-                    if _exh_rsi and _exh_ret48:  param_stats["exh_trigger_both"]       += 1
-                    elif _exh_rsi:               param_stats["exh_trigger_rsi_only"]   += 1
-                    elif _exh_ret48:             param_stats["exh_trigger_ret48_only"] += 1
-                if "ExhaustionGuard DECISIVE" in _line and "mod_exh_dec" not in _mods_seen:
-                    param_stats["exh_guard_decisive"] += 1; _mods_seen.add("mod_exh_dec")
+                    _exh_rsi  = "RSI" in _line
+                    _exh_ret  = "ret_" in _line
+                    if _exh_rsi and _exh_ret:  param_stats["exh_trigger_both"]     += 1
+                    elif _exh_rsi:             param_stats["exh_trigger_rsi_only"] += 1
+                    elif _exh_ret:             param_stats["exh_trigger_ret_only"] += 1
                 if "AbsorptionFilter:" in _line and "mod_abs" not in _mods_seen:
                     param_stats["mod_absorption_filter"]+= 1; _mods_seen.add("mod_abs")
                 if "ATR_PCT_SCALE:"    in _line and "mod_atr" not in _mods_seen:
@@ -1886,11 +2069,26 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                 _exhaust_triggered = getattr(result, "_exhaustion_triggered", False)
                 if _is_reentry:
                     param_stats["reentry_triggered"] += 1
+                # Next-bar-open: defer fill to open of next bar (disabled for re-entries).
+                if next_bar_open_enabled and not _is_reentry:
+                    pending_nbo = {
+                        "side":     result.action,
+                        "sl_dist":  abs(params.stop_loss   - close_price),
+                        "tp_dist":  abs(params.take_profit - close_price),
+                        "size_usd": effective_size_usd,
+                        "atr":      atr,
+                        "_is_rev":  _is_rev_entry,
+                        "_exhaust": _exhaust_triggered,
+                    }
+                    continue
+                # Entry market a close → slippage avverso sul prezzo di esecuzione.
+                # SL/TP restano ancorati ai livelli pianificati (calcolati su close_price).
+                _entry_exec = _slip(close_price, result.action, "entry")
                 fee_entry = effective_size_usd * HL_TAKER_FEE
                 equity   -= fee_entry
                 position  = {
                     "side":          result.action,
-                    "entry":         close_price,
+                    "entry":         _entry_exec,
                     "sl":            params.stop_loss,
                     "tp":            params.take_profit,
                     "size_usd":      effective_size_usd,
@@ -1898,7 +2096,7 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                     "entry_atr":     atr,
                     "partial_done":      False,
                     "sl_trailing_active": False,
-                    "high_water":        close_price,
+                    "high_water":        _entry_exec,
                     "be_sl_applied":     False,
                     "lgbm_strikes":      0,
                     "fee_entry":         fee_entry,
@@ -1918,12 +2116,14 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
                     "is_exhaust_hold":    _exhaust_triggered and exhaustion_max_hold_enabled,
                     "exh_guard_at_entry": _exhaust_triggered,
                     "leverage":           lev,
-                    "liq_px":            _liq_price(result.action, close_price, lev),
+                    "liq_px":            _liq_price(result.action, _entry_exec, lev),
+                    "_mae":              0.0,
+                    "_mfe":              0.0,
                 }
 
     # ── 6. Close any open position at last price ──────────────────────────────
     if position:
-        last_price = float(df_feat.iloc[-1]["close"])
+        last_price = _slip(float(df_feat.iloc[-1]["close"]), position["side"], "market_close")
         side       = position["side"]
         pnl_pct = (
             (last_price - position["entry"]) / position["entry"] * 100 if side == "long"
@@ -1950,11 +2150,22 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
             "origin": position.get("origin", "trend"),
             "date": str(df_feat.index[-1].date()) if hasattr(df_feat.index[-1], "date") else "",
             "equity_after": round(equity, 2),
+            "mae_pct": round(position.get("_mae", 0.0), 4),
+            "mfe_pct": round(position.get("_mfe", 0.0), 4),
         })
         equity_curve.append({"bar": len(df_feat) - 1, "equity": round(equity, 2)})
 
     # ── 7. Calculate statistics ───────────────────────────────────────────────
     stats = _calculate_stats(trades, equity_curve, capital)
+
+    # ── Monte Carlo sui trade (post-backtest, dietro toggle — no-op se OFF) ────
+    montecarlo_result = None
+    if getattr(cfg, "montecarlo_enabled", False):
+        montecarlo_result = _monte_carlo_analysis(
+            trades, capital,
+            runs=int(getattr(cfg, "montecarlo_runs", 5000)),
+            method=getattr(cfg, "montecarlo_method", "bootstrap"),
+        )
     duration_days = (
         datetime.fromisoformat(req.to_date) - datetime.fromisoformat(req.from_date)
     ).days
@@ -1984,6 +2195,7 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
         "mod_fng_bias":           fng_gate_enabled,
         "mod_iv_size_reduction":  False,  # options IV not simulated in backtest
         "mod_exhaustion_guard":   exhaustion_guard_enabled,
+        "exhaustion_ret_bars":    exhaustion_ret_bars,       # numeric — bars used for ret_N lookup
         "mod_absorption_filter":  absorption_filter_enabled,
         "mod_atr_pct_scale":      atr_pct_gate_enabled and atr_pct_mode == "scale",
         "mod_sweep_conf_bonus":   sweep_gate_directional,
@@ -2035,6 +2247,11 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
         "mod_liq_spike_scale":    liq_spike_gate_enabled and liq_spike_mode == "scale",
         # Weekend Gate
         "gate_weekend":           weekend_gate_block_saturday or weekend_gate_block_sunday,
+        # Reversal Stand-Aside + Post-Capitolazione gates
+        "gate_reversal_standaside": reversal_standaside_enabled,
+        "gate_post_capitulation":   post_capitulation_block_enabled,
+        # Next-bar-open entry timing
+        "nbo_triggered":            next_bar_open_enabled,
     }
 
     # ── Reversal stats (separati da trend stats) ─────────────────────────────
@@ -2057,6 +2274,14 @@ async def run_backtest(req, cancel_event: Optional[threading.Event] = None) -> d
         "equity_curve":    equity_curve,
         "param_stats":     param_stats,
         "param_config":    param_config,
+        # Nuove chiavi additive (None quando i toggle sono OFF — il frontend le ignora)
+        "montecarlo":      montecarlo_result,
+        "slippage_applied": {
+            "enabled": slippage_enabled,
+            "bps": slippage_bps,
+            "sl_multiplier": slippage_sl_multiplier,
+            "limit_favorable": slippage_limit_favorable,
+        } if slippage_enabled else None,
     }
     clean = _sanitize(result)
 
@@ -2111,6 +2336,77 @@ def _sanitize(obj):
     if isinstance(obj, list):
         return [_sanitize(v) for v in obj]
     return obj
+
+
+def _monte_carlo_analysis(trades: list, initial_capital: float,
+                          runs: int = 5000, method: str = "bootstrap",
+                          seed: int = 42) -> dict:
+    """
+    Simula `runs` sequenze dei rendimenti-equity dei trade e restituisce i
+    percentili di max drawdown e PnL finale. Non altera lo stato del backtest.
+
+    IMPORTANTE: NON si compone `pnl_pct` (variazione % del prezzo sul nozionale
+    size_usd) — farlo equivale ad assumere il 100% dell'equity investito in ogni
+    trade e gonfia PnL/DD di un fattore ~size_usd/equity. Si usa il rendimento
+    effettivo sull'equity: ret = pnl_usd / equity_before, con equity_before
+    ricavato da equity_after - pnl_usd (entrambi già nei record, netti di fee
+    e funding). Sanity check: con method="shuffle" il PnL finale di ogni
+    sequenza coincide (~) con il total_pnl_pct reale del backtest.
+
+    Nota statistica: "bootstrap" (ricampionamento con ripetizione) rompe
+    l'autocorrelazione dei trade e tende a sottostimare il DD da clustering;
+    "shuffle" preserva il set esatto di trade variandone solo l'ordine.
+    """
+    rets_list = []
+    for t in trades:
+        pnl_usd  = t.get("pnl_usd")
+        eq_after = t.get("equity_after")
+        if pnl_usd is None or eq_after is None:
+            continue
+        eq_before = eq_after - pnl_usd
+        if eq_before <= 0:
+            continue  # equity esaurita: rendimento non definibile
+        rets_list.append(pnl_usd / eq_before)
+    rets = np.asarray(rets_list, dtype=float)
+    n = len(rets)
+    if n < 10:
+        return {"status": "insufficient_trades", "n_trades": n}
+
+    rng = np.random.default_rng(seed)
+    max_dds, final_pnls = np.empty(runs), np.empty(runs)
+
+    for k in range(runs):
+        if method == "shuffle":
+            seq = rets[rng.permutation(n)]
+        else:  # bootstrap
+            seq = rets[rng.integers(0, n, size=n)]
+        # clip: una sequenza bootstrap può azzerare l'equity, mai renderla negativa
+        equity = initial_capital * np.cumprod(np.clip(1.0 + seq, 1e-4, None))
+        peak = np.maximum.accumulate(equity)
+        dd = (equity - peak) / peak
+        max_dds[k] = dd.min() * 100.0
+        final_pnls[k] = (equity[-1] / initial_capital - 1.0) * 100.0
+
+    def pctl(a, q): return float(np.percentile(a, q))
+    return {
+        "status": "ok",
+        "runs": runs,
+        "method": method,
+        "n_trades": n,
+        "max_dd": {
+            "p5":  round(pctl(max_dds, 5), 2),
+            "p25": round(pctl(max_dds, 25), 2),
+            "p50": round(pctl(max_dds, 50), 2),
+            "p95": round(pctl(max_dds, 95), 2),
+        },
+        "final_pnl_pct": {
+            "p5":  round(pctl(final_pnls, 5), 2),
+            "p50": round(pctl(final_pnls, 50), 2),
+            "p95": round(pctl(final_pnls, 95), 2),
+        },
+        "prob_negative_year": round(float((final_pnls < 0).mean()) * 100, 2),
+        "prob_dd_gt_20": round(float((max_dds < -20).mean()) * 100, 2),
+    }
 
 
 def _calculate_stats(trades: list, equity_curve: list, capital: float) -> dict:

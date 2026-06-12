@@ -36,6 +36,8 @@ interface BacktestTrade {
   leverage?: number;
   _levEq?: number;
   _bankrupt?: boolean;
+  mae_pct?: number;
+  mfe_pct?: number;
 }
 
 interface EquityPoint { bar: number; equity: number; }
@@ -70,6 +72,8 @@ interface ParamStats {
   mod_liq_spike_scale?: number;
   // weekend gate
   gate_weekend?: number;
+  gate_reversal_standaside?: number;
+  gate_post_capitulation?: number;
   // bias/modifiers
   mod_mtf_alignment: number;
   mod_regime_bias: number;
@@ -88,11 +92,10 @@ interface ParamStats {
   mod_transition_guard?: number;
   // exhaustion guard breakdown
   exh_trigger_rsi_only?: number;
-  exh_trigger_ret48_only?: number;
+  exh_trigger_ret_only?: number;
   exh_trigger_both?: number;
   exh_guard_passed?: number;
   exh_guard_blocked?: number;
-  exh_guard_decisive?: number;
   exh_passed_wins?: number;
   exh_passed_losses?: number;
   // structural SL/TP overrides
@@ -133,6 +136,26 @@ interface ParamStats {
   reentry_triggered?: number;
   reentry_blocked_lgbm?: number;
   reentry_blocked_1h?: number;
+  nbo_triggered?: number;
+}
+
+// ── Monte Carlo / Slippage (validazione backtest) ─────────────────────────────
+interface MonteCarloResult {
+  status: 'ok' | 'insufficient_trades';
+  n_trades: number;
+  runs?: number;
+  method?: 'bootstrap' | 'shuffle';
+  max_dd?: { p5: number; p25: number; p50: number; p95: number };
+  final_pnl_pct?: { p5: number; p50: number; p95: number };
+  prob_negative_year?: number;
+  prob_dd_gt_20?: number;
+}
+
+interface SlippageApplied {
+  enabled: boolean;
+  bps: number;
+  sl_multiplier: number;
+  limit_favorable?: boolean;
 }
 
 interface BacktestResult {
@@ -148,7 +171,9 @@ interface BacktestResult {
   trades: BacktestTrade[];
   equity_curve: EquityPoint[];
   param_stats?: ParamStats;
-  param_config?: Record<string, boolean>;
+  param_config?: Record<string, boolean | number>;
+  montecarlo?: MonteCarloResult | null;
+  slippage_applied?: SlippageApplied | null;
 }
 
 // ── History types ──────────────────────────────────────────────────────────────
@@ -334,7 +359,7 @@ const TradeTable: React.FC<{ trades: BacktestTrade[]; showLevEquity?: boolean; i
   const reversed = [...trades].reverse();
   const totalPages = Math.ceil(reversed.length / PAGE_SIZE);
   const pageSlice  = reversed.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
-  const colSpan    = showLevEquity ? 12 : 12;  // always 12 — date + equity always shown
+  const colSpan    = 13;  // date + side + entry + exit + pnl% + pnl$ + equity + fee + funding + reason + mae/mfe + hold
 
   // Reset to page 0 when trades list changes (new backtest result)
   React.useEffect(() => { setPage(0); }, [trades.length]);
@@ -391,6 +416,17 @@ const TradeTable: React.FC<{ trades: BacktestTrade[]; showLevEquity?: boolean; i
             )}
           </div>
         </td>
+        <td className="px-3 py-2 text-right font-mono">
+          {t.pnl_pct > 0 ? (
+            t.mae_pct !== undefined && t.mae_pct > 0
+              ? <span className="text-amber-500 dark:text-amber-400" title="MAE: max drawdown prima del TP">▼{t.mae_pct.toFixed(2)}%</span>
+              : <span className="text-slate-300 dark:text-slate-600">—</span>
+          ) : (
+            t.mfe_pct !== undefined && t.mfe_pct > 0
+              ? <span className="text-emerald-600 dark:text-emerald-400" title="MFE: max spike positivo prima dell'SL">▲{t.mfe_pct.toFixed(2)}%</span>
+              : <span className="text-slate-300 dark:text-slate-600">—</span>
+          )}
+        </td>
         <td className="px-3 py-2 text-right text-slate-400 dark:text-slate-500 font-mono">{t.holding_bars * 4}h</td>
       </tr>
     );
@@ -426,6 +462,11 @@ const TradeTable: React.FC<{ trades: BacktestTrade[]; showLevEquity?: boolean; i
               <th className="px-3 py-3 text-right">Fee Ent.</th>
               <th className="px-3 py-3 text-right">Funding</th>
               <th className="px-3 py-3 text-left">Reason</th>
+              <th className="px-3 py-3 text-right">
+                <Tooltip text="Win → MAE: max escursione avversa prima del TP (quanto è andato contro prima di vincere). Loss → MFE: max escursione favorevole prima dell'SL (quanto era in profitto prima di perdere)." pos="top" width="wide">
+                  <span>MAE/MFE</span>
+                </Tooltip>
+              </th>
               <th className="px-3 py-3 text-right">Hold</th>
             </tr>
           </thead>
@@ -787,8 +828,14 @@ const ConfigSummary: React.FC<{ config: Record<string, any> }> = ({ config: c })
   if (c.ls_gate_enabled)        activeBadges.push(badge(`L/S Gate ≥${c.ls_long_block_pct ?? 67}% ${c.ls_gate_mode === 'block' ? 'BLOCK' : `×${c.ls_gate_scale_factor ?? 0.5}`}`, sqColor));
   if (c.liq_spike_gate_enabled) activeBadges.push(badge(`Liq Spike ${c.liq_spike_thr ?? 2.5}σ ${c.liq_spike_mode === 'block' ? 'BLOCK' : 'scale'}`, sqColor));
   if (c.weekend_gate_block_saturday || c.weekend_gate_block_sunday) activeBadges.push(badge(`Weekend BLOCK ${[c.weekend_gate_block_saturday && 'Sab', c.weekend_gate_block_sunday && 'Dom'].filter(Boolean).join('+')}`, 'bg-amber-50 dark:bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-100 dark:border-amber-500/20'));
-  if (c.transition_guard_enabled) activeBadges.push(badge(`Transition Guard ≥${c.transition_risk_min ?? 0.55}`, 'bg-sky-50 dark:bg-sky-500/10 text-sky-600 dark:text-sky-400 border-sky-100 dark:border-sky-500/20'));
+  if (c.transition_guard_enabled)       activeBadges.push(badge(`Transition Guard ≥${c.transition_risk_min ?? 0.55}`, 'bg-sky-50 dark:bg-sky-500/10 text-sky-600 dark:text-sky-400 border-sky-100 dark:border-sky-500/20'));
+  if (c.reversal_standaside_enabled)    activeBadges.push(badge('Gate: Reversal Stand-Aside', 'bg-amber-50 dark:bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-100 dark:border-amber-500/20'));
+  if (c.post_capitulation_block_enabled) activeBadges.push(badge('Gate: Post-Capitolazione', 'bg-amber-50 dark:bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-100 dark:border-amber-500/20'));
   if (c.adverse_monitor_enabled)  activeBadges.push(badge(`Adverse Monitor ${c.adverse_action ?? 'shadow'} ≥${c.adverse_score_threshold ?? 0.40}`, 'bg-rose-50 dark:bg-rose-500/10 text-rose-600 dark:text-rose-400 border-rose-100 dark:border-rose-500/20'));
+  const valColor = 'bg-teal-50 dark:bg-teal-500/10 text-teal-600 dark:text-teal-400 border-teal-100 dark:border-teal-500/20';
+  if (c.slippage_enabled)        activeBadges.push(badge(`Slippage ${c.slippage_bps ?? 3} bps · SL ×${c.slippage_sl_multiplier ?? 2}`, valColor));
+  if (c.next_bar_open_enabled)   activeBadges.push(badge('Entry Open N+1', valColor));
+  if (c.montecarlo_enabled)      activeBadges.push(badge(`Monte Carlo ${(c.montecarlo_runs ?? 5000).toLocaleString()} ${c.montecarlo_method ?? 'bootstrap'}`, valColor));
 
   const disabledFilters: string[] = [];
   if (c.adx_gate_enabled      === false) disabledFilters.push('ADX OFF');
@@ -820,10 +867,125 @@ const ConfigSummary: React.FC<{ config: Record<string, any> }> = ({ config: c })
   );
 };
 
+// ── Monte Carlo results card ──────────────────────────────────────────────────
+const MonteCarloCard: React.FC<{ mc: MonteCarloResult }> = ({ mc }) => {
+  if (mc.status === 'insufficient_trades') {
+    return (
+      <div className="elegant-card bg-white dark:bg-[#151E32] overflow-hidden">
+        <div className="px-6 py-4 border-b border-slate-100 dark:border-white/5 bg-slate-50/50 dark:bg-white/[0.02]">
+          <h3 className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest flex items-center gap-2">
+            <span className="w-1.5 h-1.5 rounded-full bg-teal-500" />
+            Monte Carlo — Analisi di Robustezza
+          </h3>
+        </div>
+        <div className="p-6 flex items-center gap-3">
+          <div className="w-8 h-8 rounded-full bg-amber-50 dark:bg-amber-500/10 flex items-center justify-center flex-shrink-0">
+            <svg className="w-4 h-4 text-amber-500" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+            </svg>
+          </div>
+          <div>
+            <p className="text-xs font-bold text-slate-700 dark:text-slate-300">Trade insufficienti per il Monte Carlo</p>
+            <p className="text-[10px] text-slate-400 dark:text-slate-500 mt-0.5">
+              Servono almeno 10 trade chiusi — questo backtest ne ha prodotti {mc.n_trades}. Allunga il periodo o rilassa i filtri.
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  const dd  = mc.max_dd!;
+  const pnl = mc.final_pnl_pct!;
+  const fmtPct = (v: number) => `${v > 0 ? '+' : ''}${v.toFixed(2)}%`;
+  const pnlColor = (v: number) => v > 0 ? 'text-emerald-600 dark:text-emerald-400' : v < 0 ? 'text-rose-600 dark:text-rose-400' : 'text-slate-500 dark:text-slate-400';
+  const probColor = (v: number, warn: number, bad: number) =>
+    v >= bad ? 'text-rose-600 dark:text-rose-400' : v >= warn ? 'text-amber-500' : 'text-emerald-600 dark:text-emerald-400';
+
+  const PctlCell: React.FC<{ label: string; value: string; sub: string; color?: string; emphasis?: boolean }> = ({ label, value, sub, color, emphasis }) => (
+    <div className={`w-full h-full flex flex-col gap-1 rounded-xl p-3 border ${emphasis ? 'bg-teal-50/60 dark:bg-teal-500/10 border-teal-100 dark:border-teal-500/20' : 'bg-slate-50 dark:bg-white/5 border-slate-100 dark:border-white/5'}`}>
+      <span className="text-[9px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest">{label}</span>
+      <span className={`text-base font-bold font-mono ${color ?? 'text-slate-900 dark:text-white'}`}>{value}</span>
+      <span className="text-[9px] text-slate-400 dark:text-slate-500 leading-snug">{sub}</span>
+    </div>
+  );
+
+  return (
+    <div className="elegant-card bg-white dark:bg-[#151E32] overflow-hidden">
+      <div className="px-6 py-4 border-b border-slate-100 dark:border-white/5 bg-slate-50/50 dark:bg-white/[0.02] flex items-start justify-between gap-3 flex-wrap">
+        <div>
+          <h3 className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest flex items-center gap-2">
+            <span className="w-1.5 h-1.5 rounded-full bg-teal-500" />
+            Monte Carlo — Analisi di Robustezza
+          </h3>
+          <p className="text-[10px] text-slate-400 dark:text-slate-500 mt-1">
+            Distribuzione di drawdown e PnL su sequenze alternative degli stessi {mc.n_trades} trade. Il backtest reale è un singolo path tra questi.
+          </p>
+        </div>
+        <span className="px-2.5 py-1 rounded-lg text-[9px] font-bold uppercase tracking-wider border bg-teal-50 dark:bg-teal-500/10 text-teal-600 dark:text-teal-400 border-teal-100 dark:border-teal-500/20">
+          {(mc.runs ?? 0).toLocaleString()} run · {mc.method === 'shuffle' ? 'Shuffle' : 'Bootstrap'}
+        </span>
+      </div>
+      <div className="p-6 space-y-6">
+        {/* Max Drawdown distribution */}
+        <div>
+          <h4 className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-3 flex items-center gap-2">
+            <span className="w-1 h-3 bg-rose-500 rounded-full" />
+            Max Drawdown — Distribuzione
+          </h4>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 items-stretch">
+            <PctlCell label="P5 — Sfortuna" value={`${dd.p5.toFixed(2)}%`} color="text-rose-600 dark:text-rose-400" emphasis
+              sub="Scenario sfortunato: solo il 5% delle sequenze perde più di così" />
+            <PctlCell label="P25" value={`${dd.p25.toFixed(2)}%`} color="text-rose-500/80 dark:text-rose-400/80"
+              sub="1 sequenza su 4 ha un drawdown peggiore di questo" />
+            <PctlCell label="P50 — Tipico" value={`${dd.p50.toFixed(2)}%`} color="text-slate-900 dark:text-white"
+              sub="Il drawdown tipico: metà delle sequenze fa meglio, metà peggio" />
+            <PctlCell label="P95 — Fortuna" value={`${dd.p95.toFixed(2)}%`} color="text-emerald-600 dark:text-emerald-400"
+              sub="Scenario fortunato: solo il 5% delle sequenze perde meno di così" />
+          </div>
+        </div>
+        {/* Final PnL distribution */}
+        <div>
+          <h4 className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-3 flex items-center gap-2">
+            <span className="w-1 h-3 bg-teal-500 rounded-full" />
+            PnL Finale — Distribuzione
+          </h4>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-stretch">
+            <PctlCell label="P5 — Sfortuna" value={fmtPct(pnl.p5)} color={pnlColor(pnl.p5)} emphasis
+              sub="Scenario sfortunato: solo il 5% delle sequenze chiude sotto questo PnL" />
+            <PctlCell label="P50 — Tipico" value={fmtPct(pnl.p50)} color={pnlColor(pnl.p50)}
+              sub="Il risultato tipico atteso: metà delle sequenze fa meglio, metà peggio" />
+            <PctlCell label="P95 — Fortuna" value={fmtPct(pnl.p95)} color={pnlColor(pnl.p95)}
+              sub="Scenario fortunato: solo il 5% delle sequenze chiude sopra questo PnL" />
+          </div>
+        </div>
+        {/* Risk probabilities */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-stretch">
+          <PctlCell label="Prob. periodo negativo" value={`${(mc.prob_negative_year ?? 0).toFixed(2)}%`}
+            color={probColor(mc.prob_negative_year ?? 0, 10, 30)}
+            sub="Quota di sequenze che chiude il periodo in perdita. Sotto il 10% è solido; sopra il 30% il risultato dipende troppo dalla fortuna" />
+          <PctlCell label="Prob. drawdown > 20%" value={`${(mc.prob_dd_gt_20 ?? 0).toFixed(2)}%`}
+            color={probColor(mc.prob_dd_gt_20 ?? 0, 5, 20)}
+            sub="Quota di sequenze con un crollo oltre il −20%. Misura il rischio di un drawdown severo per pura sfortuna di ordine dei trade" />
+        </div>
+        <p className="text-[9px] text-slate-400 dark:text-slate-500 leading-snug bg-slate-50 dark:bg-white/[0.03] border border-slate-100 dark:border-white/5 rounded-lg p-2.5">
+          {mc.method === 'shuffle'
+            ? 'Metodo shuffle: stesso set di trade, ordine variato — preserva il clustering delle perdite, stima del DD più conservativa.'
+            : 'Limite del bootstrap: il ricampionamento indipendente rompe l’autocorrelazione dei trade (cluster di loss in regime avverso) e tende a sottostimare il drawdown reale. Per una stima più conservativa usa il metodo Shuffle.'}
+        </p>
+      </div>
+    </div>
+  );
+};
+
 // ── Parameter Activity Report ─────────────────────────────────────────────────
-const ParamActivity: React.FC<{ ps: ParamStats; cfg?: Record<string, boolean>; trades?: BacktestTrade[] }> = ({ ps, cfg, trades: allTrades }) => {
+const ParamActivity: React.FC<{ ps: ParamStats; cfg?: Record<string, boolean | number>; trades?: BacktestTrade[] }> = ({ ps, cfg, trades: allTrades }) => {
   const total  = ps.bars_evaluated || 1;
   const trades = (ps.signals_long ?? 0) + (ps.signals_short ?? 0);
+
+  // Exhaustion Guard ret_ lookback — read from backtest result config (stored as number), fallback 48
+  const retBars = typeof cfg?.exhaustion_ret_bars === 'number' ? cfg.exhaustion_ret_bars : 48;
+  const retDays = Math.round(retBars / 6);
 
   // Re-entry win/loss: only FULL closes (exclude partial_tp — they're sub-records of the same position)
   const reentryClosings = (allTrades ?? []).filter(t => t.origin === 'reentry' && t.reason !== 'partial_tp');
@@ -890,7 +1052,9 @@ const ParamActivity: React.FC<{ ps: ParamStats; cfg?: Record<string, boolean>; t
         { key: 'gate_oi_spike',         label: 'OI Spike Gate BLOCK (crowding direzionale, oi_delta_z estremo)',   count: ps.gate_oi_spike ?? 0,   pct: pct(ps.gate_oi_spike ?? 0) },
         { key: 'gate_ls_ratio',         label: 'Long/Short Ratio Gate BLOCK (mercato over-long/over-short)',       count: ps.gate_ls_ratio ?? 0,   pct: pct(ps.gate_ls_ratio ?? 0) },
         { key: 'gate_liq_spike',        label: 'Liquidation Spike Gate BLOCK (squeeze in corso, liq_z estremo)',   count: ps.gate_liq_spike ?? 0,  pct: pct(ps.gate_liq_spike ?? 0) },
-        { key: 'gate_weekend',          label: 'Weekend Gate BLOCK (sabato/domenica, mercati chiusi)',             count: ps.gate_weekend ?? 0,    pct: pct(ps.gate_weekend ?? 0) },
+        { key: 'gate_weekend',               label: 'Weekend Gate BLOCK (sabato/domenica, mercati chiusi)',                              count: ps.gate_weekend ?? 0,               pct: pct(ps.gate_weekend ?? 0) },
+        { key: 'gate_reversal_standaside',   label: 'Gate: Reversal Stand-Aside (trend esausto + struttura invertita → no trade)',       count: ps.gate_reversal_standaside ?? 0,   pct: pct(ps.gate_reversal_standaside ?? 0) },
+        { key: 'gate_post_capitulation',     label: 'Gate: Post-Capitolazione (capitolazione/blowoff recente + rimbalzo in corso → no trade)', count: ps.gate_post_capitulation ?? 0, pct: pct(ps.gate_post_capitulation ?? 0) },
       ],
     },
     {
@@ -1002,6 +1166,15 @@ const ParamActivity: React.FC<{ ps: ParamStats; cfg?: Record<string, boolean>; t
         { key: 'reentry_blocked_1h',   alwaysShow: true, label: 'Bloccati — Gate 1H sotto soglia (momentum 1H debole)', count: ps.reentry_blocked_1h ?? 0,   pct: (ps.reentry_triggered ?? 0) + (ps.reentry_blocked_lgbm ?? 0) + (ps.reentry_blocked_1h ?? 0) > 0 ? pct(ps.reentry_blocked_1h ?? 0, (ps.reentry_triggered ?? 0) + (ps.reentry_blocked_lgbm ?? 0) + (ps.reentry_blocked_1h ?? 0)) : 0, note: undefined },
       ],
     }] : []),
+    // Next-Bar-Open: shown when enabled OR when it fired
+    ...((isOn('nbo_triggered') || (ps.nbo_triggered ?? 0) > 0) ? [{
+      title: 'Entry Timing — Next Bar Open',
+      color: 'border-indigo-200 dark:border-indigo-500/20',
+      dot: 'bg-indigo-500',
+      rows: [
+        { key: 'nbo_triggered', alwaysShow: true, label: 'Entry eseguiti a open N+1 (segnale su barra N → fill su open N+1)', count: ps.nbo_triggered ?? 0, pct: trades > 0 ? pct(ps.nbo_triggered ?? 0, trades) : 0, note: trades > 0 ? `${pct(ps.nbo_triggered ?? 0, trades)}% dei trade` : undefined },
+      ],
+    }] : []),
     // Exhaustion Guard: dedicated section shown when guard is enabled OR when it fired at least once
     ...((isOn('mod_exhaustion_guard') || exhTotal > 0) ? [{
       title: 'Exhaustion Guard',
@@ -1011,35 +1184,35 @@ const ParamActivity: React.FC<{ ps: ParamStats; cfg?: Record<string, boolean>; t
       rows: [
         {
           key: 'exh_total', alwaysShow: true,
-          label: `Attivazioni totali — condizioni RSI/ret_48 rilevate (su ${ps.bars_evaluated.toLocaleString()} candele)`,
+          label: `Attivazioni totali — condizioni RSI/ret_${retBars} rilevate (su ${ps.bars_evaluated.toLocaleString()} candele)`,
           count: exhTotal,
           pct: pct(exhTotal),
           note: exhTotal > 0 ? `${pct(exhTotal)}% delle candele` : undefined,
         },
         {
           key: 'exh_trigger_rsi_only', alwaysShow: true,
-          label: 'Motivo: solo RSI (RSI fuori soglia, ret_48 neutro)',
+          label: `Motivo: solo RSI (RSI fuori soglia, ret_${retBars} neutro)`,
           count: ps.exh_trigger_rsi_only ?? 0,
           pct: exhTotal > 0 ? pct(ps.exh_trigger_rsi_only ?? 0, exhTotal) : 0,
           note: exhTotal > 0 ? `${pct(ps.exh_trigger_rsi_only ?? 0, exhTotal)}% delle attivazioni` : undefined,
         },
         {
-          key: 'exh_trigger_ret48_only', alwaysShow: true,
-          label: 'Motivo: solo ret_48 (return 48 barre 4H ≈ 8 giorni fuori range, RSI neutro)',
-          count: ps.exh_trigger_ret48_only ?? 0,
-          pct: exhTotal > 0 ? pct(ps.exh_trigger_ret48_only ?? 0, exhTotal) : 0,
-          note: exhTotal > 0 ? `${pct(ps.exh_trigger_ret48_only ?? 0, exhTotal)}% delle attivazioni` : undefined,
+          key: 'exh_trigger_ret_only', alwaysShow: true,
+          label: `Motivo: solo ret_${retBars} (rendimento ${retDays}gg fuori range, RSI neutro)`,
+          count: ps.exh_trigger_ret_only ?? 0,
+          pct: exhTotal > 0 ? pct(ps.exh_trigger_ret_only ?? 0, exhTotal) : 0,
+          note: exhTotal > 0 ? `${pct(ps.exh_trigger_ret_only ?? 0, exhTotal)}% delle attivazioni` : undefined,
         },
         {
           key: 'exh_trigger_both', alwaysShow: true,
-          label: 'Motivo: RSI + ret_48 (doppia condizione — massima cautela)',
+          label: `Motivo: RSI + ret_${retBars} (doppia condizione — massima cautela)`,
           count: ps.exh_trigger_both ?? 0,
           pct: exhTotal > 0 ? pct(ps.exh_trigger_both ?? 0, exhTotal) : 0,
           note: exhTotal > 0 ? `${pct(ps.exh_trigger_both ?? 0, exhTotal)}% delle attivazioni` : undefined,
         },
         {
           key: 'exh_guard_passed', alwaysShow: true,
-          label: `Trade aperti nonostante il guard sulla loro direzione (threshold superato comunque)${exhTotal > 0 ? ` — ${pct(exhPassed, exhTotal)}% delle attivazioni passate` : ''}`,
+          label: `Trade aperti nonostante il guard (threshold superato)${exhTotal > 0 ? ` — ${pct(exhPassed, exhTotal)}% delle attivazioni` : ''}`,
           count: exhPassed,
           pct: exhTotal > 0 ? pct(exhPassed, exhTotal) : 0,
           note: exhPassed > 0 && trades > 0 ? `${pct(exhPassed, trades)}% dei trade totali` : undefined,
@@ -1050,13 +1223,6 @@ const ParamActivity: React.FC<{ ps: ParamStats; cfg?: Record<string, boolean>; t
           count: exhBlocked,
           pct: exhTotal > 0 ? pct(exhBlocked, exhTotal) : 0,
           note: exhTotal > 0 ? `${pct(exhBlocked, exhTotal)}% delle attivazioni` : undefined,
-        },
-        {
-          key: 'exh_guard_decisive', alwaysShow: true,
-          label: 'Bloccati DAL guard — il segnale superava la soglia base, solo il boost lo ha fermato (counterfactual)',
-          count: ps.exh_guard_decisive ?? 0,
-          pct: exhTotal > 0 ? pct(ps.exh_guard_decisive ?? 0, exhTotal) : 0,
-          note: exhTotal > 0 ? `${pct(ps.exh_guard_decisive ?? 0, exhTotal)}% delle attivazioni` : undefined,
         },
         {
           key: 'exh_passed_wins', alwaysShow: true,
@@ -1074,7 +1240,7 @@ const ParamActivity: React.FC<{ ps: ParamStats; cfg?: Record<string, boolean>; t
         },
         ...((isOn('mod_exhaustion_prop') || (ps.mod_exhaustion_prop ?? 0) > 0) ? [{
           key: 'exh_prop', alwaysShow: true,
-          label: 'Boost proporzionale applicato (ret_48 estremo → bonus boost su threshold)',
+          label: `Boost proporzionale applicato (ret_${retBars} estremo → bonus boost su threshold)`,
           count: ps.mod_exhaustion_prop ?? 0,
           pct: exhTotal > 0 ? pct(ps.mod_exhaustion_prop ?? 0, exhTotal) : 0,
           note: exhTotal > 0 ? `${pct(ps.mod_exhaustion_prop ?? 0, exhTotal)}% delle attivazioni` : undefined,
@@ -1929,6 +2095,7 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   const [exhaustionRsiLow,   setExhaustionRsiLow]   = useState('28');
   const [exhaustionRsiHigh,  setExhaustionRsiHigh]  = useState('72');
   const [exhaustionRet48,    setExhaustionRet48]    = useState('6.0');
+  const [exhaustionRetDays,  setExhaustionRetDays]  = useState('8');   // giorni → bars = giorni*6
   const [exhaustionBoost,    setExhaustionBoost]    = useState('0.06');
   // Feature A: Exhaustion Guard proporzionale
   const [exhaustionProp,       setExhaustionProp]       = useState(false);
@@ -1948,6 +2115,11 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   const [exhaustionMaxHold,    setExhaustionMaxHold]    = useState(false);
   const [exhaustionMaxHoldBars,setExhaustionMaxHoldBars]= useState('2');
   const [transitionGuard,      setTransitionGuard]      = useState(false);
+  const [reversalStandAside,   setReversalStandAside]   = useState(false);
+  const [rsaAdxFrac,           setRsaAdxFrac]           = useState('0.60');
+  const [rsaMinBars,           setRsaMinBars]           = useState('14');
+  const [postCapBlock,         setPostCapBlock]         = useState(false);
+  const [postCapRetThr,        setPostCapRetThr]        = useState('0.12');
   const [transitionBoostMax,   setTransitionBoostMax]   = useState('0.05');
   const [transitionRiskMin,    setTransitionRiskMin]    = useState('0.55');
   const [structuralSl,         setStructuralSl]         = useState(false);
@@ -2097,6 +2269,16 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   const [advBeSLAct,     setAdvBeSLAct]     = useState('1.0');
   const [advMaxHold,     setAdvMaxHold]     = useState(false);
   const [advMaxHoldBars, setAdvMaxHoldBars] = useState('48');
+  // Validazione & Realismo — Slippage Model + Monte Carlo (backtest only, default OFF)
+  const [slippageEnabled,        setSlippageEnabled]        = useState(false);
+  const [slippageBps,            setSlippageBps]            = useState('3.0');
+  const [slippageSlMult,         setSlippageSlMult]         = useState('2.0');
+  const [slippageLimitFavorable, setSlippageLimitFavorable] = useState(true);
+  const [intrabarFillMode,       setIntrabarFillMode]       = useState<'optimistic' | 'pessimistic' | 'balanced'>('optimistic');
+  const [nextBarOpen,            setNextBarOpen]            = useState(false);
+  const [montecarloEnabled,      setMontecarloEnabled]      = useState(false);
+  const [montecarloRuns,         setMontecarloRuns]         = useState('5000');
+  const [montecarloMethod,       setMontecarloMethod]       = useState<'bootstrap' | 'shuffle'>('bootstrap');
 
   // ── Results ───────────────────────────────────────────────────────────────────
   const [status,         setStatus]         = useState<'idle' | 'running' | 'done' | 'error'>('idle');
@@ -2161,6 +2343,7 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     if (p.exhaustion_rsi_low         !== undefined) setExhaustionRsiLow(String(p.exhaustion_rsi_low));
     if (p.exhaustion_rsi_high        !== undefined) setExhaustionRsiHigh(String(p.exhaustion_rsi_high));
     if (p.exhaustion_ret48_pct       !== undefined) setExhaustionRet48(String(p.exhaustion_ret48_pct));
+    if (p.exhaustion_ret_bars        !== undefined) setExhaustionRetDays(String(Math.round((p.exhaustion_ret_bars as number) / 6)));
     if (p.exhaustion_boost              !== undefined) setExhaustionBoost(String(p.exhaustion_boost));
     if (p.exhaustion_prop_enabled       !== undefined) setExhaustionProp(!!p.exhaustion_prop_enabled);
     if (p.exhaustion_prop_scale         !== undefined) setExhaustionPropScale(String(p.exhaustion_prop_scale));
@@ -2175,6 +2358,11 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     if (p.exhaustion_max_hold_enabled   !== undefined) setExhaustionMaxHold(!!p.exhaustion_max_hold_enabled);
     if (p.exhaustion_max_hold_bars      !== undefined) setExhaustionMaxHoldBars(String(p.exhaustion_max_hold_bars));
     if (p.transition_guard_enabled      !== undefined) setTransitionGuard(!!p.transition_guard_enabled);
+    if (p.reversal_standaside_enabled   !== undefined) setReversalStandAside(!!p.reversal_standaside_enabled);
+    if (p.reversal_standaside_adx_frac  !== undefined) setRsaAdxFrac(String(p.reversal_standaside_adx_frac));
+    if (p.reversal_standaside_min_bars  !== undefined) setRsaMinBars(String(p.reversal_standaside_min_bars));
+    if (p.post_capitulation_block_enabled !== undefined) setPostCapBlock(!!p.post_capitulation_block_enabled);
+    if (p.post_capitulation_ret_thr     !== undefined) setPostCapRetThr(String(p.post_capitulation_ret_thr));
     if (p.transition_boost_max          !== undefined) setTransitionBoostMax(String(p.transition_boost_max));
     if (p.transition_risk_min           !== undefined) setTransitionRiskMin(String(p.transition_risk_min));
     if (p.structural_sl_enabled         !== undefined) setStructuralSl(!!p.structural_sl_enabled);
@@ -2282,6 +2470,15 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     if (p.weekend_gate_block_saturday  !== undefined) setWeekendBlockSaturday(!!p.weekend_gate_block_saturday);
     if (p.weekend_gate_block_sunday    !== undefined) setWeekendBlockSunday(!!p.weekend_gate_block_sunday);
     if (p.use_1h_lgbm_gate             !== undefined) setUse1hGate(!!p.use_1h_lgbm_gate);
+    // Validazione & Realismo — Slippage Model + Monte Carlo
+    if (p.slippage_enabled             !== undefined) setSlippageEnabled(!!p.slippage_enabled);
+    if (p.slippage_bps                 !== undefined) setSlippageBps(String(p.slippage_bps));
+    if (p.slippage_sl_multiplier       !== undefined) setSlippageSlMult(String(p.slippage_sl_multiplier));
+    if (p.slippage_limit_favorable     !== undefined) setSlippageLimitFavorable(!!p.slippage_limit_favorable);
+    if (p.next_bar_open_enabled        !== undefined) setNextBarOpen(!!p.next_bar_open_enabled);
+    if (p.montecarlo_enabled           !== undefined) setMontecarloEnabled(!!p.montecarlo_enabled);
+    if (p.montecarlo_runs              !== undefined) setMontecarloRuns(String(p.montecarlo_runs));
+    if (p.montecarlo_method            !== undefined) setMontecarloMethod(p.montecarlo_method as 'bootstrap' | 'shuffle');
     if (p.lgbm_1h_min_agreement        !== undefined) setLgbm1hMinAgreement(String(Math.round(p.lgbm_1h_min_agreement * 100)));
     if (p.lgbm_1h_block_threshold      !== undefined) setLgbm1hBlockThreshold(String(Math.round(p.lgbm_1h_block_threshold * 100)));
   }, []);
@@ -2501,6 +2698,7 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     exhaustion_rsi_low:            parseFloat(exhaustionRsiLow),
     exhaustion_rsi_high:           parseFloat(exhaustionRsiHigh),
     exhaustion_ret48_pct:          parseFloat(exhaustionRet48),
+    exhaustion_ret_bars:           Math.max(6, Math.round(parseFloat(exhaustionRetDays) * 6)),
     exhaustion_boost:              parseFloat(exhaustionBoost),
     exhaustion_prop_enabled:       exhaustionProp,
     exhaustion_prop_scale:         parseFloat(exhaustionPropScale),
@@ -2517,6 +2715,11 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     transition_guard_enabled:      transitionGuard,
     transition_boost_max:          parseFloat(transitionBoostMax),
     transition_risk_min:           parseFloat(transitionRiskMin),
+    reversal_standaside_enabled:   reversalStandAside,
+    reversal_standaside_adx_frac:  parseFloat(rsaAdxFrac),
+    reversal_standaside_min_bars:  parseInt(rsaMinBars),
+    post_capitulation_block_enabled: postCapBlock,
+    post_capitulation_ret_thr:     parseFloat(postCapRetThr),
     structural_sl_enabled:         structuralSl,
     ob_buffer_pct:                 parseFloat(obBufferPct),
     ob_buffer_min_atr:             parseFloat(obBufferMinAtr),
@@ -2614,6 +2817,16 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     // Weekend Gate
     weekend_gate_block_saturday:   weekendBlockSaturday,
     weekend_gate_block_sunday:     weekendBlockSunday,
+    // Validazione & Realismo — Slippage Model + Monte Carlo (backtest only)
+    slippage_enabled:              slippageEnabled,
+    slippage_bps:                  parseFloat(slippageBps),
+    slippage_sl_multiplier:        parseFloat(slippageSlMult),
+    slippage_limit_favorable:      slippageLimitFavorable,
+    intrabar_fill_mode:            intrabarFillMode,
+    next_bar_open_enabled:         nextBarOpen,
+    montecarlo_enabled:            montecarloEnabled,
+    montecarlo_runs:               parseInt(montecarloRuns),
+    montecarlo_method:             montecarloMethod,
   });
 
   const downloadConfig = () => {
@@ -2669,7 +2882,7 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
       `TP — Swing:             ${swingTp ? `ATTIVO — blend ${Math.round(parseFloat(swingTpBlend) * 100)}% Swing / ${Math.round((1 - parseFloat(swingTpBlend)) * 100)}% ATR` : 'DISATTIVATO'}`,
       '',
       '━━━ SIGNAL QUALITY FILTERS ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
-      `Exhaustion Guard:       ${exhaustionGuard ? `ATTIVO — RSI low ${exhaustionRsiLow} · RSI high ${exhaustionRsiHigh} · ret48 ±${exhaustionRet48}% · boost +${exhaustionBoost}` + (exhaustionProp ? ` · prop ×${exhaustionPropScale}` : ' · prop OFF') : 'DISATTIVATO'}`,
+      `Exhaustion Guard:       ${exhaustionGuard ? `ATTIVO — RSI low ${exhaustionRsiLow} · RSI high ${exhaustionRsiHigh} · ret_${parseInt(exhaustionRetDays)*6} (${exhaustionRetDays}gg) ±${exhaustionRet48}% · boost +${exhaustionBoost}` + (exhaustionProp ? ` · prop ×${exhaustionPropScale}` : ' · prop OFF') : 'DISATTIVATO'}`,
       `Absorption Filter:      ${absorptionFilter ? `ATTIVO — soglia z ${absorptionZThresh}σ` : 'DISATTIVATO'}`,
       `Dual ATR (SL/TP):       ${dualAtr ? 'ATTIVO (SL=ATR_21, TP=ATR_14)' : 'DISATTIVATO'}`,
       `Late Entry Filter:      ${lateEntryFilter ? `ATTIVO — max OB dist ${lateEntryMaxObDist} ATR` : 'DISATTIVATO'}`,
@@ -2723,8 +2936,18 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
       '━━━ TRANSITION GUARD ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
       `Transition Guard:       ${transitionGuard ? `ATTIVO — risk_min ${transitionRiskMin} · boost max ×${transitionBoostMax}` : 'DISATTIVATO'}`,
       '',
+      '━━━ GATE INVERSIONE & POST-CAPITOLAZIONE ━━━━━━━━━━━━━━━━━━━━━━━',
+      `Reversal Stand-Aside:   ${reversalStandAside ? `ATTIVO — ADX frac ${rsaAdxFrac} · min bars ${rsaMinBars}` : 'DISATTIVATO'}`,
+      `Post-Capitolazione:     ${postCapBlock ? `ATTIVO — soglia variazione ${postCapRetThr}` : 'DISATTIVATO'}`,
+      '',
       '━━━ ADVERSE EVIDENCE MONITOR ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
       `Adverse Monitor:        ${adverseMonitor ? `ATTIVO — azione ${adverseAction} · soglia score ${adverseScoreThresh} · confirm ${adverseConfirmCycles} cicli · min hold ${adverseMinHold} barre${adverseAction === 'partial_close' ? ` · chiude ${adversePartialPct}%` : ''}` : 'DISATTIVATO'}`,
+      '',
+      '━━━ VALIDAZIONE & REALISMO ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
+      `Slippage Model:         ${slippageEnabled ? `ATTIVO — ${slippageBps} bps market · SL/Liq ×${slippageSlMult} · limit ${slippageLimitFavorable ? 'esenti' : 'inclusi'}` : 'DISATTIVATO'}`,
+      `Fill Intracandela:      ${intrabarFillMode === 'optimistic' ? 'Ottimistico (legacy — favorevole prima)' : intrabarFillMode === 'balanced' ? 'Bilanciato (ordine dedotto dalla candela)' : 'Pessimistico (SL avverso prima)'}`,
+      `Entry Open N+1:         ${nextBarOpen ? 'ATTIVO — fill a open della barra successiva al segnale' : 'DISATTIVATO (fill a close barra segnale, legacy)'}`,
+      `Monte Carlo:            ${montecarloEnabled ? `ATTIVO — ${parseInt(montecarloRuns).toLocaleString('it-IT')} run · metodo ${montecarloMethod}` : 'DISATTIVATO'}`,
     ];
     // ── NOTA MANUTENZIONE ─────────────────────────────────────────────────────
     // Il blocco "CONFIG JSON COMPLETO" in fondo include SEMPRE il 100% dei campi
@@ -2752,6 +2975,21 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
       lines.push(`Best trade:           +${s.best_trade_pct?.toFixed(2) ?? '0.00'}%`);
       lines.push(`Worst trade:          ${s.worst_trade_pct?.toFixed(2) ?? '0.00'}%`);
       lines.push(`Avg holding:          ${s.avg_holding_h?.toFixed(1) ?? '—'} h`);
+      const mc = result.montecarlo;
+      if (mc?.status === 'ok' && mc.max_dd && mc.final_pnl_pct) {
+        lines.push('');
+        lines.push('━━━ MONTE CARLO (ROBUSTEZZA) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+        lines.push(`Run / metodo:         ${(mc.runs ?? 0).toLocaleString('it-IT')} · ${mc.method} · ${mc.n_trades} trade`);
+        lines.push(`Max DD p5/p50/p95:    ${mc.max_dd.p5.toFixed(2)}% / ${mc.max_dd.p50.toFixed(2)}% / ${mc.max_dd.p95.toFixed(2)}%`);
+        lines.push(`PnL p5/p50/p95:       ${mc.final_pnl_pct.p5.toFixed(2)}% / ${mc.final_pnl_pct.p50.toFixed(2)}% / ${mc.final_pnl_pct.p95.toFixed(2)}%`);
+        lines.push(`Prob. periodo neg.:   ${(mc.prob_negative_year ?? 0).toFixed(2)}%`);
+        lines.push(`Prob. DD > 20%:       ${(mc.prob_dd_gt_20 ?? 0).toFixed(2)}%`);
+      }
+      if (result.slippage_applied?.enabled) {
+        lines.push('');
+        lines.push('━━━ SLIPPAGE APPLICATO ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+        lines.push(`Slippage:             ${result.slippage_applied.bps} bps market · SL/Liq ×${result.slippage_applied.sl_multiplier}`);
+      }
     }
 
     lines.push('');
@@ -3736,6 +3974,28 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                   )}
                 </div>
 
+                {/* Slippage Model applicato */}
+                {result.slippage_applied?.enabled && (
+                  <div className="bg-teal-50/60 dark:bg-teal-900/10 rounded-2xl px-6 py-4 border border-teal-200/60 dark:border-teal-500/20 flex items-start gap-3">
+                    <span className="text-teal-500 dark:text-teal-400 mt-0.5 text-base">≈</span>
+                    <div>
+                      <p className="text-[12px] font-semibold text-teal-700 dark:text-teal-300">
+                        Slippage Model attivo — {result.slippage_applied.bps} bps sulle esecuzioni market
+                      </p>
+                      <p className="text-[11px] text-teal-600/70 dark:text-teal-400/60 mt-0.5">
+                        SL e liquidazioni: ×{result.slippage_applied.sl_multiplier} (spike).
+                        {result.slippage_applied.limit_favorable !== false
+                          ? ' Ordini limit (TP, partial, retest, pullback) esenti.'
+                          : ' Slippage applicato anche agli ordini limit.'}
+                        {' '}I risultati riflettono già questi costi di esecuzione.
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                {/* Monte Carlo — Analisi di Robustezza */}
+                {result.montecarlo && <MonteCarloCard mc={result.montecarlo} />}
+
                 {/* Trade table */}
                 {disp.trades.length > 0 && (
                   <div className="elegant-card bg-white dark:bg-[#151E32] overflow-hidden">
@@ -3917,7 +4177,7 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                     )}
                     <Toggle
                       label="Exhaustion Guard"
-                      desc={`RSI < ${exhaustionRsiLow} o ret_48 < −${exhaustionRet48}% → threshold +${exhaustionBoost} (blocca entrate in zona esaurimento)`}
+                      desc={`RSI < ${exhaustionRsiLow} o ret_${parseInt(exhaustionRetDays)*6} < −${exhaustionRet48}% (${exhaustionRetDays}gg) → threshold +${exhaustionBoost}`}
                       checked={exhaustionGuard}
                       onChange={setExhaustionGuard}
                     />
@@ -3929,8 +4189,11 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                         <Tooltip text="RSI 4H sopra questa soglia = zona ipercomprato → la guard alza il threshold LONG per ridurre il rischio di longare vicino a un pullback. Default: 72" pos="top" width="wide">
                           <NumInput label="RSI Ipercomprato (long guard)" value={exhaustionRsiHigh} onChange={setExhaustionRsiHigh} step="1" min="55" max="85" unit="" />
                         </Tooltip>
-                        <Tooltip text="Se il rendimento delle ultime 48 candele 4H supera ±N%, il mercato è overextended — la guard si attiva anche senza RSI estremo. Default: 6%" pos="top" width="wide">
-                          <NumInput label="Soglia Rendimento 48 bar (≈8gg)" value={exhaustionRet48} onChange={setExhaustionRet48} step="0.5" min="2" max="20" unit="%" />
+                        <Tooltip text={`Giorni di lookback per il rendimento (4H: 1 giorno = 6 candele). Es. 8 giorni = ret_48. Valori disponibili: 1–16 giorni. Default: 8`} pos="top" width="wide">
+                          <NumInput label={`Giorni lookback rendimento (ret_${parseInt(exhaustionRetDays)*6})`} value={exhaustionRetDays} onChange={setExhaustionRetDays} step="1" min="1" max="16" unit="gg" />
+                        </Tooltip>
+                        <Tooltip text={`Se il rendimento degli ultimi ${parseInt(exhaustionRetDays)*6} bar 4H (${exhaustionRetDays} giorni) supera ±N%, il mercato è overextended — la guard si attiva anche senza RSI estremo. Default: 6%`} pos="top" width="wide">
+                          <NumInput label={`Soglia Rendimento ${parseInt(exhaustionRetDays)*6} bar (${exhaustionRetDays}gg)`} value={exhaustionRet48} onChange={setExhaustionRet48} step="0.5" min="2" max="20" unit="%" />
                         </Tooltip>
                         <Tooltip text="Quanto viene alzata la soglia direzionale quando la guard scatta. Es. 0.06 con threshold 0.62 → richiede 0.68 per entrare. Default: 0.06" pos="top" width="wide">
                           <NumInput label="Boost Soglia (Δ threshold)" value={exhaustionBoost} onChange={setExhaustionBoost} step="0.01" min="0.01" max="0.20" unit="" />
@@ -3943,13 +4206,13 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                     </div>
                     <Toggle
                       label="Exhaustion Boost Proporzionale"
-                      desc={`Scala il boost ExhaustionGuard in base alla severità del ret_48. A −12% (2× soglia) aggiunge +${exhaustionPropScale} extra. Cap +0.15.`}
+                      desc={`Scala il boost ExhaustionGuard in base alla severità del ret_${parseInt(exhaustionRetDays)*6}. A −${(parseFloat(exhaustionRet48)*2).toFixed(0)}% (2× soglia) aggiunge +${exhaustionPropScale} extra. Cap +0.15.`}
                       checked={exhaustionProp}
                       onChange={setExhaustionProp}
                     />
                     {exhaustionProp && (
                       <div className="pl-1">
-                        <Tooltip text="Coefficiente: extra_boost = max(0, (|ret48|/soglia − 1) × scala). 0.06 = neutro rispetto al boost fisso. Default: 0.06" pos="top" width="wide">
+                        <Tooltip text={`Coefficiente: extra_boost = max(0, (|ret_${parseInt(exhaustionRetDays)*6}|/soglia − 1) × scala). 0.06 = neutro rispetto al boost fisso. Default: 0.06`} pos="top" width="wide">
                           <NumInput label="Coefficiente scala proporzionale" value={exhaustionPropScale} onChange={setExhaustionPropScale} step="0.01" min="0.01" max="0.30" unit="" />
                         </Tooltip>
                       </div>
@@ -4025,6 +4288,35 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                         </Tooltip>
                         <Tooltip text="Il guard si attiva solo se transition_risk ≥ questo valore. Default 0.55." pos="top" width="wide">
                           <NumInput label="Rischio Min Attivazione" value={transitionRiskMin} onChange={setTransitionRiskMin} step="0.05" min="0.40" max="0.80" unit="" />
+                        </Tooltip>
+                      </div>
+                    )}
+                    <Toggle
+                      label="Gate: Reversal Stand-Aside"
+                      desc="No-trade quando il trend daily è esausto (ADX collassato) e la struttura 4H si è invertita. Evita di inseguire un trend che sta già finendo."
+                      checked={reversalStandAside}
+                      onChange={setReversalStandAside}
+                    />
+                    {reversalStandAside && (
+                      <div className="pl-1 space-y-2">
+                        <Tooltip text="Il gate scatta se ADX_corrente < frac × ADX_max_ultime_12_barre. Es. 0.60 → ADX deve essere sceso a meno del 60% del picco recente." pos="top" width="wide">
+                          <NumInput label="Frazione Collasso ADX" value={rsaAdxFrac} onChange={setRsaAdxFrac} step="0.05" min="0.30" max="0.90" unit="" />
+                        </Tooltip>
+                        <Tooltip text="Numero minimo di barre consecutive nello stesso regime prima che il gate sia attivo. Evita falsi trigger su regimi troppo giovani." pos="top" width="wide">
+                          <NumInput label="Barre Minime in Regime" value={rsaMinBars} onChange={setRsaMinBars} step="1" min="4" max="48" unit="bar" />
+                        </Tooltip>
+                      </div>
+                    )}
+                    <Toggle
+                      label="Gate: Post-Capitolazione"
+                      desc="No-trade nella direzione del crash/blowoff recente mentre il rimbalzo è in corso (ret_24 ≥ soglia). Evita di shortare rimbalzi post-capitolazione o andare long su pullback post-blowoff."
+                      checked={postCapBlock}
+                      onChange={setPostCapBlock}
+                    />
+                    {postCapBlock && (
+                      <div className="pl-1">
+                        <Tooltip text="Soglia di ret_24 (rendimento 4H su 24 barre) che identifica una capitolazione/blowoff recente. Es. 0.12 = variazione ≥12% nelle ultime 18 barre." pos="top" width="wide">
+                          <NumInput label="Soglia Variazione 24H" value={postCapRetThr} onChange={setPostCapRetThr} step="0.01" min="0.05" max="0.30" unit="" />
                         </Tooltip>
                       </div>
                     )}
@@ -5092,6 +5384,156 @@ export const BacktestPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                   )}
                 </div>
 
+              </section>
+
+              {/* ── Validazione & Realismo — Slippage + Monte Carlo ────────────── */}
+              <section className="space-y-5">
+                <h4 className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest flex items-center gap-2">
+                  <span className="w-1.5 h-1.5 rounded-full bg-teal-500" />
+                  Validazione &amp; Realismo
+                </h4>
+
+                {/* Slippage Model */}
+                <div className="space-y-4 bg-slate-50 dark:bg-white/[0.02] p-4 rounded-2xl border border-slate-100 dark:border-white/5">
+                  <Tooltip text="Simula il costo di esecuzione reale: le esecuzioni market (entrata, SL, liquidazione) ottengono un prezzo peggiore di N basis point. Indipendente dalle fee (slippage = prezzo, fee = notional)." pos="top" width="wide">
+                    <Toggle
+                      label="Slippage Model"
+                      desc="Slippage avverso sulle esecuzioni market — stress test realistico dei costi"
+                      checked={slippageEnabled}
+                      onChange={setSlippageEnabled}
+                    />
+                  </Tooltip>
+                  {slippageEnabled && (
+                    <div className="space-y-4 pt-1">
+                      <div>
+                        <p className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest mb-2">
+                          Slippage — <span className="text-teal-500">{parseFloat(slippageBps || '0').toFixed(1)} bps</span> <span className="text-slate-400 normal-case">({(parseFloat(slippageBps || '0') / 100).toFixed(3)}%)</span>
+                        </p>
+                        <input type="range" min={0} max={50} step={0.5} value={parseFloat(slippageBps || '0')}
+                          onChange={e => setSlippageBps(e.target.value)}
+                          className="w-full accent-teal-500" />
+                        <div className="flex justify-between text-[9px] text-slate-400 mt-1"><span>0 bps</span><span>50 bps</span></div>
+                      </div>
+                      <div>
+                        <p className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest mb-2">
+                          Moltiplicatore SL/Liq — <span className="text-rose-500">×{parseFloat(slippageSlMult || '1').toFixed(1)}</span>
+                        </p>
+                        <input type="range" min={10} max={50} step={5} value={Math.round(parseFloat(slippageSlMult || '1') * 10)}
+                          onChange={e => setSlippageSlMult(String(parseInt(e.target.value) / 10))}
+                          className="w-full accent-rose-500" />
+                        <div className="flex justify-between text-[9px] text-slate-400 mt-1"><span>×1.0</span><span>×5.0</span></div>
+                      </div>
+                      <Toggle
+                        label="Limit Order Favorevoli"
+                        desc="Le esecuzioni passive (TP, partial TP, retest reversal, pullback, bounce-fade) non subiscono slippage avverso"
+                        checked={slippageLimitFavorable}
+                        onChange={setSlippageLimitFavorable}
+                      />
+                      <p className="text-[9px] text-teal-700 dark:text-teal-300/70 bg-teal-50 dark:bg-teal-500/5 border border-teal-100 dark:border-teal-500/15 rounded-lg p-2">
+                        SL e liquidazioni applicano slippage ×{parseFloat(slippageSlMult || '2').toFixed(1)} (esecuzione forzata su spike). Con 0 bps il risultato è identico al backtest senza slippage.
+                      </p>
+                    </div>
+                  )}
+                </div>
+
+                {/* Intrabar Fill Model */}
+                <div className="space-y-3 bg-slate-50 dark:bg-white/[0.02] p-4 rounded-2xl border border-slate-100 dark:border-white/5">
+                  <Tooltip text="Quando dentro una candela 4H vengono toccati sia lo SL sia un'uscita favorevole (partial TP/TP), le sole OHLC non dicono quale è arrivato prima. Questo sceglie l'ordine assunto. Optimistic = legacy (favorevole prima). Pessimistic = SL prima (più vicino al monitor realtime del live sulle barre avverse). Balanced = ordine dedotto dalla forma della candela (up→minimo prima, down→massimo prima)." pos="top" width="wide">
+                    <p className="text-[11px] font-bold text-slate-600 dark:text-slate-300 flex items-center gap-2">
+                      Modello Fill Intracandela
+                      <span className="text-[9px] font-normal text-slate-400 normal-case">(SL vs uscite favorevoli)</span>
+                    </p>
+                  </Tooltip>
+                  <div className="grid grid-cols-3 gap-1.5">
+                    {([
+                      ['optimistic', 'Ottimistico'],
+                      ['balanced', 'Bilanciato'],
+                      ['pessimistic', 'Pessimistico'],
+                    ] as const).map(([val, lbl]) => (
+                      <button key={val} type="button"
+                        onClick={() => setIntrabarFillMode(val)}
+                        className={`px-2 py-2 rounded-xl text-[11px] font-bold transition-all border ${intrabarFillMode === val
+                          ? 'bg-teal-500 text-white border-teal-500'
+                          : 'bg-white dark:bg-white/5 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-white/10 hover:border-teal-300'}`}>
+                        {lbl}
+                      </button>
+                    ))}
+                  </div>
+                  <p className="text-[9px] text-slate-400 dark:text-slate-500">
+                    {intrabarFillMode === 'optimistic' && 'Legacy: il partial favorevole viene incassato prima del check dello SL. Più ottimista del live.'}
+                    {intrabarFillMode === 'balanced' && 'Ordine dedotto dalla candela: barra rialzista → minimo toccato prima; ribassista → massimo prima. Più realistico.'}
+                    {intrabarFillMode === 'pessimistic' && 'Lo SL avverso fira per primo: nessuna raccolta del wick favorevole quando lo stop è nel range. Worst-case.'}
+                  </p>
+                </div>
+
+                {/* Next-Bar-Open Entry */}
+                <div className="space-y-2 bg-slate-50 dark:bg-white/[0.02] p-4 rounded-2xl border border-slate-100 dark:border-white/5">
+                  <Tooltip
+                    text="Quando attivo, il segnale generato alla chiusura della barra N viene eseguito all'open della barra N+1 (anziché al close della barra del segnale). Riduce il bias ottimistico dell'entry al close e avvicina il timing al live, dove il bot entra al mark_price nell'istante di chiusura 4H. Non si applica a re-entry né a entrate già differite (pullback / bounce-fade / reversal-limit). SL e TP vengono ri-ancorati al nuovo prezzo di fill mantenendo le stesse distanze ATR-relative."
+                    pos="top" width="wide"
+                  >
+                    <Toggle
+                      label="Entry a Open Barra Successiva"
+                      desc="Fill a open N+1 anziché close N — timing più fedele al live"
+                      checked={nextBarOpen}
+                      onChange={setNextBarOpen}
+                    />
+                  </Tooltip>
+                  {nextBarOpen && (
+                    <p className="text-[9px] text-indigo-600 dark:text-indigo-400/80 bg-indigo-50 dark:bg-indigo-500/5 border border-indigo-100 dark:border-indigo-500/15 rounded-lg p-2">
+                      SL/TP riancorati al fill price (stessa distanza ATR). Non applicato a re-entry né a pullback/bounce-fade/reversal-limit (già differiti).
+                    </p>
+                  )}
+                </div>
+
+                {/* Monte Carlo */}
+                <div className="space-y-4 bg-slate-50 dark:bg-white/[0.02] p-4 rounded-2xl border border-slate-100 dark:border-white/5">
+                  <Tooltip text="Dopo il backtest, simula N sequenze alternative dei trade prodotti per stimare la distribuzione di max drawdown e PnL finale. Risponde a: quanto male può andare in una sequenza sfavorevole?" pos="top" width="wide">
+                    <Toggle
+                      label="Monte Carlo sui Trade"
+                      desc="Distribuzione di drawdown e PnL su N simulazioni bootstrap — rischio di sequenza"
+                      checked={montecarloEnabled}
+                      onChange={setMontecarloEnabled}
+                    />
+                  </Tooltip>
+                  {montecarloEnabled && (
+                    <div className="space-y-4 pt-1">
+                      <div>
+                        <p className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest mb-2">
+                          Simulazioni — <span className="text-teal-500">{parseInt(montecarloRuns || '5000').toLocaleString()}</span>
+                        </p>
+                        <input type="range" min={1000} max={50000} step={1000} value={parseInt(montecarloRuns || '5000')}
+                          onChange={e => setMontecarloRuns(e.target.value)}
+                          className="w-full accent-teal-500" />
+                        <div className="flex justify-between text-[9px] text-slate-400 mt-1"><span>1.000</span><span>50.000</span></div>
+                      </div>
+                      <div>
+                        <p className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest mb-2">Metodo</p>
+                        <div className="grid grid-cols-2 gap-1.5">
+                          {(['bootstrap', 'shuffle'] as const).map(m => (
+                            <button
+                              key={m}
+                              onClick={() => setMontecarloMethod(m)}
+                              className={`py-2 rounded-lg text-[9px] font-bold uppercase tracking-widest transition-all border ${montecarloMethod === m
+                                ? 'bg-teal-600 text-white border-teal-600'
+                                : 'bg-white dark:bg-white/5 text-slate-400 dark:text-slate-500 border-slate-200 dark:border-white/10 hover:bg-slate-50 dark:hover:bg-white/10'}`}
+                            >
+                              {m === 'bootstrap' ? 'Bootstrap' : 'Shuffle'}
+                            </button>
+                          ))}
+                        </div>
+                        <p className="text-[9px] text-slate-400 dark:text-slate-500 mt-1.5 leading-snug">
+                          {montecarloMethod === 'bootstrap'
+                            ? 'Ricampiona con ripetizione — rompe l’autocorrelazione, tende a sottostimare il DD da clustering.'
+                            : 'Riordina lo stesso set di trade — preserva il clustering, più conservativo sul drawdown.'}
+                        </p>
+                      </div>
+                      <p className="text-[9px] text-teal-700 dark:text-teal-300/70 bg-teal-50 dark:bg-teal-500/5 border border-teal-100 dark:border-teal-500/15 rounded-lg p-2">
+                        Calcolo post-backtest sui trade già prodotti — zero impatto sul loop. Richiede almeno 10 trade. Seed fisso = risultati riproducibili.
+                      </p>
+                    </div>
+                  )}
+                </div>
               </section>
 
             </div>

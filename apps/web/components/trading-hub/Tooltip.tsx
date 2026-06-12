@@ -24,7 +24,12 @@ const WIDTH_CLASSES = {
 export const Tooltip: React.FC<TooltipProps> = ({
   text, children, pos = 'top', width = 'normal', fit = false,
 }) => (
-  <div className={`relative flex group/tip ${fit ? 'w-fit' : 'w-full'}`}>
+  // NB: wrapper `block`, non `flex` — con `flex` i figli block-level (NumInput,
+  // card, celle di griglia) collassano alla larghezza del contenuto e risultano
+  // più stretti dei fratelli non avvolti dal Tooltip. Con `block` i figli
+  // block-level riempiono il wrapper; gli inline (span, badge) restano a
+  // larghezza contenuto. Per pill/badge che non devono allargarsi usare `fit`.
+  <div className={`relative block group/tip ${fit ? 'w-fit' : 'w-full'}`}>
     {children}
     <div className={`
       pointer-events-none absolute z-50 ${WIDTH_CLASSES[width]} ${POS_CLASSES[pos]}

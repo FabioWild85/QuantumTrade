@@ -254,6 +254,7 @@ class BotConfig:
         self.exhaustion_rsi_low    = kw.get("exhaustion_rsi_low",    28.0)
         self.exhaustion_rsi_high   = kw.get("exhaustion_rsi_high",   72.0)
         self.exhaustion_ret48_pct  = kw.get("exhaustion_ret48_pct",   6.0)
+        self.exhaustion_ret_bars   = kw.get("exhaustion_ret_bars",    48)
         self.exhaustion_boost      = kw.get("exhaustion_boost",       0.06)
         # ATR% Volatility Gate
         self.atr_pct_gate_enabled  = kw.get("atr_pct_gate_enabled",  False)
@@ -1540,6 +1541,7 @@ class ExecutionEngine:
             binance_cvd_enabled=self.config.binance_cvd_enabled,
             options_bias_enabled=self.config.options_bias_enabled,
             reversal_mode_enabled=getattr(self.config, "reversal_mode_enabled", False),
+            adverse_monitor_enabled=getattr(self.config, "adverse_monitor_enabled", False),
             iv_7d_value=_iv_7d_value,
         )
         latest  = df_feat.iloc[-1].to_dict()
@@ -1713,6 +1715,7 @@ class ExecutionEngine:
             exhaustion_rsi_low          = getattr(cfg, "exhaustion_rsi_low",    28.0),
             exhaustion_rsi_high         = getattr(cfg, "exhaustion_rsi_high",   72.0),
             exhaustion_ret48_pct        = getattr(cfg, "exhaustion_ret48_pct",   6.0),
+            exhaustion_ret_bars         = getattr(cfg, "exhaustion_ret_bars",    48),
             exhaustion_boost            = getattr(cfg, "exhaustion_boost",       0.06),
             atr_pct_gate_enabled        = getattr(cfg, "atr_pct_gate_enabled",  False),
             atr_pct_min                 = getattr(cfg, "atr_pct_min",           0.008),
@@ -1756,6 +1759,12 @@ class ExecutionEngine:
             transition_guard_enabled    = getattr(cfg, "transition_guard_enabled", False),
             transition_boost_max        = getattr(cfg, "transition_boost_max",     0.05),
             transition_risk_min         = getattr(cfg, "transition_risk_min",      0.55),
+            # Reversal Stand-Aside + Post-Capitulation gates
+            reversal_standaside_enabled     = getattr(cfg, "reversal_standaside_enabled",     False),
+            reversal_standaside_adx_frac    = getattr(cfg, "reversal_standaside_adx_frac",    0.60),
+            reversal_standaside_min_bars    = getattr(cfg, "reversal_standaside_min_bars",    14),
+            post_capitulation_block_enabled = getattr(cfg, "post_capitulation_block_enabled", False),
+            post_capitulation_ret_thr       = getattr(cfg, "post_capitulation_ret_thr",       0.12),
         )
         result = decision_engine.decide(
             features=latest,
@@ -3392,14 +3401,12 @@ class ExecutionEngine:
                     return
 
         # ── 4c. Adverse Evidence Monitor ─────────────────────────────────────
-        # Uses _last_reversal_result (already computed each cycle when reversal_mode_enabled)
-        # to detect structural evidence against the open position over N consecutive bars.
+        # Detects structural reversal evidence opposite to the open position.
+        # Works with or without reversal_mode_enabled: when _last_reversal_result is
+        # available and already points in the adverse direction we reuse it; otherwise
+        # (reversal mode off, or result pointed the other way) we recompute directly.
         # Acts only after adverse_min_hold_bars; does not close if position is already gone.
-        if (
-            getattr(self.config, "adverse_monitor_enabled", False)
-            and getattr(self.config, "reversal_mode_enabled", False)
-            and self._last_reversal_result is not None
-        ):
+        if getattr(self.config, "adverse_monitor_enabled", False):
             _adv_side      = self._position["side"]
             _bars_held_adv = self._position.get("bars_held", 0)
             _min_hold_adv  = getattr(self.config, "adverse_min_hold_bars", 3)
@@ -3411,15 +3418,13 @@ class ExecutionEngine:
             _adv_dir = "long" if _adv_side == "short" else "short"
             _rev     = self._last_reversal_result
 
-            # Use the cached result when it agrees with the adverse direction;
-            # otherwise compute the raw adverse score from per-component sub-scores.
-            if _rev.direction == _adv_dir:
+            # Use the cached reversal result only when it already scored the adverse
+            # direction; otherwise recompute from raw components (covers the case where
+            # reversal_mode is off and _last_reversal_result is None).
+            if _rev is not None and _rev.direction == _adv_dir:
                 _adv_score = _rev.score
                 _adv_count = _rev.component_count
             else:
-                # Winning direction differs from adverse direction: recompute adverse components.
-                # Must match the exact calling convention of each sub-scorer:
-                # _exhaustion(f, cfg, direction=) and _regime(f, regime_signal, cfg) are special.
                 from services.reversal_detector import ReversalZoneDetector as _RZD_adv
                 _rz_adv  = _RZD_adv()
                 _f_adv   = df_feat.iloc[-1].to_dict()

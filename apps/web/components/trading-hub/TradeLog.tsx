@@ -833,7 +833,7 @@ const ReasonBadge: React.FC<{ reason: string }> = ({ reason }) => {
 };
 
 const FCell: React.FC<{ label: string; value: string; highlight?: boolean }> = ({ label, value, highlight }) => (
-  <div className={`rounded-xl px-3 py-2 border transition-all ${highlight ? 'bg-indigo-50 dark:bg-indigo-500/10 border-indigo-100 dark:border-indigo-500/20' : 'bg-white dark:bg-white/5 border-slate-100 dark:border-white/5'}`}>
+  <div className={`w-full h-full rounded-xl px-3 py-2 border transition-all ${highlight ? 'bg-indigo-50 dark:bg-indigo-500/10 border-indigo-100 dark:border-indigo-500/20' : 'bg-white dark:bg-white/5 border-slate-100 dark:border-white/5'}`}>
     <p className="text-slate-400 dark:text-slate-500 text-[10px] font-bold uppercase tracking-widest mb-1">{label}</p>
     <p className={`text-sm font-bold font-mono ${highlight ? 'text-indigo-600 dark:text-indigo-400' : 'text-slate-700 dark:text-slate-300'}`}>{value}</p>
   </div>

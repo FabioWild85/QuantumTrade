@@ -384,6 +384,7 @@ def build_all_features(
     binance_cvd_enabled: bool = False,
     options_bias_enabled: bool = False,
     reversal_mode_enabled: bool = False,
+    adverse_monitor_enabled: bool = False,
     iv_7d_value: Optional[float] = None,
 ) -> pd.DataFrame:
     """
@@ -417,10 +418,19 @@ def build_all_features(
     d["ema20"]     = ta.trend.EMAIndicator(close, 20).ema_indicator()
     d["ema50_dist"]= (close - ta.trend.EMAIndicator(close, 50).ema_indicator()) / (d["atr_14"] + 1e-9)
 
-    for lag in [1, 3, 6, 12, 24, 48]:
+    for lag in sorted(set([1, 3] + list(range(6, 97, 6)))):
         d[f"ret_{lag}"] = close.pct_change(lag)
     for w in [24, 72]:
         d[f"rv_{w}"] = d["ret_1"].rolling(w).std()
+
+    # ── Support features for Reversal Stand-Aside / Post-Capitulation gates ───
+    # Decision-only (NOT added to FEATURE_GROUPS → not LGBM inputs, no retrain).
+    #  • adx_14_max12      : recent ADX peak (12 bars ≈ 2gg) → relative-collapse test
+    #  • ret24_min18/max18 : most extreme 4d return (ret_24) within the last 18 bars
+    #                        (≈3gg) → "una capitolazione/blowoff è avvenuta di recente?"
+    d["adx_14_max12"] = d["adx_14"].rolling(12, min_periods=1).max()
+    d["ret24_min18"]  = d["ret_24"].rolling(18, min_periods=1).min()
+    d["ret24_max18"]  = d["ret_24"].rolling(18, min_periods=1).max()
 
     d["vol_ma"]    = vol.rolling(20).mean()
     d["vol_ratio"] = vol / (d["vol_ma"].replace(0, np.nan))
@@ -516,8 +526,11 @@ def build_all_features(
     if options_bias_enabled or reversal_mode_enabled:
         d = build_options_features(d, iv_7d_value)
 
-    # ── Reversal Zone Detector features (only when reversal_mode_enabled) ────
-    if reversal_mode_enabled:
+    # ── Reversal Zone Detector features ──────────────────────────────────────
+    # Computed when reversal_mode_enabled OR adverse_monitor_enabled: the Adverse
+    # Evidence Monitor uses the same components (momentum, volume, candle) and
+    # needs these features regardless of whether reversal entries are active.
+    if reversal_mode_enabled or adverse_monitor_enabled:
         # ── RSI divergence (4H) — window 20 bars = 80h ≈ 3.3 days ───────────────
         # shift(1) ensures divergence is confirmed by the previous bar, not the
         # current one that created the new high/low (no lookahead on current candle).
@@ -635,7 +648,7 @@ FEATURE_GROUPS = {
     # Options IV features (Phase 1). Only populated when options_bias_enabled OR reversal_mode_enabled.
     # Included in LGBM training automatically on next retrain when those flags are active.
     "options_phase1": ["iv_7d", "iv_7d_percentile"],
-    # Reversal Zone Detector features. Only computed when reversal_mode_enabled=True.
+    # Reversal Zone Detector features. Computed when reversal_mode_enabled OR adverse_monitor_enabled.
     # Included in LGBM training on next retrain; until then getattr(f, key, 0.0) handles missing safely.
     "reversal": [
         "rsi_div_bear", "rsi_div_bull",

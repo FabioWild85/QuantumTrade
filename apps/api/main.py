@@ -325,6 +325,34 @@ class BotConfig(BaseModel):
     retrain_every_n_cycles: int = Field(120, ge=20,  le=120)
     wf_n_splits:            int = Field(5,   ge=3,   le=12)
     wf_purge_gap:           int = Field(5,   ge=2,   le=20)
+    # ── Slippage Model (backtest only) ────────────────────────────────────────
+    slippage_enabled:        bool  = Field(False)
+    slippage_bps:            float = Field(3.0, ge=0.0, le=50.0,
+                                           description="Slippage avverso in basis point sulle esecuzioni "
+                                           "market (entrata, SL, liquidazione). 1 bps = 0.01%.")
+    slippage_sl_multiplier:  float = Field(2.0, ge=1.0, le=5.0,
+                                           description="Moltiplicatore dello slippage quando l'uscita è uno SL "
+                                           "o una liquidazione (esecuzione su spike, peggiore).")
+    slippage_limit_favorable: bool = Field(True,
+                                           description="Se True, le esecuzioni limit (partial TP, reversal "
+                                           "retest, pullback) NON subiscono slippage avverso (sono passive).")
+    # Intrabar fill model (backtest only): ordine assunto SL vs uscite favorevoli
+    # quando entrambe sono toccate nella stessa candela 4H.
+    intrabar_fill_mode: str = Field("optimistic", pattern="^(optimistic|pessimistic|balanced)$",
+                                    description="optimistic=legacy (partial favorevole prima dello SL); "
+                                    "pessimistic=SL avverso prima (niente harvest del wick); "
+                                    "balanced=ordine inferito dalla direzione della candela.")
+    next_bar_open_enabled: bool = Field(False,
+                                        description="Entry a open della barra N+1 anziché al close della barra N "
+                                        "(più fedele al timing live). Disabilitato per re-entry e entrate già "
+                                        "differite (pullback / bounce-fade / reversal-limit).")
+    # ── Monte Carlo (backtest only) ───────────────────────────────────────────
+    montecarlo_enabled:    bool = Field(False)
+    montecarlo_runs:       int  = Field(5000, ge=1000, le=50000,
+                                        description="Numero di simulazioni bootstrap sui trade.")
+    montecarlo_method:     str  = Field("bootstrap",
+                                        description='"bootstrap" = ricampiona con ripetizione | '
+                                        '"shuffle" = riordina senza ripetizione (stesso set di trade).')
     # Feature Importance Pruning
     use_feature_pruning:            bool  = Field(False)
     feature_pruning_min_importance: float = Field(0.005, ge=0.001, le=0.05)
@@ -375,6 +403,7 @@ class BotConfig(BaseModel):
     exhaustion_rsi_low:   float = Field(28.0, ge=15.0, le=45.0)
     exhaustion_rsi_high:  float = Field(72.0, ge=55.0, le=85.0)
     exhaustion_ret48_pct: float = Field(6.0,  ge=2.0,  le=20.0)
+    exhaustion_ret_bars:  int   = Field(48,   ge=6,    le=96,  description="Candele 4H del lookback (multiplo di 6; 6=1gg, 48=8gg)")
     exhaustion_boost:     float = Field(0.06, ge=0.01, le=0.20)
     # ATR% Volatility Gate — blocks/scales trades when ATR% < threshold (fee-drag protection)
     atr_pct_gate_enabled: bool  = Field(False)
@@ -426,6 +455,15 @@ class BotConfig(BaseModel):
     transition_guard_enabled: bool  = Field(False)
     transition_boost_max:     float = Field(0.05, ge=0.02, le=0.10)
     transition_risk_min:      float = Field(0.55, ge=0.40, le=0.80)
+    # Reversal Stand-Aside — no_trade quando il trend higher-TF con cui entreremmo
+    # è esausto (ADX 4H crollato dal picco + laterale + struttura 4H invertita).
+    reversal_standaside_enabled:  bool  = Field(False)
+    reversal_standaside_adx_frac: float = Field(0.60, ge=0.30, le=0.90)
+    reversal_standaside_min_bars: int   = Field(14,   ge=4,    le=48)
+    # Post-Capitulation Block — no_trade nella direzione di un crash/blow-off recente
+    # (ret_24 estremo negli ultimi ~18 barre) mentre è già in corso un rimbalzo (ret_6).
+    post_capitulation_block_enabled: bool  = Field(False)
+    post_capitulation_ret_thr:       float = Field(0.12, ge=0.05, le=0.30)
     # Pullback Entry — delayed entry on strong impulse candles
     pullback_entry_enabled:    bool  = Field(False)
     pullback_impulse_atr_mult: float = Field(1.2, ge=0.5, le=3.0)

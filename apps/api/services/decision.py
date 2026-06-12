@@ -89,6 +89,7 @@ class DecisionEngine:
         exhaustion_rsi_low:   float = 28.0,
         exhaustion_rsi_high:  float = 72.0,
         exhaustion_ret48_pct: float = 6.0,
+        exhaustion_ret_bars:  int   = 48,
         exhaustion_boost:     float = 0.06,
         # ATR% Volatility Gate
         atr_pct_gate_enabled: bool  = False,
@@ -134,6 +135,15 @@ class DecisionEngine:
         transition_guard_enabled: bool  = False,
         transition_boost_max:     float = 0.05,
         transition_risk_min:      float = 0.55,
+        # Reversal Stand-Aside Gate (stand aside when the higher-TF trend we'd trade
+        # WITH is exhausting and the 4H structure has reversed). Hard no_trade.
+        reversal_standaside_enabled:  bool  = False,
+        reversal_standaside_adx_frac: float = 0.60,
+        reversal_standaside_min_bars: int   = 14,
+        # Post-Capitulation Block Gate (after a recent capitulation/blow-off, block new
+        # entries in the direction of the exhausted move). Hard no_trade.
+        post_capitulation_block_enabled: bool  = False,
+        post_capitulation_ret_thr:       float = 0.12,
     ):
         self.directional_threshold       = directional_threshold
         self.adx_gate                    = adx_gate
@@ -184,6 +194,7 @@ class DecisionEngine:
         self.exhaustion_rsi_low    = exhaustion_rsi_low
         self.exhaustion_rsi_high   = exhaustion_rsi_high
         self.exhaustion_ret48_pct  = exhaustion_ret48_pct
+        self.exhaustion_ret_bars   = exhaustion_ret_bars
         self.exhaustion_boost      = exhaustion_boost
         # ATR% Volatility Gate
         self.atr_pct_gate_enabled  = atr_pct_gate_enabled
@@ -229,6 +240,11 @@ class DecisionEngine:
         self.transition_guard_enabled = transition_guard_enabled
         self.transition_boost_max     = transition_boost_max
         self.transition_risk_min      = transition_risk_min
+        self.reversal_standaside_enabled   = reversal_standaside_enabled
+        self.reversal_standaside_adx_frac  = reversal_standaside_adx_frac
+        self.reversal_standaside_min_bars  = reversal_standaside_min_bars
+        self.post_capitulation_block_enabled = post_capitulation_block_enabled
+        self.post_capitulation_ret_thr       = post_capitulation_ret_thr
 
     def decide(
         self,
@@ -257,7 +273,9 @@ class DecisionEngine:
         fvg_bear = features.get("fvg_bear", 0.0)
         fvg_bull = features.get("fvg_bull", 0.0)
         rsi_14   = features.get("rsi_14", 50.0)
-        ret_48   = features.get("ret_48", 0.0)
+        ret_48   = features.get("ret_48", 0.0)   # kept for backward compat; exhaustion guard uses exhaustion_ret_bars
+        _ret_col = f"ret_{self.exhaustion_ret_bars}"
+        ret_ex   = float(features.get(_ret_col, ret_48))   # dynamic lookback for exhaustion guard
         d_regime = features.get("d_regime", 0)
         d_rsi    = float(features.get("d_rsi", 50.0) or 50.0)
         vol_z_50 = float(features.get("vol_z_50", 0.0) or 0.0)
@@ -553,38 +571,37 @@ class DecisionEngine:
                     f"→ size×1.00 (low-IV regime, full size)"
                 )
 
-        # ── Exhaustion Guard: RSI extreme + extended ret_48 ──────────────────
-        # NB: ret_48 = pct_change su 48 barre 4H = 192h (~8 giorni), non 48 ore.
+        # ── Exhaustion Guard: RSI extreme + extended ret_N ───────────────────
+        # ret_col = f"ret_{exhaustion_ret_bars}"; bars×4H = days; default 48 bar = 8 gg.
         _exh_short_conds: list[str] = []
         _exh_long_conds:  list[str] = []
         _exh_short_boost = 0.0
         _exh_long_boost  = 0.0
         _ret48_thr = self.exhaustion_ret48_pct / 100.0
+        _exh_days  = self.exhaustion_ret_bars // 6   # bars ÷ 6 = giorni (4H: 24h/4h=6 bar/gg)
         if self.exhaustion_guard_enabled:
 
             if rsi_14 < self.exhaustion_rsi_low:
                 _exh_short_conds.append(f"RSI {rsi_14:.1f} < {self.exhaustion_rsi_low:.0f}")
-            if ret_48 < -_ret48_thr:
-                _exh_short_conds.append(f"ret_48 {ret_48*100:.1f}% < -{self.exhaustion_ret48_pct:.0f}%")
+            if ret_ex < -_ret48_thr:
+                _exh_short_conds.append(f"{_ret_col} {ret_ex*100:.1f}% < -{self.exhaustion_ret48_pct:.0f}% ({_exh_days}gg)")
             if rsi_14 > self.exhaustion_rsi_high:
                 _exh_long_conds.append(f"RSI {rsi_14:.1f} > {self.exhaustion_rsi_high:.0f}")
-            if ret_48 > _ret48_thr:
-                _exh_long_conds.append(f"ret_48 {ret_48*100:.1f}% > +{self.exhaustion_ret48_pct:.0f}%")
+            if ret_ex > _ret48_thr:
+                _exh_long_conds.append(f"{_ret_col} {ret_ex*100:.1f}% > +{self.exhaustion_ret48_pct:.0f}% ({_exh_days}gg)")
 
             _exh_boost = self.exhaustion_boost
 
-            # ── Feature A: proportional boost scaled by severity of ret_48 ────
-            # extra_boost = max(0, |ret48|/threshold - 1.0) * scale, capped at 0.15.
-            # E.g. ret48=12% with threshold=6%: extra = (2.0-1.0)*0.06 = 0.06.
-            # Direzionale: solo un ret_48 negativo estremo scala il boost short,
-            # solo uno positivo scala il boost long — un trigger RSI-only non deve
-            # ricevere extra da un ret_48 estremo nella direzione opposta.
+            # ── Feature A: proportional boost scaled by severity of ret_N ────
+            # extra_boost = max(0, |ret_ex|/threshold - 1.0) * scale, capped at 0.15.
+            # Direzionale: solo un ret negativo estremo scala il boost short,
+            # solo uno positivo scala il boost long.
             _exh_extra_short = 0.0
             _exh_extra_long  = 0.0
             if self.exhaustion_prop_enabled and _ret48_thr > 0:
-                _ret48_ratio = abs(ret_48) / _ret48_thr
+                _ret48_ratio = abs(ret_ex) / _ret48_thr
                 _exh_extra   = min(0.15, max(0.0, (_ret48_ratio - 1.0) * self.exhaustion_prop_scale))
-                if ret_48 < 0:
+                if ret_ex < 0:
                     _exh_extra_short = _exh_extra
                 else:
                     _exh_extra_long = _exh_extra
@@ -723,6 +740,69 @@ class DecisionEngine:
                     f"C2 InversionGate: p50={p50:.0f} < close={current_price:.0f} "
                     f"(-{_inv_pct_disp:.1f}%) → long threshold +0.10 (C2 prevede ribasso)"
                 )
+
+        # ── Reversal Stand-Aside Gate ────────────────────────────────────────
+        # Stand aside (no_trade) when we'd enter WITH the higher-TF (daily) trend
+        # but that trend is exhausting and the 4H structure has reversed against it:
+        #   • daily frame still bear/bull (d_regime)
+        #   • 4H regime sideways/transition (no active trend to ride)
+        #   • 4H ADX collapsed below frac × its recent 12-bar peak (momentum dead)
+        #   • regime stale for ≥ min_bars
+        #   • short-term slope (ret_12) flipped against the daily trend
+        # Produces no_trade, NOT a flip — wait for the daily to confirm the new trend.
+        # Relative ADX collapse (not an absolute level) keeps healthy pullbacks in a
+        # strong trend — where ADX stays near its peak — untouched.
+        if self.reversal_standaside_enabled:
+            _adx_now  = float(features.get("adx_14", 0.0) or 0.0)
+            _adx_peak = float(features.get("adx_14_max12", _adx_now) or _adx_now)
+            _bir      = float(features.get("bars_in_regime", 0.0) or 0.0)
+            _rstate2  = str(features.get("regime_state", "neutral"))
+            _ret12    = float(features.get("ret_12", 0.0) or 0.0)
+            _adx_collapsed = _adx_peak > 0 and _adx_now < self.reversal_standaside_adx_frac * _adx_peak
+            _stale         = _bir >= self.reversal_standaside_min_bars
+            _no_trend_4h   = _rstate2 in ("sideways", "transition")
+            if _adx_collapsed and _stale and _no_trend_4h:
+                if ensemble_prob < 0.5 and d_regime == -1 and _ret12 >= 0.0:
+                    reasoning.append(
+                        f"GATE: ReversalStandAside — daily bear esausto "
+                        f"(ADX {_adx_now:.0f}<{self.reversal_standaside_adx_frac:.2f}×{_adx_peak:.0f}, "
+                        f"lateral {int(_bir)}b, ret_12={_ret12:+.1%}) — short sospeso, attendo conferma"
+                    )
+                    return self._no_trade(reasoning, dir_prob, p10, p50, p90, features, c2_uncertainty)
+                if ensemble_prob > 0.5 and d_regime == 1 and _ret12 <= 0.0:
+                    reasoning.append(
+                        f"GATE: ReversalStandAside — daily bull esausto "
+                        f"(ADX {_adx_now:.0f}<{self.reversal_standaside_adx_frac:.2f}×{_adx_peak:.0f}, "
+                        f"lateral {int(_bir)}b, ret_12={_ret12:+.1%}) — long sospeso, attendo conferma"
+                    )
+                    return self._no_trade(reasoning, dir_prob, p10, p50, p90, features, c2_uncertainty)
+
+        # ── Post-Capitulation Block Gate ─────────────────────────────────────
+        # After a recent capitulation (down) or blow-off (up) — extreme 4d return
+        # (ret_24) within the last ~18 bars — AND a short-term bounce already under
+        # way (ret_6 turned against the extreme move), block NEW entries in the
+        # direction of the exhausted move (the falling-knife / chase-the-top trades).
+        # The ret_6 bounce condition keeps continuation entries in a STILL-ongoing
+        # crash/parabola untouched (there ret_6 stays in the trend direction).
+        if self.post_capitulation_block_enabled:
+            _thr        = abs(self.post_capitulation_ret_thr)
+            _ret24_min  = float(features.get("ret24_min18", 0.0) or 0.0)
+            _ret24_max  = float(features.get("ret24_max18", 0.0) or 0.0)
+            _ret6       = float(features.get("ret_6", 0.0) or 0.0)
+            if ensemble_prob < 0.5 and _ret24_min <= -_thr and _ret6 >= 0.0:
+                reasoning.append(
+                    f"GATE: PostCapitulation — capitolazione recente "
+                    f"(ret_24 min={_ret24_min:+.1%} ≤ -{_thr:.0%}) + rimbalzo in corso "
+                    f"(ret_6={_ret6:+.1%}) — short sospeso (coltello che cade)"
+                )
+                return self._no_trade(reasoning, dir_prob, p10, p50, p90, features, c2_uncertainty)
+            if ensemble_prob > 0.5 and _ret24_max >= _thr and _ret6 <= 0.0:
+                reasoning.append(
+                    f"GATE: PostCapitulation — blow-off recente "
+                    f"(ret_24 max={_ret24_max:+.1%} ≥ {_thr:.0%}) + pullback in corso "
+                    f"(ret_6={_ret6:+.1%}) — long sospeso (top parabolico)"
+                )
+                return self._no_trade(reasoning, dir_prob, p10, p50, p90, features, c2_uncertainty)
 
         # ── Squeeze Protection Gates (A: OI spike · B: L/S ratio · C: Liq spike) ──
         # Evaluated against the concrete entry direction, just before each return
