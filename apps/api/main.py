@@ -28,6 +28,11 @@ from pydantic import BaseModel, Field
 from services.execution import ExecutionEngine
 from services.supabase_client import get_supabase, run_db
 from services.notifications import TelegramNotifier
+from services.ai_analyst import (
+    available_providers as ai_available_providers,
+    evaluate as ai_evaluate,
+    AI_ANALYST_SYSTEM_PROMPT,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s — %(message)s")
 log = logging.getLogger("trading_hub")
@@ -547,6 +552,42 @@ class BotConfig(BaseModel):
     adverse_min_hold_bars:   int   = Field(3,    ge=1,    le=8)
     adverse_partial_pct:     float = Field(0.50, ge=0.25, le=0.75)
 
+    # ── AI Decision Layer ─────────────────────────────────────────────────────
+    # Un LLM giudica la decisione del modello PRIMA del trade, usando contesto
+    # strutturale/macro che il modello non vede, e modula la soglia (conferma/
+    # freno/veto). Additivo: con ai_layer_enabled=False il sistema è identico.
+    # Fail-open: qualsiasi errore/timeout → il bot opera col solo modello.
+    # Non backtestabile (lookahead+non-determinismo) → validazione forward/shadow.
+    ai_layer_enabled:           bool  = Field(False,
+        description="Master toggle dell'AI Decision Layer. OFF = sistema identico a oggi.")
+    ai_layer_shadow_mode:       bool  = Field(True,
+        description="Logga il giudizio AI ma NON modifica le decisioni. Per validazione forward.")
+    ai_layer_evaluate_no_trade: bool  = Field(True,
+        description="L'AI elabora un giudizio anche quando il modello dice no-trade (informativo in v1).")
+    ai_layer_provider:          str   = Field("anthropic",
+        pattern="^(anthropic|gemini|openai|deepseek)$",
+        description="Provider LLM. Richiede la rispettiva API key in env.")
+    ai_layer_dossier_mode:      str   = Field("full",
+        pattern="^(full|orthogonal)$",
+        description="Dati passati all'AI: 'full' include le opinioni del modello "
+        "(prob, reasoning); 'orthogonal' solo fatti oggettivi (giudizio indipendente).")
+    ai_layer_model:             str   = Field("claude-opus-4-8",
+        description="Modello specifico del provider (es. claude-opus-4-8, gemini-2.5-pro).")
+    ai_layer_timeout_s:         float = Field(30.0, ge=5.0,  le=120.0,
+        description="Timeout duro della chiamata AI; oltre → fail-open.")
+    ai_layer_weight:            float = Field(1.0,  ge=0.0,  le=1.0,
+        description="Peso globale dell'influenza AI (0 = nullo, 1 = pieno).")
+    ai_layer_clamp_max:         float = Field(0.08, ge=0.0,  le=0.20,
+        description="Spostamento massimo della soglia per ciclo.")
+    ai_layer_min_conviction:    int   = Field(60,   ge=0,    le=100,
+        description="Sotto questa conviction il verdetto è ignorato (solo log).")
+    ai_layer_hard_veto:         bool  = Field(True,
+        description="Se agreement=veto → blocca il trade (path minimo v1).")
+    ai_layer_allow_easing:      bool  = Field(False,
+        description="Permette all'AI di FACILITARE i trade (delta negativi / aprire no-trade). v1: OFF.")
+    ai_layer_include_news:      bool  = Field(False,
+        description="Include headline news nel dossier (richiede news API). Opzionale.")
+
 
 class StartBotRequest(BaseModel):
     mode: str = Field("paper", pattern="^(paper|live)$")
@@ -577,6 +618,112 @@ async def bot_update_config(cfg: BotConfig):
         "status": "updated",
     }, on_conflict="name").execute())
     return {"status": "updated", "config": cfg.model_dump()}
+
+
+@app.get("/ai-layer/providers")
+async def ai_layer_providers():
+    """Catalogo provider/modelli, con flag `available` per chiave presente in env."""
+    return ai_available_providers()
+
+
+@app.get("/ai-layer/status")
+async def ai_layer_status():
+    """Stato corrente dell'AI Decision Layer (config + disponibilità chiavi)."""
+    if not engine:
+        raise HTTPException(503, "Engine not initialized")
+    c = engine.config
+    provs = ai_available_providers()
+    return {
+        "enabled":           getattr(c, "ai_layer_enabled", False),
+        "shadow_mode":       getattr(c, "ai_layer_shadow_mode", True),
+        "evaluate_no_trade": getattr(c, "ai_layer_evaluate_no_trade", True),
+        "provider":          getattr(c, "ai_layer_provider", "anthropic"),
+        "model":             getattr(c, "ai_layer_model", ""),
+        "weight":            getattr(c, "ai_layer_weight", 1.0),
+        "clamp_max":         getattr(c, "ai_layer_clamp_max", 0.08),
+        "min_conviction":    getattr(c, "ai_layer_min_conviction", 60),
+        "hard_veto":         getattr(c, "ai_layer_hard_veto", True),
+        "allow_easing":      getattr(c, "ai_layer_allow_easing", False),
+        "timeout_s":         getattr(c, "ai_layer_timeout_s", 30.0),
+        "provider_available": provs.get(getattr(c, "ai_layer_provider", "anthropic"), {}).get("available", False),
+        "providers":         provs,
+    }
+
+
+@app.get("/ai-layer/decisions")
+async def ai_layer_decisions(limit: int = 50):
+    """Ultime decisioni AI (per il log nella pagina dedicata)."""
+    limit = max(1, min(200, limit))
+    db = get_supabase()
+    try:
+        res = await run_db(lambda: db.table("ai_decisions")
+                           .select("*").order("created_at", desc=True).limit(limit).execute())
+        return {"decisions": res.data or []}
+    except Exception as exc:
+        log.warning("ai_layer_decisions query failed: %s", exc)
+        return {"decisions": [], "error": str(exc)}
+
+
+@app.get("/ai-layer/decisions/{decision_id}")
+async def ai_layer_decision_detail(decision_id: int):
+    """Dettaglio di una singola decisione (dossier completo incluso)."""
+    db = get_supabase()
+    res = await run_db(lambda: db.table("ai_decisions")
+                       .select("*").eq("id", decision_id).limit(1).execute())
+    if not res.data:
+        raise HTTPException(404, "Decision not found")
+    return res.data[0]
+
+
+@app.get("/ai-layer/stats")
+async def ai_layer_stats(limit: int = 500):
+    """Aggregati sulle ultime N decisioni: distribuzione agreement, % cambi, ecc."""
+    limit = max(1, min(2000, limit))
+    db = get_supabase()
+    try:
+        res = await run_db(lambda: db.table("ai_decisions")
+                           .select("agreement,changed_decision,proposed_action,final_action,error")
+                           .order("created_at", desc=True).limit(limit).execute())
+        rows = res.data or []
+    except Exception as exc:
+        return {"total": 0, "error": str(exc)}
+    total = len(rows)
+    def _cnt(pred):
+        return sum(1 for r in rows if pred(r))
+    return {
+        "total":     total,
+        "confirm":   _cnt(lambda r: r.get("agreement") == "confirm"),
+        "neutral":   _cnt(lambda r: r.get("agreement") == "neutral"),
+        "veto":      _cnt(lambda r: r.get("agreement") == "veto"),
+        "changed":   _cnt(lambda r: r.get("changed_decision")),
+        "fail_open": _cnt(lambda r: r.get("error") == "fail_open"),
+    }
+
+
+@app.post("/ai-layer/test")
+async def ai_layer_test():
+    """Test end-to-end: ri-valuta l'ultimo dossier salvato col provider/modello
+    correnti, SENZA eseguire alcun trade. Verifica chiave + connettività + parsing."""
+    if not engine:
+        raise HTTPException(503, "Engine not initialized")
+    c = engine.config
+    db = get_supabase()
+    res = await run_db(lambda: db.table("ai_decisions")
+                       .select("dossier")
+                       .order("created_at", desc=True).limit(10).execute())
+    dossier = next((r.get("dossier") for r in (res.data or []) if r.get("dossier")), None)
+    if dossier is None:
+        raise HTTPException(404, "Nessun dossier disponibile: avvia il bot per almeno un ciclo.")
+    verdict = await ai_evaluate(
+        dossier=dossier,
+        provider=getattr(c, "ai_layer_provider", "anthropic"),
+        model=getattr(c, "ai_layer_model", "claude-opus-4-8"),
+        timeout_s=getattr(c, "ai_layer_timeout_s", 30.0),
+        system_prompt=AI_ANALYST_SYSTEM_PROMPT,
+    )
+    if verdict is None:
+        return {"ok": False, "error": "fail-open: nessuna risposta valida (controlla chiave/modello)."}
+    return {"ok": True, "verdict": verdict.to_dict()}
 
 
 @app.get("/bot/backtest")

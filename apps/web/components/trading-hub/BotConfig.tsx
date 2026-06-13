@@ -63,10 +63,6 @@ interface Config {
   lgbm_exit_threshold: number;
   lgbm_exit_min_hold_bars: number;
   lgbm_exit_confirm_bars: number;
-  trend_exit_enabled: boolean;
-  trend_exit_threshold: number;
-  trend_exit_confirm_bars: number;
-  trend_exit_min_hold_bars: number;
   // Position management
   be_sl_enabled: boolean;
   be_sl_activation: number;
@@ -305,10 +301,6 @@ const DEFAULTS: Config = {
   lgbm_exit_threshold: 0.30,
   lgbm_exit_min_hold_bars: 6,
   lgbm_exit_confirm_bars: 2,
-  trend_exit_enabled: false,
-  trend_exit_threshold: 35.0,
-  trend_exit_confirm_bars: 2,
-  trend_exit_min_hold_bars: 2,
   // Position management
   be_sl_enabled: false,
   be_sl_activation: 1.0,
@@ -4492,62 +4484,6 @@ export const BotConfig: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                   </div>
                 </div>
               )}
-            </div>
-          )}
-        </div>
-
-        {/* Trend Meter Auto-Close */}
-        <div className={`flex flex-col gap-3 mt-6 pb-6 border-b transition-colors duration-200 ${config.trend_exit_enabled ? 'border-orange-200 dark:border-orange-500/25' : 'border-slate-100 dark:border-white/5'}`}>
-          <label className="flex items-center gap-3 cursor-pointer group">
-            <div className="relative">
-              <input type="checkbox" className="sr-only" checked={config.trend_exit_enabled} onChange={e => setConfig(c => ({ ...c, trend_exit_enabled: e.target.checked }))} />
-              <div className={`w-10 h-5 rounded-full transition-all duration-300 ${config.trend_exit_enabled ? 'bg-orange-500' : 'bg-slate-200 dark:bg-white/10'}`} />
-              <div className={`absolute top-1 left-1 w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.trend_exit_enabled ? 'translate-x-5' : ''}`} />
-            </div>
-            <div>
-              <p className={`text-sm font-bold transition-colors ${config.trend_exit_enabled ? 'text-orange-600 dark:text-orange-400' : 'text-slate-800 dark:text-slate-200 group-hover:text-orange-600 dark:group-hover:text-orange-400'}`}>
-                Uscita Trend Meter
-                {config.trend_exit_enabled && <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-orange-100 dark:bg-orange-500/20 text-orange-600 dark:text-orange-400 uppercase tracking-wider">Attivo</span>}
-              </p>
-              <p className="text-[11px] font-medium text-slate-400 dark:text-slate-500 leading-tight">Chiude la posizione quando la Forza Trend (4H + 1H) scende sotto soglia per N cicli consecutivi</p>
-            </div>
-          </label>
-          {config.trend_exit_enabled && (
-            <div className="pl-12 space-y-3">
-              <div className="p-3 rounded-xl bg-orange-50 dark:bg-orange-500/10 border border-orange-200 dark:border-orange-500/20 text-[10px] text-orange-700 dark:text-orange-400 leading-relaxed">
-                Agisce solo sul punteggio <strong>predittivo (4H + 1H)</strong> — il polso 15m è escluso per evitare uscite su rumore. Default OFF: attivare dopo aver validato la soglia sulla propria storia di trade.
-              </div>
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-x-8 gap-y-4">
-                <div>
-                  <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-2">
-                    Soglia — Score &lt; <span className="text-orange-500 font-mono">{config.trend_exit_threshold.toFixed(0)}</span>
-                  </p>
-                  <div className="flex items-center gap-3">
-                    <input type="range" min="10" max="60" step="1" value={config.trend_exit_threshold}
-                      onChange={e => setConfig(c => ({ ...c, trend_exit_threshold: parseFloat(e.target.value) }))}
-                      className="flex-1 h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/15 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3.5 [&::-webkit-slider-thumb]:h-3.5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-orange-500 [&::-webkit-slider-thumb]:cursor-pointer [&::-moz-range-thumb]:w-3.5 [&::-moz-range-thumb]:h-3.5 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-orange-500 [&::-moz-range-thumb]:border-0" />
-                    <span className="text-[11px] font-bold font-mono text-orange-600 dark:text-orange-400 w-10 text-right">{config.trend_exit_threshold.toFixed(0)}</span>
-                  </div>
-                </div>
-                <div>
-                  <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-2">Min Hold (bar 4H)</p>
-                  <div className="flex items-center gap-3">
-                    <input type="range" min="1" max="24" step="1" value={config.trend_exit_min_hold_bars}
-                      onChange={e => setConfig(c => ({ ...c, trend_exit_min_hold_bars: parseInt(e.target.value) }))}
-                      className="flex-1 h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/15 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3.5 [&::-webkit-slider-thumb]:h-3.5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-orange-500 [&::-webkit-slider-thumb]:cursor-pointer [&::-moz-range-thumb]:w-3.5 [&::-moz-range-thumb]:h-3.5 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-orange-500 [&::-moz-range-thumb]:border-0" />
-                    <span className="text-[11px] font-bold font-mono text-orange-600 dark:text-orange-400 w-10 text-right">{config.trend_exit_min_hold_bars}</span>
-                  </div>
-                </div>
-                <div>
-                  <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-2">Conferma (cicli 1H)</p>
-                  <div className="flex items-center gap-3">
-                    <input type="range" min="1" max="6" step="1" value={config.trend_exit_confirm_bars}
-                      onChange={e => setConfig(c => ({ ...c, trend_exit_confirm_bars: parseInt(e.target.value) }))}
-                      className="flex-1 h-1.5 rounded-full appearance-none cursor-pointer bg-slate-200 dark:bg-white/15 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3.5 [&::-webkit-slider-thumb]:h-3.5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-orange-500 [&::-webkit-slider-thumb]:cursor-pointer [&::-moz-range-thumb]:w-3.5 [&::-moz-range-thumb]:h-3.5 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-orange-500 [&::-moz-range-thumb]:border-0" />
-                    <span className="text-[11px] font-bold font-mono text-orange-600 dark:text-orange-400 w-10 text-right">{config.trend_exit_confirm_bars}</span>
-                  </div>
-                </div>
-              </div>
             </div>
           )}
         </div>

@@ -52,15 +52,22 @@ rsync -avz --delete \
 ### Backend (sync file Python)
 
 ```bash
-rsync -avz --exclude='.venv' --exclude='models/' \
+rsync -avz --exclude='.venv' --exclude='models/' --exclude='.env' \
   -e "ssh -i ~/.ssh/id_ed25519" \
   "/Users/fabiowild/Desktop/Quantum Trade/apps/api/" \
   root@77.42.84.8:/opt/quantum-trade/apps/api/
 ```
 
-> **IMPORTANTE:** escludere sempre `.venv` e `models/` dall'rsync.
+> **IMPORTANTE:** escludere sempre `.venv`, `models/` E `.env` dall'rsync.
 > - `.venv` contiene binari macOS incompatibili con Linux.
 > - `models/` contiene i modelli LightGBM addestrati sul VPS — sovrascriverli con quelli locali degraderebbe silenziosamente le performance.
+> - **`.env` è la fonte autoritativa di PRODUZIONE** (SECRET_KEY, ENCRYPTION_KEY, chiavi Supabase, HL_AGENT_PRIVATE_KEY). Sovrascriverlo col `.env` locale invaliderebbe le sessioni JWT, romperebbe la decrittazione del wallet o azzererebbe segreti live. **Mai deployare il `.env`.** Per aggiungere/aggiornare una singola chiave sul VPS, modificarla chirurgicamente:
+> ```bash
+> # Esempio: aggiungere ANTHROPIC_API_KEY senza toccare il resto
+> KEY=$(grep '^ANTHROPIC_API_KEY=' apps/api/.env | cut -d= -f2-)
+> printf 'ANTHROPIC_API_KEY=%s\n' "$KEY" | ssh -i ~/.ssh/id_ed25519 root@77.42.84.8 \
+>   "grep -q '^ANTHROPIC_API_KEY=' /opt/quantum-trade/apps/api/.env || cat >> /opt/quantum-trade/apps/api/.env"
+> ```
 > Il venv sul VPS è gestito separatamente. Se si aggiungono nuove dipendenze al `requirements.txt`,
 > installarle sul VPS manualmente:
 > ```bash

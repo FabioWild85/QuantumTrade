@@ -31,6 +31,8 @@ from services.trainer import LGBMTrainer, load_model, load_correct_model, load_1
 from services.covariates import update_covariates, get_latest_covariates
 from services.supabase_client import get_supabase, run_db
 from services.regime_detector import RegimeDetector, RegimeSignal
+from services.ai_analyst import evaluate as ai_evaluate, AI_ANALYST_SYSTEM_PROMPT
+from services.ai_context import build_dossier as ai_build_dossier
 
 HL_TAKER_FEE = 0.00035  # 0.035% per side
 HL_MM_RATE   = 0.005    # Maintenance margin rate BTC isolated margin
@@ -1776,6 +1778,21 @@ class ExecutionEngine:
             covariates=covars,
             bar_time=df_feat.index[-1],
         )
+
+        # ── 7a-bis. AI Decision Layer ────────────────────────────────────────
+        # Giudizio LLM sulla decisione del modello, usando contesto strutturale/
+        # macro che il modello NON vede. Additivo (toggle OFF = identico a oggi),
+        # fail-open (errore/timeout → solo modello), shadow-safe. Tutto il blocco
+        # è isolato in _run_ai_layer e non può rompere il ciclo.
+        if getattr(cfg, "ai_layer_enabled", False):
+            try:
+                await self._run_ai_layer(
+                    cfg=cfg, result=result, features=latest, df_feat=df_feat,
+                    covars=covars, avg_funding=avg_funding, c2_out=c2_out,
+                    lgbm_prob=lgbm_prob, current_price=snap["mark_price"],
+                )
+            except Exception as _ai_exc:
+                log.warning("AI Layer skipped (outer error): %s", _ai_exc)
 
         # ── 7b. Gate LightGBM 1H ─────────────────────────────────────────────
         # Applied BEFORE inference logging so the log reflects the final decision.
@@ -4558,6 +4575,146 @@ class ExecutionEngine:
             return None if (math.isnan(f) or math.isinf(f)) else f
         log.warning("_safe_float: non-numeric value dropped: %r (%s)", v, type(v).__name__)
         return None
+
+    async def _run_ai_layer(
+        self, *, cfg, result: DecisionResult, features: dict, df_feat: pd.DataFrame,
+        covars: dict, avg_funding: float, c2_out: dict, lgbm_prob: float,
+        current_price: float,
+    ) -> None:
+        """
+        AI Decision Layer: costruisce il dossier, chiede il giudizio all'LLM e
+        (se non in shadow) lo applica alla decisione. FAIL-OPEN su tutto: qualsiasi
+        problema lascia la decisione del modello invariata. Persiste sempre.
+        """
+        # Salta i no-trade se la valutazione no-trade è disattivata.
+        evaluate_no_trade = getattr(cfg, "ai_layer_evaluate_no_trade", True)
+        if result.action not in ("long", "short") and not evaluate_no_trade:
+            return
+
+        provider = getattr(cfg, "ai_layer_provider", "anthropic")
+        model    = getattr(cfg, "ai_layer_model", "claude-opus-4-8")
+        timeout  = float(getattr(cfg, "ai_layer_timeout_s", 30.0))
+        shadow   = bool(getattr(cfg, "ai_layer_shadow_mode", True))
+        dossier_mode = getattr(cfg, "ai_layer_dossier_mode", "full")
+        orig_action = result.action
+
+        # SL/TP geometrici (ATR-based) del trade proposto — danno all'AI il R:R da
+        # giudicare. È la geometria base, non l'eventuale SL strutturale finale.
+        _atr = float(features.get("atr_14") or features.get("atr") or 0.0)
+        _sl_m = float(getattr(cfg, "sl_atr_mult", 1.2))
+        _tp_m = float(getattr(cfg, "tp_atr_mult", 2.5))
+        _intended_sl = _intended_tp = None
+        if _atr > 0 and current_price > 0:
+            if orig_action == "long":
+                _intended_sl = current_price - _sl_m * _atr
+                _intended_tp = current_price + _tp_m * _atr
+            elif orig_action == "short":
+                _intended_sl = current_price + _sl_m * _atr
+                _intended_tp = current_price - _tp_m * _atr
+
+        dossier = None
+        verdict = None
+        try:
+            dossier = ai_build_dossier(
+                features=features, df_4h=df_feat, covariates=covars,
+                avg_funding=avg_funding, decision_result=result,
+                current_price=current_price, c2_output=c2_out, lgbm_prob=lgbm_prob,
+                dossier_mode=dossier_mode,
+                intended_sl=_intended_sl, intended_tp=_intended_tp,
+            )
+            verdict = await ai_evaluate(
+                dossier=dossier, provider=provider, model=model,
+                timeout_s=timeout, system_prompt=AI_ANALYST_SYSTEM_PROMPT,
+            )
+        except Exception as exc:
+            log.warning("AI Layer build/evaluate error: %s", exc)
+            verdict = None
+
+        if verdict is None:
+            # fail-open: nessuna modifica, ma logga per la validazione forward
+            result.reasoning.append(
+                f"AI Layer [{provider}/{model}]: fail-open (LGBM-only)"
+            )
+            await self._persist_ai_decision(cfg, None, dossier, result, orig_action)
+            return
+
+        min_conv = int(getattr(cfg, "ai_layer_min_conviction", 60))
+        if verdict.conviction < min_conv:
+            result.reasoning.append(
+                f"AI Layer: conv={verdict.conviction} < {min_conv} → ignorato (informativo)"
+            )
+            await self._persist_ai_decision(cfg, verdict, dossier, result, orig_action)
+            return
+
+        # clamp + asimmetria + peso
+        clamp = float(getattr(cfg, "ai_layer_clamp_max", 0.08))
+        adj = max(-clamp, min(clamp, verdict.threshold_adjustment))
+        allow_easing = bool(getattr(cfg, "ai_layer_allow_easing", False))
+        if not allow_easing and adj < 0:
+            adj = 0.0
+        adj *= (verdict.conviction / 100.0) * float(getattr(cfg, "ai_layer_weight", 1.0))
+        hard_veto = bool(getattr(cfg, "ai_layer_hard_veto", True))
+
+        if shadow:
+            result.reasoning.append(
+                f"AI Layer [SHADOW {provider}/{model}]: would be {verdict.agreement} "
+                f"conv={verdict.conviction} adj={adj:+.3f} flags={','.join(verdict.flags)} (no effect)"
+            )
+        elif orig_action in ("long", "short"):
+            # LIVE su trade proposto: l'AI può frenare/vetare (caso d'uso #1)
+            thr = result.threshold_long if orig_action == "long" else result.threshold_short
+            side_prob = lgbm_prob if orig_action == "long" else (1.0 - lgbm_prob)
+            if verdict.agreement == "veto" and hard_veto:
+                result.action = "no_trade"
+            elif thr is not None and side_prob < (thr + adj):
+                result.action = "no_trade"
+            result.reasoning.append(
+                f"AI Layer [{provider}/{model}]: {verdict.agreement} conv={verdict.conviction} "
+                f"adj={adj:+.3f} flags={','.join(verdict.flags)} → action={result.action}"
+            )
+        else:
+            # LIVE su NO TRADE: informativo in v1; azionabile solo con allow_easing
+            if allow_easing and verdict.agreement == "veto" and verdict.bias in ("long", "short"):
+                thr = result.threshold_long if verdict.bias == "long" else result.threshold_short
+                side_prob = lgbm_prob if verdict.bias == "long" else (1.0 - lgbm_prob)
+                if thr is not None and side_prob >= (thr + adj):
+                    result.action = verdict.bias
+            result.reasoning.append(
+                f"AI Layer [no-trade · {provider}/{model}]: {verdict.agreement} "
+                f"conv={verdict.conviction} bias={verdict.bias} → action={result.action} "
+                f"({'easing' if allow_easing else 'informativo'})"
+            )
+
+        await self._persist_ai_decision(cfg, verdict, dossier, result, orig_action)
+
+    async def _persist_ai_decision(self, cfg, verdict, dossier, result, orig_action) -> None:
+        """Persiste la decisione AI su Supabase (tabella ai_decisions). Fail-safe:
+        se la tabella non esiste o l'insert fallisce, logga e prosegue."""
+        try:
+            db = get_supabase()
+            row = {
+                "bar_time":       None,
+                "symbol":         "BTC",
+                "provider":       getattr(cfg, "ai_layer_provider", "anthropic"),
+                "model":          getattr(cfg, "ai_layer_model", ""),
+                "shadow_mode":    bool(getattr(cfg, "ai_layer_shadow_mode", True)),
+                "proposed_action": orig_action,
+                "final_action":   result.action,
+                "changed_decision": bool(orig_action != result.action),
+                "agreement":      getattr(verdict, "agreement", None) if verdict else None,
+                "conviction":     getattr(verdict, "conviction", None) if verdict else None,
+                "bias":           getattr(verdict, "bias", None) if verdict else None,
+                "threshold_adjustment": getattr(verdict, "threshold_adjustment", None) if verdict else None,
+                "flags":          getattr(verdict, "flags", None) if verdict else None,
+                "invalidation_level":   getattr(verdict, "invalidation_level", None) if verdict else None,
+                "report_it":      getattr(verdict, "report_it", None) if verdict else None,
+                "latency_ms":     getattr(verdict, "latency_ms", None) if verdict else None,
+                "error":          None if verdict else "fail_open",
+                "dossier":        dossier,
+            }
+            await run_db(lambda: db.table("ai_decisions").insert(row).execute())
+        except Exception as exc:
+            log.warning("AI Layer persist failed (non-bloccante): %s", exc)
 
     async def _log_inference(
         self,

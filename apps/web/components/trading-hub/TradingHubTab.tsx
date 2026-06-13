@@ -10,11 +10,12 @@ import { ServerLogs } from './ServerLogs';
 import { RegimePanel } from './RegimePanel';
 import { ReversalPanel } from './ReversalPanel';
 import { ServerStatus } from './ServerStatus';
+import { AILayerPanel } from './AILayerPanel';
 
 import { apiFetch } from '../../services/authService';
-type HubPage = 'monitor' | 'forecast' | 'config' | 'trades' | 'backtest' | 'regime' | 'reversal' | 'logs' | 'server' | 'settings';
+type HubPage = 'monitor' | 'forecast' | 'config' | 'aimodel' | 'trades' | 'backtest' | 'regime' | 'reversal' | 'logs' | 'server' | 'settings';
 
-const VALID_PAGES: HubPage[] = ['monitor', 'forecast', 'config', 'trades', 'backtest', 'regime', 'reversal', 'logs', 'server', 'settings'];
+const VALID_PAGES: HubPage[] = ['monitor', 'forecast', 'config', 'aimodel', 'trades', 'backtest', 'regime', 'reversal', 'logs', 'server', 'settings'];
 
 interface NavItem {
   id: HubPage;
@@ -50,6 +51,16 @@ const NAV: NavItem[] = [
       <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
         <path strokeLinecap="round" strokeLinejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/>
         <circle cx="12" cy="12" r="3"/>
+      </svg>
+    ),
+  },
+  {
+    id: 'aimodel',
+    label: 'Modello AI',
+    icon: (
+      <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" d="M9.5 2A1.5 1.5 0 008 3.5V4H6a2 2 0 00-2 2v2h-.5a1.5 1.5 0 000 3H4v2H3.5a1.5 1.5 0 000 3H4v2a2 2 0 002 2h2v.5a1.5 1.5 0 003 0V20h2v.5a1.5 1.5 0 003 0V20h2a2 2 0 002-2v-2h.5a1.5 1.5 0 000-3H20v-2h.5a1.5 1.5 0 000-3H20V6a2 2 0 00-2-2h-2v-.5a1.5 1.5 0 00-3 0V4h-2v-.5A1.5 1.5 0 009.5 2z"/>
+        <rect x="9" y="9" width="6" height="6" rx="1"/>
       </svg>
     ),
   },
@@ -318,6 +329,7 @@ export const TradingHubTab: React.FC<TradingHubTabProps> = ({ isDarkMode, toggle
         {page === 'monitor'  && <Monitor       apiBase={API_BASE} />}
         {page === 'forecast' && <ForecastView  apiBase={API_BASE} />}
         {page === 'config'   && <BotConfig     apiBase={API_BASE} />}
+        {page === 'aimodel'  && <AILayerPanel  apiBase={API_BASE} />}
         {page === 'trades'   && <TradeLog      apiBase={API_BASE} />}
         {page === 'backtest' && <BacktestPanel apiBase={API_BASE} />}
         {page === 'regime'   && <RegimePanel   apiBase={API_BASE} />}

@@ -939,8 +939,6 @@ export const Monitor: React.FC<{ apiBase: string }> = ({ apiBase }) => {
           chronosEnabled={!!(status?.config?.chronos_enabled ?? true)}
           lastCycleSignals={status?.last_cycle_signals ?? null}
           trendMeter={status?.trend_meter ?? null}
-          trendExitEnabled={!!(status?.config?.trend_exit_enabled)}
-          trendExitConfirmBars={(status?.config?.trend_exit_confirm_bars as number) ?? 2}
           adverseMonitorEnabled={!!(status?.config?.adverse_monitor_enabled)}
           adverseAction={(status?.config?.adverse_action as string) ?? 'shadow'}
           adverseScoreThreshold={(status?.config?.adverse_score_threshold as number) ?? 0.40}
@@ -1560,8 +1558,6 @@ interface LiveTradeCardProps {
   chronosEnabled: boolean;
   lastCycleSignals: LastCycleSignals | null;
   trendMeter: TrendMeterData | null;
-  trendExitEnabled: boolean;
-  trendExitConfirmBars: number;
   adverseMonitorEnabled: boolean;
   adverseAction: string;
   adverseScoreThreshold: number;
@@ -1574,7 +1570,7 @@ const LiveTradeCard: React.FC<LiveTradeCardProps> = ({
   distToSL, distToTP, distToSLPct, distToTPPct,
   slProgressPct, ptpProgressPct, distToPTP, distToPTPPct,
   positionDurationH, mode, lgbmConfirmBars, beSlEnabled, chronosEnabled,
-  lastCycleSignals, trendMeter, trendExitEnabled, trendExitConfirmBars,
+  lastCycleSignals, trendMeter,
   adverseMonitorEnabled, adverseAction, adverseScoreThreshold, adverseConfirmCycles,
   onClose,
 }) => {
@@ -1825,17 +1821,6 @@ const LiveTradeCard: React.FC<LiveTradeCardProps> = ({
             <span className="text-[9px] font-bold uppercase tracking-widest opacity-70">LGBM Strikes</span>
             <span className="font-bold font-mono">{pos.lgbm_strikes ?? 0} / {lgbmConfirmBars}</span>
           </div>
-          {/* Trend Exit strikes — visible only when feature is enabled */}
-          {trendExitEnabled && (
-            <div className={`flex flex-col gap-1 px-3 py-2.5 rounded-xl border text-xs ${
-              (pos.trend_strikes ?? 0) > 0
-                ? 'bg-orange-50 dark:bg-orange-500/10 border-orange-200 dark:border-orange-500/25 text-orange-700 dark:text-orange-400'
-                : 'bg-slate-50 dark:bg-white/5 border-slate-100 dark:border-white/8 text-slate-400 dark:text-slate-500'
-            }`}>
-              <span className="text-[9px] font-bold uppercase tracking-widest opacity-70">Trend Strikes</span>
-              <span className="font-bold font-mono">{pos.trend_strikes ?? 0} / {trendExitConfirmBars}</span>
-            </div>
-          )}
           {/* Adverse Evidence Monitor — visible when enabled */}
           {adverseMonitorEnabled && (() => {
             const score    = pos.adverse_score ?? 0;

@@ -29,6 +29,11 @@ class DecisionResult:
     size_factor: float = 1.0  # 1.0 = full size; <1.0 = reduced for counter-trend trades
     _is_reversal: bool = False  # True when signal originates from ReversalZoneDetector
     _exhaustion_triggered: bool = False  # True when ExhaustionGuard was active at entry (for exhaust_max_hold)
+    # Soglie effettive applicate a fine pipeline (post tutti i bias/guard). None per i
+    # no-trade da gate precoci (ADX/weekend ecc.) dove non sono ancora calcolate.
+    # Consumate dall'AI Decision Layer per il path di modulazione graduale.
+    threshold_long: Optional[float] = None
+    threshold_short: Optional[float] = None
 
 
 class DecisionEngine:
@@ -964,6 +969,8 @@ class DecisionEngine:
                 forecast_uncertainty=c2_uncertainty,
                 size_factor=sf,
                 _exhaustion_triggered=_long_exhaust,
+                threshold_long=threshold_long,
+                threshold_short=threshold_short,
             )
 
         # ── Short signal ──────────────────────────────────────────────────────
@@ -1042,6 +1049,8 @@ class DecisionEngine:
                 forecast_uncertainty=c2_uncertainty,
                 size_factor=sf,
                 _exhaustion_triggered=_short_exhaust,
+                threshold_long=threshold_long,
+                threshold_short=threshold_short,
             )
 
         # ── No signal ─────────────────────────────────────────────────────────
@@ -1063,9 +1072,11 @@ class DecisionEngine:
             f"NO-TRADE: P(up)={ensemble_prob:.3f} | "
             f"long>{threshold_long:.2f}, short>{threshold_short:.2f}"
         )
-        return self._no_trade(reasoning, dir_prob, p10, p50, p90, features, c2_uncertainty)
+        return self._no_trade(reasoning, dir_prob, p10, p50, p90, features, c2_uncertainty,
+                              threshold_long=threshold_long, threshold_short=threshold_short)
 
-    def _no_trade(self, reasoning, dir_prob, p10, p50, p90, features, uncertainty=0.0) -> DecisionResult:
+    def _no_trade(self, reasoning, dir_prob, p10, p50, p90, features, uncertainty=0.0,
+                  threshold_long=None, threshold_short=None) -> DecisionResult:
         return DecisionResult(
             action="no_trade",
             confidence=0.0,
@@ -1076,6 +1087,8 @@ class DecisionEngine:
             forecast_p50=p50,
             forecast_p90=p90,
             forecast_uncertainty=uncertainty,
+            threshold_long=threshold_long,
+            threshold_short=threshold_short,
         )
 
 
