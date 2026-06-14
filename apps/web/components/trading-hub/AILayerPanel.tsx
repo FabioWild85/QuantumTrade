@@ -26,7 +26,11 @@ interface AIDecision {
   dossier: any;
 }
 
-interface Stats { total: number; confirm: number; neutral: number; veto: number; changed: number; fail_open: number; }
+interface Stats {
+  total: number; confirm: number; neutral: number; veto: number;
+  changed: number; fail_open: number;
+  threshold_raised: number; threshold_avg: number; avg_conviction: number;
+}
 
 const PROVIDER_LABEL: Record<string, string> = {
   anthropic: 'Anthropic (Claude)', gemini: 'Google (Gemini)',
@@ -293,12 +297,33 @@ export const AILayerPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
       {/* E — Statistiche */}
       {stats && stats.total > 0 && (
         <Section title="Statistiche (ultime decisioni)">
-          <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 pt-1">
-            <Stat label="Totale" value={stats.total} />
-            <Stat label="Conferme" value={stats.confirm} color="text-emerald-600 dark:text-emerald-400" />
-            <Stat label="Veto" value={stats.veto} color="text-rose-600 dark:text-rose-400" />
-            <Stat label="Decisioni cambiate" value={stats.changed} color="text-indigo-600 dark:text-indigo-400" />
-            <Stat label="Fail-open" value={stats.fail_open} color="text-amber-600 dark:text-amber-400" />
+          <div className="space-y-4 pt-1">
+            {/* Riga 1 — Giudizi AI */}
+            <div>
+              <p className="text-xs text-gray-400 dark:text-gray-500 uppercase tracking-wide mb-2">Giudizi AI</p>
+              <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5">
+                <Stat label="Totale" value={stats.total} />
+                <Stat label="Conferme" value={stats.confirm} color="text-emerald-600 dark:text-emerald-400" />
+                <Stat label="Neutrali" value={stats.neutral} color="text-gray-600 dark:text-gray-300" />
+                <Stat label="Veto" value={stats.veto} color="text-rose-600 dark:text-rose-400" />
+                <Stat label="Fail-open" value={stats.fail_open} color="text-amber-600 dark:text-amber-400" />
+              </div>
+            </div>
+            {/* Riga 2 — Effetti sulle soglie */}
+            <div>
+              <p className="text-xs text-gray-400 dark:text-gray-500 uppercase tracking-wide mb-2">Effetti sulle soglie</p>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                <Stat label="Cambi decisione" value={stats.changed} color="text-indigo-600 dark:text-indigo-400" />
+                <Stat label="Freni attivi" value={stats.threshold_raised} color="text-orange-600 dark:text-orange-400"
+                  hint="Cicli in cui l'AI ha alzato la soglia" />
+                <Stat label="Adj medio" value={stats.threshold_avg >= 0 ? `+${stats.threshold_avg.toFixed(3)}` : stats.threshold_avg.toFixed(3)}
+                  color={stats.threshold_avg > 0 ? 'text-orange-600 dark:text-orange-400' : stats.threshold_avg < 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-gray-600 dark:text-gray-300'}
+                  hint="Spostamento medio della soglia" />
+                <Stat label="Conv media" value={`${stats.avg_conviction.toFixed(0)}%`}
+                  color="text-violet-600 dark:text-violet-400"
+                  hint="Conviction media dell'AI" />
+              </div>
+            </div>
           </div>
         </Section>
       )}
@@ -324,12 +349,20 @@ export const AILayerPanel: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                         {actionLabel(d.proposed_action)}
                       </span>
                       <span className="text-gray-400">→</span>
-                      <span className="font-semibold text-gray-700 dark:text-gray-300">
+                      <span
+                        title={d.changed_decision && d.shadow_mode ? 'Simulato (shadow): il trade reale è proseguito come proposto, non applicato.' : undefined}
+                        className={`font-semibold ${
+                          d.changed_decision && d.shadow_mode
+                            ? 'text-amber-600 dark:text-amber-400'
+                            : 'text-gray-700 dark:text-gray-300'
+                        }`}>
                         {actionLabel(d.final_action)}
                       </span>
                       {d.changed_decision && (
-                        <span className="text-xs px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-700 dark:bg-indigo-500/20 dark:text-indigo-300">
-                          🔵 cambiata
+                        <span
+                          title={d.shadow_mode ? 'In shadow l\'AI non agisce: questa è la decisione che avrebbe preso in live.' : undefined}
+                          className="text-xs px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-700 dark:bg-indigo-500/20 dark:text-indigo-300">
+                          {d.shadow_mode ? '🔵 cambierebbe' : '🔵 cambiata'}
                         </span>
                       )}
                     </div>
@@ -391,9 +424,10 @@ const Section: React.FC<{ title: string; children: React.ReactNode }> = ({ title
   </div>
 );
 
-const Stat: React.FC<{ label: string; value: number; color?: string }> = ({ label, value, color }) => (
-  <div className="rounded-xl bg-gray-50 dark:bg-gray-800/60 p-3 text-center">
-    <div className={`text-2xl font-bold ${color ?? 'text-gray-800 dark:text-gray-200'}`}>{value}</div>
-    <div className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">{label}</div>
+const Stat: React.FC<{ label: string; value: number | string; color?: string; hint?: string }> =
+  ({ label, value, color, hint }) => (
+  <div className="rounded-xl bg-gray-50 dark:bg-gray-800/60 p-3 text-center" title={hint}>
+    <div className={`text-2xl font-bold tabular-nums ${color ?? 'text-gray-800 dark:text-gray-200'}`}>{value}</div>
+    <div className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 leading-tight">{label}</div>
   </div>
 );

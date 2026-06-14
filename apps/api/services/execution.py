@@ -1779,20 +1779,13 @@ class ExecutionEngine:
             bar_time=df_feat.index[-1],
         )
 
-        # ── 7a-bis. AI Decision Layer ────────────────────────────────────────
-        # Giudizio LLM sulla decisione del modello, usando contesto strutturale/
-        # macro che il modello NON vede. Additivo (toggle OFF = identico a oggi),
-        # fail-open (errore/timeout → solo modello), shadow-safe. Tutto il blocco
-        # è isolato in _run_ai_layer e non può rompere il ciclo.
-        if getattr(cfg, "ai_layer_enabled", False):
-            try:
-                await self._run_ai_layer(
-                    cfg=cfg, result=result, features=latest, df_feat=df_feat,
-                    covars=covars, avg_funding=avg_funding, c2_out=c2_out,
-                    lgbm_prob=lgbm_prob, current_price=snap["mark_price"],
-                )
-            except Exception as _ai_exc:
-                log.warning("AI Layer skipped (outer error): %s", _ai_exc)
+        # ── Segnale direzionale grezzo (pre-gate) ────────────────────────────
+        # Cattura ciò che il modello ha proposto PRIMA di qualunque gate a valle,
+        # così la UI può dichiarare "il modello voleva X ma il gate Y ha bloccato".
+        # _block_reason viene impostato dal primo gate a valle che ribalta a no_trade.
+        _raw_action     = result.action
+        _raw_confidence = result.confidence
+        _block_reason: Optional[str] = None
 
         # ── 7b. Gate LightGBM 1H ─────────────────────────────────────────────
         # Applied BEFORE inference logging so the log reflects the final decision.
@@ -1826,6 +1819,7 @@ class ExecutionEngine:
 
                 if gate_side_prob < block_thr:
                     result.action = "no_trade"
+                    _block_reason = "Gate 1H"
                     result.reasoning.append(
                         f"1H gate BLOCK: P({original_action})_1h={gate_side_prob:.3f} < {block_thr}"
                     )
@@ -1843,6 +1837,21 @@ class ExecutionEngine:
             except Exception as _exc:
                 log.warning("1H gate skipped (error): %s", _exc)
 
+        # ── 7c. AI Decision Layer ────────────────────────────────────────────
+        # Giudizio LLM sulla decisione FINALE del modello (DOPO i gate deterministici:
+        # se il Gate 1H ha già bloccato, l'AI giudica un no_trade, non lo short grezzo).
+        # Additivo (toggle OFF = identico a oggi), fail-open, shadow-safe. Tutto il
+        # blocco è isolato in _run_ai_layer e non può rompere il ciclo.
+        if getattr(cfg, "ai_layer_enabled", False):
+            try:
+                await self._run_ai_layer(
+                    cfg=cfg, result=result, features=latest, df_feat=df_feat,
+                    covars=covars, avg_funding=avg_funding, c2_out=c2_out,
+                    lgbm_prob=lgbm_prob, current_price=snap["mark_price"],
+                )
+            except Exception as _ai_exc:
+                log.warning("AI Layer skipped (outer error): %s", _ai_exc)
+
         # 8. Execute
         _raw_id = str(uuid.uuid4())[:12]
         inference_id = await self._log_inference(_raw_id, latest, c2_out, lgbm_prob, result, covars)
@@ -1855,6 +1864,8 @@ class ExecutionEngine:
         if _macro_event:
             _pre_macro_action = result.action   # capture signal before override
             result.action = "no_trade"
+            if _pre_macro_action in ("long", "short"):
+                _block_reason = "Pausa macro"
             result.reasoning.append(f"Macro pause: {_macro_event}")
             if self._macro_pause_active is None:
                 # Entered pause — notify once
@@ -2215,6 +2226,12 @@ class ExecutionEngine:
             "c2_cont_prob": round(c2_out.get("c2_cont_prob", 0.0) * 100, 1),
             "reasoning":    result.reasoning,
             "updated_at":   datetime.now(timezone.utc).isoformat(),
+            # Segnale grezzo pre-gate + eventuale gate che ha bloccato (per la UI):
+            # se _block_reason è valorizzato, il modello aveva proposto _raw_action
+            # con forza _raw_confidence ma un gate l'ha ribaltato a no_trade.
+            "raw_action":   _raw_action,
+            "raw_pct":      round(_raw_confidence * 100, 1),
+            "blocked_by":   _block_reason,
         }
         _save_lcs(self._last_cycle_signals)
 
@@ -4655,41 +4672,51 @@ class ExecutionEngine:
         adj *= (verdict.conviction / 100.0) * float(getattr(cfg, "ai_layer_weight", 1.0))
         hard_veto = bool(getattr(cfg, "ai_layer_hard_veto", True))
 
-        if shadow:
-            result.reasoning.append(
-                f"AI Layer [SHADOW {provider}/{model}]: would be {verdict.agreement} "
-                f"conv={verdict.conviction} adj={adj:+.3f} flags={','.join(verdict.flags)} (no effect)"
-            )
-        elif orig_action in ("long", "short"):
-            # LIVE su trade proposto: l'AI può frenare/vetare (caso d'uso #1)
+        # Azione IMPLICATA dal verdetto, calcolata SEMPRE (anche in shadow) così il
+        # log riflette cosa l'AI ha DECISO, non solo cosa è stato applicato. In shadow
+        # NON viene applicata a result.action (il trade reale prosegue invariato).
+        would_be_action = orig_action
+        if orig_action in ("long", "short"):
+            # Trade proposto: l'AI può frenare/vetare (caso d'uso #1)
             thr = result.threshold_long if orig_action == "long" else result.threshold_short
             side_prob = lgbm_prob if orig_action == "long" else (1.0 - lgbm_prob)
             if verdict.agreement == "veto" and hard_veto:
-                result.action = "no_trade"
+                would_be_action = "no_trade"
             elif thr is not None and side_prob < (thr + adj):
-                result.action = "no_trade"
-            result.reasoning.append(
-                f"AI Layer [{provider}/{model}]: {verdict.agreement} conv={verdict.conviction} "
-                f"adj={adj:+.3f} flags={','.join(verdict.flags)} → action={result.action}"
-            )
+                would_be_action = "no_trade"
         else:
-            # LIVE su NO TRADE: informativo in v1; azionabile solo con allow_easing
+            # No-trade proposto: azionabile solo con allow_easing
             if allow_easing and verdict.agreement == "veto" and verdict.bias in ("long", "short"):
                 thr = result.threshold_long if verdict.bias == "long" else result.threshold_short
                 side_prob = lgbm_prob if verdict.bias == "long" else (1.0 - lgbm_prob)
                 if thr is not None and side_prob >= (thr + adj):
-                    result.action = verdict.bias
+                    would_be_action = verdict.bias
+
+        if shadow:
             result.reasoning.append(
-                f"AI Layer [no-trade · {provider}/{model}]: {verdict.agreement} "
-                f"conv={verdict.conviction} bias={verdict.bias} → action={result.action} "
-                f"({'easing' if allow_easing else 'informativo'})"
+                f"AI Layer [SHADOW {provider}/{model}]: {verdict.agreement} "
+                f"conv={verdict.conviction} adj={adj:+.3f} → would_be={would_be_action} "
+                f"flags={','.join(verdict.flags)} (no effect)"
+            )
+        else:
+            result.action = would_be_action
+            result.reasoning.append(
+                f"AI Layer [{provider}/{model}]: {verdict.agreement} conv={verdict.conviction} "
+                f"adj={adj:+.3f} flags={','.join(verdict.flags)} → action={result.action}"
             )
 
-        await self._persist_ai_decision(cfg, verdict, dossier, result, orig_action)
+        await self._persist_ai_decision(cfg, verdict, dossier, result, orig_action, would_be_action)
 
-    async def _persist_ai_decision(self, cfg, verdict, dossier, result, orig_action) -> None:
+    async def _persist_ai_decision(self, cfg, verdict, dossier, result, orig_action,
+                                   would_be_action=None) -> None:
         """Persiste la decisione AI su Supabase (tabella ai_decisions). Fail-safe:
-        se la tabella non esiste o l'insert fallisce, logga e prosegue."""
+        se la tabella non esiste o l'insert fallisce, logga e prosegue.
+
+        final_action = l'azione che il verdetto AI IMPLICA (would_be_action). In live
+        coincide con result.action; in shadow è la decisione "simulata" (non applicata
+        al trade reale — lo distingue il flag shadow_mode). Così il log riflette cosa
+        l'AI ha deciso anche quando è in osservazione."""
+        eff_action = would_be_action if would_be_action is not None else result.action
         try:
             db = get_supabase()
             row = {
@@ -4699,8 +4726,8 @@ class ExecutionEngine:
                 "model":          getattr(cfg, "ai_layer_model", ""),
                 "shadow_mode":    bool(getattr(cfg, "ai_layer_shadow_mode", True)),
                 "proposed_action": orig_action,
-                "final_action":   result.action,
-                "changed_decision": bool(orig_action != result.action),
+                "final_action":   eff_action,
+                "changed_decision": bool(orig_action != eff_action),
                 "agreement":      getattr(verdict, "agreement", None) if verdict else None,
                 "conviction":     getattr(verdict, "conviction", None) if verdict else None,
                 "bias":           getattr(verdict, "bias", None) if verdict else None,

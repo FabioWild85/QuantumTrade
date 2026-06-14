@@ -96,6 +96,9 @@ interface BotStatus {
     c2_cont_prob: number;
     reasoning: string[];
     updated_at: string;
+    raw_action?: string;
+    raw_pct?: number;
+    blocked_by?: string | null;
   } | null;
   trend_meter?: TrendMeterData | null;
   macro_pause_active?: string | null;
@@ -1024,31 +1027,49 @@ export const Monitor: React.FC<{ apiBase: string }> = ({ apiBase }) => {
             <h3 className="text-sm font-bold text-slate-900 dark:text-white uppercase tracking-wider">AI Intelligence Logs</h3>
           </div>
           <div className="space-y-3">
-            {logs.map(log => (
+            {logs.map(log => {
+              const blockLine = log.decision === 'no_trade' ? extractBlockLine(log.reasoning ?? []) : null;
+              const headLines = (log.reasoning ?? []).slice(0, 3);
+              const blockShownInHead = blockLine !== null && headLines.includes(blockLine);
+              return (
               <div key={log.id} className="rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-100 dark:border-white/5 p-4 text-xs font-mono transition-all hover:bg-white dark:hover:bg-slate-800 hover:shadow-md">
                 <div className="flex items-center justify-between mb-3">
-                  <span className={`font-bold px-2.5 py-1 rounded-lg text-[10px] uppercase tracking-widest ${
-                    log.decision === 'long'  ? 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-100 dark:border-emerald-500/20'
-                    : log.decision === 'short' ? 'bg-rose-50 dark:bg-rose-500/10 text-rose-600 dark:text-rose-400 border border-rose-100 dark:border-rose-500/20'
-                    : 'bg-slate-100 dark:bg-slate-700 text-slate-500 dark:text-slate-400 border border-slate-200 dark:border-slate-600'
-                  }`}>
-                    {log.decision?.toUpperCase()}
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <span className={`font-bold px-2.5 py-1 rounded-lg text-[10px] uppercase tracking-widest ${
+                      log.decision === 'long'  ? 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-100 dark:border-emerald-500/20'
+                      : log.decision === 'short' ? 'bg-rose-50 dark:bg-rose-500/10 text-rose-600 dark:text-rose-400 border border-rose-100 dark:border-rose-500/20'
+                      : 'bg-slate-100 dark:bg-slate-700 text-slate-500 dark:text-slate-400 border border-slate-200 dark:border-slate-600'
+                    }`}>
+                      {log.decision?.toUpperCase()}
+                    </span>
+                    {blockLine && (
+                      <span className="font-bold px-2 py-1 rounded-lg text-[10px] uppercase tracking-widest bg-amber-50 dark:bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-100 dark:border-amber-500/20">
+                        🚫 Bloccato
+                      </span>
+                    )}
+                  </div>
                   <span className="text-slate-400 dark:text-slate-500 font-medium">
                     {log.time ? new Date(log.time).toLocaleTimeString('it-IT') : '—'}
                     {log.latency_ms ? ` · ${log.latency_ms.toFixed(0)}ms` : ''}
                   </span>
                 </div>
                 <div className="space-y-1.5">
-                  {(log.reasoning ?? []).slice(0, 3).map((r, i) => (
+                  {headLines.map((r, i) => (
                     <div key={i} className="truncate text-slate-600 dark:text-slate-400 flex items-start gap-2">
                       <span className="text-indigo-500 opacity-50">•</span>
                       {r}
                     </div>
                   ))}
+                  {blockLine && !blockShownInHead && (
+                    <div className="text-amber-600 dark:text-amber-400 flex items-start gap-2 font-semibold">
+                      <span className="opacity-70">🚫</span>
+                      {blockLine}
+                    </div>
+                  )}
                 </div>
               </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}
@@ -1439,6 +1460,9 @@ interface LastCycleSignals {
   c2_cont_prob: number;
   reasoning: string[];
   updated_at: string;
+  raw_action?: string;
+  raw_pct?: number;
+  blocked_by?: string | null;
 }
 
 function formatSignalTime(iso: string): string {
@@ -1448,6 +1472,13 @@ function formatSignalTime(iso: string): string {
   if (d.toDateString() === now.toDateString()) return `Oggi · ${time}`;
   const months = ['gen','feb','mar','apr','mag','giu','lug','ago','set','ott','nov','dic'];
   return `${d.getDate()} ${months[d.getMonth()]} · ${time}`;
+}
+
+// Estrae dalla reasoning la riga che spiega un blocco a valle (gate/filtro/pausa),
+// così può essere evidenziata nei log anche se oltre le prime righe mostrate.
+function extractBlockLine(reasoning: string[]): string | null {
+  if (!reasoning || reasoning.length === 0) return null;
+  return reasoning.find((l) => /gate BLOCK|\bBLOCK:|GATE:|FILTER:|Macro pause/i.test(l)) ?? null;
 }
 
 function buildSignalNarrative(s: LastCycleSignals): string {
@@ -1486,9 +1517,15 @@ function buildSignalNarrative(s: LastCycleSignals): string {
   let p = '';
   const isNoTrade = action === 'no_trade';
   const isLong    = action === 'long';
+  const blockedDir = (s.blocked_by && s.raw_action && s.raw_action !== 'no_trade') ? s.raw_action : null;
 
   // 1. Opening — what the AI sees
-  if (isNoTrade && pUp !== null) {
+  if (blockedDir) {
+    const dirIt = blockedDir === 'long' ? 'rialzista' : 'ribassista';
+    const dirEn = blockedDir === 'long' ? 'LONG' : 'SHORT';
+    const strength = typeof s.raw_pct === 'number' ? ` (forza **${s.raw_pct.toFixed(0)}%**)` : '';
+    p += `Il modello aveva generato un segnale ${dirIt} **${dirEn}**${strength}, neutralizzato dal **${s.blocked_by}** prima dell'esecuzione: nessun trade aperto. `;
+  } else if (isNoTrade && pUp !== null) {
     const pUpPct = Math.round(pUp * 100);
     p += `Il modello LightGBM vede una probabilità rialzista del **${pUpPct}%**`;
     if (longThr !== null && shortThr !== null) {
@@ -1905,19 +1942,38 @@ const LiveTradeCard: React.FC<LiveTradeCardProps> = ({
           <div className="flex items-center justify-between mb-1">
             <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest">Segnali Attuali</p>
             <span className={`text-[9px] font-bold uppercase tracking-widest px-2 py-0.5 rounded-full ${
-              lastCycleSignals.action === pos.side
-                ? 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
-                : lastCycleSignals.action === 'no_trade'
-                  ? 'bg-slate-50 dark:bg-white/5 text-slate-400 dark:text-slate-500'
-                  : 'bg-amber-50 dark:bg-amber-500/10 text-amber-600 dark:text-amber-400'
+              lastCycleSignals.blocked_by
+                ? 'bg-amber-50 dark:bg-amber-500/10 text-amber-600 dark:text-amber-400'
+                : lastCycleSignals.action === pos.side
+                  ? 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
+                  : lastCycleSignals.action === 'no_trade'
+                    ? 'bg-slate-50 dark:bg-white/5 text-slate-400 dark:text-slate-500'
+                    : 'bg-amber-50 dark:bg-amber-500/10 text-amber-600 dark:text-amber-400'
             }`}>
-              {lastCycleSignals.action === pos.side ? '✓ Confermato' : lastCycleSignals.action === 'no_trade' ? 'Neutro' : '⚠ Contrario'}
+              {lastCycleSignals.blocked_by
+                ? '🚫 Bloccato'
+                : lastCycleSignals.action === pos.side ? '✓ Confermato' : lastCycleSignals.action === 'no_trade' ? 'Neutro' : '⚠ Contrario'}
             </span>
           </div>
           {/* Timestamp */}
           <p className="text-[10px] text-slate-400 dark:text-slate-500 mb-3">
             Aggiornato: <span className="font-mono font-semibold text-slate-500 dark:text-slate-400">{formatSignalTime(lastCycleSignals.updated_at)}</span>
           </p>
+
+          {/* Gate block banner — il modello proponeva una direzione ma un gate l'ha fermata */}
+          {lastCycleSignals.blocked_by && lastCycleSignals.raw_action && lastCycleSignals.raw_action !== 'no_trade' && (
+            <div className="mb-3 rounded-lg border border-amber-200 dark:border-amber-500/20 bg-amber-50 dark:bg-amber-500/10 px-3 py-2">
+              <p className="text-[11px] text-amber-700 dark:text-amber-300 leading-relaxed">
+                Il modello proponeva un{' '}
+                <span className="font-bold">{lastCycleSignals.raw_action === 'long' ? 'LONG' : 'SHORT'}</span>
+                {typeof lastCycleSignals.raw_pct === 'number' && (
+                  <> (forza <span className="font-mono font-bold">{lastCycleSignals.raw_pct.toFixed(1)}%</span>)</>
+                )}
+                {' '}ma è stato bloccato dal{' '}
+                <span className="font-bold">{lastCycleSignals.blocked_by}</span>: nessun trade aperto in questo ciclo.
+              </p>
+            </div>
+          )}
 
           {/* 4-column probability grid */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-4">

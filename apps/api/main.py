@@ -682,7 +682,7 @@ async def ai_layer_stats(limit: int = 500):
     db = get_supabase()
     try:
         res = await run_db(lambda: db.table("ai_decisions")
-                           .select("agreement,changed_decision,proposed_action,final_action,error")
+                           .select("agreement,changed_decision,proposed_action,final_action,error,threshold_adjustment,conviction")
                            .order("created_at", desc=True).limit(limit).execute())
         rows = res.data or []
     except Exception as exc:
@@ -690,13 +690,20 @@ async def ai_layer_stats(limit: int = 500):
     total = len(rows)
     def _cnt(pred):
         return sum(1 for r in rows if pred(r))
+    active = [r for r in rows if not r.get("error") and r.get("threshold_adjustment") is not None]
+    conv_rows = [r for r in rows if not r.get("error") and r.get("conviction") is not None]
+    threshold_avg = round(sum(r["threshold_adjustment"] for r in active) / len(active), 4) if active else 0.0
+    avg_conviction = round(sum(r["conviction"] for r in conv_rows) / len(conv_rows), 1) if conv_rows else 0.0
     return {
-        "total":     total,
-        "confirm":   _cnt(lambda r: r.get("agreement") == "confirm"),
-        "neutral":   _cnt(lambda r: r.get("agreement") == "neutral"),
-        "veto":      _cnt(lambda r: r.get("agreement") == "veto"),
-        "changed":   _cnt(lambda r: r.get("changed_decision")),
-        "fail_open": _cnt(lambda r: r.get("error") == "fail_open"),
+        "total":             total,
+        "confirm":           _cnt(lambda r: r.get("agreement") == "confirm"),
+        "neutral":           _cnt(lambda r: r.get("agreement") == "neutral"),
+        "veto":              _cnt(lambda r: r.get("agreement") == "veto"),
+        "changed":           _cnt(lambda r: r.get("changed_decision")),
+        "fail_open":         _cnt(lambda r: r.get("error") == "fail_open"),
+        "threshold_raised":  _cnt(lambda r: not r.get("error") and (r.get("threshold_adjustment") or 0.0) > 0.001),
+        "threshold_avg":     threshold_avg,
+        "avg_conviction":    avg_conviction,
     }
 
 
